@@ -1,7 +1,10 @@
 
-<img alt="Kinetica-Graph" src="./title_image.png" />
+<img alt="Title" src="./title_image.png" />
+<div style="display: flex; align-items: center; justify-content: space-between;">
+<h1>Kinetica Graph</h1> <img height="100" width="100" style="float: right;" alt="Kinetica-Graph" src="./kinetica_graph_logo.png" />
+</div>
 
-### **Kinetica Graph: Technical Overview**
+### **Technical Overview**
 
 Kinetica Graph is a distributed, hybrid graph database engineered to work in tandem with the Kinetica relational engine. By bridging the gap between property graphs and OLAP expression support, it allows for high-performance analytics within a unified ecosystem.
 
