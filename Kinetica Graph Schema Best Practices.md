@@ -108,8 +108,8 @@ CREATE OR REPLACE DIRECTED GRAPH wiki_graph (
     options => kv_pairs(graph_table = 'wiki_graph_table')
 );
 ```
-<h2> A property graph between persons as entities with interests as labels and their ties as relations</h2>
-<img  src="./wikipedia.png" />
+<h4 style="text-align: center;"> View Schema (ontology)</h4>
+<img  src="./schema.png" />
 
 * **Simplified Selection**: Since the table columns match the expected grammar (e.g., `node`, `label`), you can use a simple `SELECT *` or even just the table name.
 * **Explicit Annotation**: If your table used non-standard names (e.g., `Person` instead of `node`), you would be required to use the `AS` keyword to map them:
