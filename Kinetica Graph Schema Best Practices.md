@@ -1,4 +1,4 @@
-# **Kinetica Graph: Schema & Naming Best Practices**
+# **A simple wikipedia example**
 
 To streamline graph creation in Kinetica, you can leverage **pre-defined grammar aliases** for your column names. Using these specific names allows the engine to automatically map your data, removing the need for explicit AS directives or manual annotations.
 
@@ -32,7 +32,7 @@ By using the generic aliases below, the /create/graph endpoint will automaticall
 
 <h2> 💻Wikiped ia Example</h2> 
 <h2> A property graph between persons as entities with interests as labels and their ties as relations</h2>
-<img  src="./wikipedia.png" />
+<img  height=600 width=600 src="./wikipedia.png" />
 
 ### **1\. Define Your Tables**
 
@@ -108,8 +108,21 @@ CREATE OR REPLACE DIRECTED GRAPH wiki_graph (
     options => kv_pairs(graph_table = 'wiki_graph_table')
 );
 ```
-<h4 style="text-align: center;"> View Schema (ontology)</h4>
+<h3 style="text-align: center;"> View Schema (ontology)</h3>
 <img  src="./schema.png" />
+
+To view the full graph schema ontology without grouping entities by their label_keys, disable the grouping options via the ALTER GRAPH endpoint as shown below.
+
+For a deeper dive into the ontology, click the "View Schema" button. Note that disabling label-key compression expands the schema to show all individual label connections. The percentages indicate the distribution of nodes and edges; for instance, a node labeled MALE:CHESS at 40% signifies that 40% of all nodes in the graph carry both labels. In large datasets, these metrics are vital for understanding graph density and calculating the hop distance between specific label sets.
+
+```SQL
+ALTER GRAPH wiki_graph MODIFY (
+    options => kv_pairs(schema_node_labelkeys = 'false', schema_edge_labelkeys = 'false')
+);
+```
+<img  src="./labelschemas.png" />
+
+⚠️ WARNING: The MODIFY command supports the same components as CREATE GRAPH. Use this to retarget graph tables or perform CRUD operations on nodes, edges, weights, and restrictions.
 
 * **Simplified Selection**: Since the table columns match the expected grammar (e.g., `node`, `label`), you can use a simple `SELECT *` or even just the table name.
 * **Explicit Annotation**: If your table used non-standard names (e.g., `Person` instead of `node`), you would be required to use the `AS` keyword to map them:
