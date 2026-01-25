@@ -3,7 +3,7 @@
 Kinetica Graph is a distributed, hybrid graph database engineered to work in tandem with the Kinetica relational engine. By bridging the gap between property graphs and OLAP expression support, it allows for high-performance analytics within a unified ecosystem.
 
 * [Core Technical Advantages](#core-technical-advantages)
-* [User Guide on Wikipedia Example](./Kinetica%20Graph%20Schema%20Best%20Practices.md#kinetica-graph-schema--naming-best-practices)
+* [User Guide on Wikipedia Example](./quick-guide)
 
 ## Core Technical Advantages
 
