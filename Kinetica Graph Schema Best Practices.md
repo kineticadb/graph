@@ -1,18 +1,19 @@
 # 💻 A simple wikipedia example
 <h2> A property graph between persons as entities with interests as labels and their ties as relations</h2>
 
-To streamline graph creation in Kinetica, you can leverage **pre-defined grammar aliases** for your column names. Using these specific names allows the engine to automatically map your data, removing the need for explicit AS directives or manual annotations.
-
 * [Core Concepts](#core-concepts)
 * [Define Tables](#define-your-tables)
 * [Insert data into nodes and edges](#insert-data-into-nodes-and-edges)
 * [Create Graph](#create-graph)
-* [Visualization & Debugging](#visualization-debugging)
+* [Ontology and Label Grouping](#ontology-and-label-grouping)
+* [Visualization and Debugging](#visualization-and-debugging)
 * [Graph Query Guide: Multi-Hop Traversal](#graph-query-guide-multi-hop-traversal)
 
-**🧩 Core Concepts**
+## **Core Concepts**
 
-Graphs in Kinetica are built from two primary components: **Nodes** and **Edges**.
+To streamline graph creation in Kinetica, you can leverage **pre-defined grammar aliases** for your column names. Using these specific names allows the engine to automatically map your data, removing the need for explicit AS directives or manual annotations.
+
+🧩 Graphs in Kinetica are built from two primary components: **Nodes** and **Edges**.
 
 * **Grammar Verification**: To view the full list of valid identifier combinations for your version, call the /show/graph/grammar endpoint.  
 * **Polymorphic Labels**: The alias LABEL is context-aware. In a Node section, it maps to NODE\_LABEL; in an Edge section, it maps to EDGE\_LABEL.
@@ -45,7 +46,7 @@ By using the generic aliases below, the /create/graph endpoint will automaticall
 </kbd>
 </div>
 
-### **1\. Define Your Tables**
+### **Define Your Tables**
 
 Create tables using the standard grammar to bypass manual mapping.
 
@@ -66,7 +67,8 @@ CREATE OR REPLACE TABLE wiki\_graph\_edges (
     met_time DATE   
 );
 ```
-### **2\. Insert data into nodes and edges**
+### **Insert data into nodes and edges**
+
 ```SQL
 INSERT INTO wiki_graph_nodes(node,label,age) VALUES 
 ('Jane', string_to_array('FEMALE,business',','),29),
@@ -86,11 +88,11 @@ INSERT INTO wiki_graph_edges(node1,node2,label,met_time) VALUES
 * **Grammar Verification**: To view the full list of valid identifier combinations, call the `/show/graph/grammar` endpoint. This returns a JSON object listing identifiers and combinations (e.g., the `NODE` and `LABEL` two-tuple) per component.
 * **Auto-Annotation**: By using the names `node`, `node1`, `node2`, and `label`, you bypass the need for `AS` directives in your graph endpoints.
 
-### **3\. Create Graph**
+### **Create Graph**
 
 This step involves defining the directed graph using the `input_tables` macro. Because the underlying tables follow the recommended naming conventions (the "Graph Grammar"), the syntax remains clean and concise. 
 
-### Ontology & Label Grouping
+### Ontology and Label Grouping
 
 To keep the graph schema (ontology) concise, you can group labels under "Label Keys." For example, "MALE" and "FEMALE" can be grouped under a "Gender" super-set.
 
@@ -139,7 +141,7 @@ ALTER GRAPH wiki_graph MODIFY (
 * **Explicit Annotation**: If your table used non-standard names (e.g., `Person` instead of `node`), you would be required to use the `AS` keyword to map them:
 `nodes => input_tables((SELECT Person AS node, hobby AS label FROM wiki_graph_nodes))`
 
-## 4\. Visualization & Debugging
+## Visualization and Debugging
 
 Click the Config button inside the Visualization tab to modify the UI:
 
@@ -151,11 +153,11 @@ Click the Config button inside the Visualization tab to modify the UI:
 
 <img src="./wikigraph.png">
 
-# 5.\.Graph Query Guide: Multi-Hop Traversal
+# Graph Query Guide: Multi-Hop Traversal
 
 This guide explains how to identify "friends of friends" of a specific node (e.g., 'Tom') within two hops using Cypher syntax and specific system hints.
 
-## 5.1. Basic Syntax and Filtering
+## 1. Basic Syntax and Filtering
 In Cypher, a single-hop relationship is expressed as:
 ` (n1)-[e]->(n2) `
 
@@ -163,7 +165,7 @@ In Cypher, a single-hop relationship is expressed as:
 * **Attributes:** Apply specific attribute filters within a `WHERE` clause.
     * *Example:* `(c:chess WHERE c.age < 50)` depicts a node with the label 'chess' where the 'age' property is less than 50.
 
-## 5.2. Directionality and Global Options
+## 2. Directionality and Global Options
 Edge direction is critical in directed graphs. If the starting node (e.g., 'Tom') does not have outgoing edges, you must adjust the query:
 
 * **Manual Flip:** Reverse the arrow direction: `()<-[]-()`.
@@ -172,12 +174,12 @@ Edge direction is critical in directed graphs. If the starting node (e.g., 'Tom'
 Add the following comment hint anywhere within your call:
 `/* KI_HINT_QUERY_GRAPH_ENDPOINT_OPTIONS (force_undirected, true) */`
 
-## 5.3. Results and Aliasing
+## 3. Results and Aliasing
 When returning multiple nodes from different hops, the return syntax requires distinct alias names to differentiate column outputs.
 * **Requirement:** Use `AS` to rename columns.
 * **Convention:** `RETURN a.node AS originator, c.node AS target`.
 
-## 5.4. Visualization and Styling
+## 4. Visualization and Styling
 Once the query is executed, you can inspect the results in two ways:
 
 | Tab | Description |
@@ -195,5 +197,5 @@ Click the **Config** button inside the **Visualization** tab to modify the UI:
 GRAPH wiki_graph 
 MATCH (a:MALE  WHERE(node = 'Tom') )<-[b:Friend]-(c) <- [d] - (e) 
 RETURN a.node as originator, c.node as friend, e.node as target
-```
+``` 
 <img src="./cypherquery.png"/>
