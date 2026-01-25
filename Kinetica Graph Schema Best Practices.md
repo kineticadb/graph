@@ -1,4 +1,5 @@
-# **A simple wikipedia example**
+# 💻 A simple wikipedia example
+<h2> A property graph between persons as entities with interests as labels and their ties as relations</h2>
 
 To streamline graph creation in Kinetica, you can leverage **pre-defined grammar aliases** for your column names. Using these specific names allows the engine to automatically map your data, removing the need for explicit AS directives or manual annotations.
 
@@ -30,9 +31,12 @@ By using the generic aliases below, the /create/graph endpoint will automaticall
 | **NODE2** | EDGE\_NODE2\_NAME | The target node of the relationship. |
 | **LABEL** | EDGE\_LABEL | The type of relationship (e.g., 'FRIEND\_OF'). |
 
-<h2> 💻Wikiped ia Example</h2> 
-<h2> A property graph between persons as entities with interests as labels and their ties as relations</h2>
-<img  height=600 width=600 src="./wikipedia.png" />
+
+<div style="width:20%; margin: auto;">
+<kbd>
+<img  width="100%" src="./wikipedia.png" />
+</kbd>
+</div>
 
 ### **1\. Define Your Tables**
 
@@ -128,13 +132,61 @@ ALTER GRAPH wiki_graph MODIFY (
 * **Explicit Annotation**: If your table used non-standard names (e.g., `Person` instead of `node`), you would be required to use the `AS` keyword to map them:
 `nodes => input_tables((SELECT Person AS node, hobby AS label FROM wiki_graph_nodes))`
 
+## 4\. Visualization & Debugging
 
-**⚠️ Visualization & Debugging**
+Click the Config button inside the Visualization tab to modify the UI:
+
+<img src="./graphui.png">
 
 * **graph\_table**: This option creates relational tables (e.g., wiki\_graph\_table\_nodes) that mirror the in-memory graph.  
 * **Performance Warning**: Avoid using graph\_table for graphs larger than **1,000 elements**, as the overhead for table generation is high.  
 * **Workbench UI**: These tables power the generic graph UI using the **Orb library**, allowing for visual inspection and force-directed layouts.
 
----
+<img src="./wikigraph.png">
 
-**Would you like me to generate a sample JSON request body for the /create/graph REST endpoint using these same conventions?**
+# 5.\.Graph Query Guide: Multi-Hop Traversal
+
+This guide explains how to identify "friends of friends" of a specific node (e.g., 'Tom') within two hops using Cypher syntax and specific system hints.
+
+## 5.1. Basic Syntax and Filtering
+In Cypher, a single-hop relationship is expressed as:
+` (n1)-[e]->(n2) `
+
+* **Labels:** Filter by labels using the `variable:label` syntax.
+* **Attributes:** Apply specific attribute filters within a `WHERE` clause.
+    * *Example:* `(c:chess WHERE c.age < 50)` depicts a node with the label 'chess' where the 'age' property is less than 50.
+
+## 5.2. Directionality and Global Options
+Edge direction is critical in directed graphs. If the starting node (e.g., 'Tom') does not have outgoing edges, you must adjust the query:
+
+* **Manual Flip:** Reverse the arrow direction: `()<-[]-()`.
+* **Undirected Search:** To treat all edges as bidirectional, you must enable the global `force_undirected` option. 
+
+Add the following comment hint anywhere within your call:
+`/* KI_HINT_QUERY_GRAPH_ENDPOINT_OPTIONS (force_undirected, true) */`
+
+## 5.3. Results and Aliasing
+When returning multiple nodes from different hops, the return syntax requires distinct alias names to differentiate column outputs.
+* **Requirement:** Use `AS` to rename columns.
+* **Convention:** `RETURN a.node AS originator, c.node AS target`.
+
+## 5.4. Visualization and Styling
+Once the query is executed, you can inspect the results in two ways:
+
+| Tab | Description |
+| :--- | :--- |
+| **Data** | Displays the raw tabular output and captured variables. |
+| **Visualization** | Shows the graphical representation of the graph. |
+
+### Customizing the Graph View
+Click the **Config** button inside the **Visualization** tab to modify the UI:
+* **Nodes:** It is recommended to color nodes by their **Labels**.
+* **Edges:** Set edge coloring to the **Path** option. This ensures each unique traversal path found in the query is assigned a distinct color, making complex multi-hop results easier to read.
+* **Legend:** A tabular legend in the upper-right corner of the canvas will display the color mappings for each label and path combination.
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+```SQL
+GRAPH wiki_graph 
+MATCH (a:MALE  WHERE(node = 'Tom') )<-[b:Friend]-(c) <- [d] - (e) 
+RETURN a.node as originator, c.node as friend, e.node as target
+```
+<img src="./cypherquery.png"/>
