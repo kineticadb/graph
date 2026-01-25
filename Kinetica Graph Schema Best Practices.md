@@ -3,6 +3,13 @@
 
 To streamline graph creation in Kinetica, you can leverage **pre-defined grammar aliases** for your column names. Using these specific names allows the engine to automatically map your data, removing the need for explicit AS directives or manual annotations.
 
+* [Core Concepts](#core-concepts)
+* [Define Tables](#define-your-tables)
+* [Insert data into nodes and edges](#insert-data-into-nodes-and-edges)
+* [Create Graph](#create-graph)
+* [Visualization & Debugging](#visualization-debugging)
+* [Graph Query Guide: Multi-Hop Traversal](#graph-query-guide-multi-hop-traversal)
+
 **🧩 Core Concepts**
 
 Graphs in Kinetica are built from two primary components: **Nodes** and **Edges**.
@@ -59,7 +66,7 @@ CREATE OR REPLACE TABLE wiki\_graph\_edges (
     met_time DATE   
 );
 ```
-### **2\. Insert data into nodes and edges tables**
+### **2\. Insert data into nodes and edges**
 ```SQL
 INSERT INTO wiki_graph_nodes(node,label,age) VALUES 
 ('Jane', string_to_array('FEMALE,business',','),29),
