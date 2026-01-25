@@ -1,12 +1,9 @@
 <img alt="Title" src="./title_image.png" />
-<h1>Kinetica Graph</h1>  <img height="100" width="100" style="float: right;" alt="Kinetica-Graph" src="./kinetica_graph_logo.png" />
+<h1>Kinetica Graph<img height="40" width="40" style="float: right;" alt="Kinetica-Graph" src="./kinetica_graph_logo.png" /> </h1>
 Kinetica Graph is a distributed, hybrid graph database engineered to work in tandem with the Kinetica relational engine. By bridging the gap between property graphs and OLAP expression support, it allows for high-performance analytics within a unified ecosystem.
 
 * [Core Technical Advantages](#core-technical-advantages)
-* [Scalable Analytics & Solvers](#scalable-analytics--solvers)
-* [Visualization & Schema Management](#visualization--schema-management)
-
----
+* [User Guide on Wikipedia Example](./Kinetica%20Graph%20Schema%20Best%20Practices.md#kinetica-graph-schema--naming-best-practices)
 
 ## Core Technical Advantages
 
@@ -16,9 +13,7 @@ Kinetica Graph is a distributed, hybrid graph database engineered to work in tan
 * **Efficient Sharding & Distribution:** The graph topology is distributed across multiple servers and nodes. To maximize efficiency, only nodes at inter-graph boundaries are duplicated; partitioned graphs remain independent while graph solvers iterate seamlessly across the cluster.
 * **Cypher & GQL Compliance:** The system supports multi-hop, many-to-many property graph queries using Cypher. The query planner is highly optimized to bridge relational and graph data access seamlessly.
 
----
-
-## Scalable Analytics & Solvers
+### Scalable Analytics & Solvers
 
 Kinetica exposes a wide array of advanced graph algorithms through a few streamlined RESTful endpoints, supporting both classical graph theory and modern machine learning:
 
@@ -27,12 +22,9 @@ Kinetica exposes a wide array of advanced graph algorithms through a few streaml
 * **Security & Pattern Detection:** Eulerian loops for fraud detection, pattern matching, and spectral bisection clustering.
 * **Data Science Integration:** Support for novel graph embeddings to facilitate downstream machine learning tasks.
 
----
-
-## Visualization & Schema Management
+### Visualization & Schema Management
 
 * **Distributed Rendering:** Built-in support for rendering large-scale geo-graphs and generic visualizations within a Jupyter-style workbench.
 * **Rich UI Interaction:** Automated visualization tools utilize UI widgets to filter and explore data based on labels, hops, and paths.
 * **Automatic Ontology Generation:** A unique feature that generates ontology schemas directly from CRUD statements. This allows billion-node graphs to be visualized in a simplified "dot" format with a schema graph of a much smaller labeled entity connections, making massive datasets instantly interpretable.
 
----
