@@ -7,6 +7,7 @@
 * [Quick Guide on Wikipedia Example](./quickguide.md)
 * [Kinetica Graph Solvers](#scalable-analytics-and-solvers)
 * [Graph Restful Endpoints](./restapi_schemas.md)
+* [Examples](./cypherquery_cases.md)
   
 ## Core Technical Advantages
 
