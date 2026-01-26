@@ -9,6 +9,7 @@
 * [Kinetica Graph Solvers](#scalable-analytics-and-solvers)
 * [Graph Restful Endpoints](./restapi_schemas.md)
 * [Examples](./cypherquery_cases.md)
+* [Comprehensive Graph document with 250+ slides](https://docs.google.com/presentation/d/1Rh5tHXww_0_GCv74w1RaiF3FIw_Ku5fQ5-CM06TIlBg/edit?slide=id.g2ae4f3f4532_0_7#slide=id.g2ae4f3f4532_0_7)
   
 ## Core Technical Advantages
 
