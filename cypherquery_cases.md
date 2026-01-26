@@ -1,7 +1,8 @@
-# Kinetica Graph Cypher Queries: Various Use Cases
+# Kinetica Graph Examples
 
 This documentation provides comprehensive examples and use cases for Kinetica's graph capabilities using Cypher queries. The examples cover various use cases including banking, logistics, social networks, and more.
 
+### Run below cases using the workbook, a kinetica workbench jupyter SQL notebook [Graph Workbooks](./workbooks/Graph%23Workbooks.json)
 ---
 
 ## Table of Contents
