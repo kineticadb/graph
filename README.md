@@ -9,7 +9,14 @@
 * [Kinetica Graph Solvers](#scalable-analytics-and-solvers)
 * [Graph Restful Endpoints](./restapi_schemas.md)
 * [Examples](./cypherquery_cases.md)
-* [Comprehensive Graph document with 250+ slides](https://docs.google.com/presentation/d/1Rh5tHXww_0_GCv74w1RaiF3FIw_Ku5fQ5-CM06TIlBg/edit?slide=id.g2ae4f3f4532_0_7#slide=id.g2ae4f3f4532_0_7)
+* [Comprehensive document with 250+ slides](https://docs.google.com/presentation/d/1Rh5tHXww_0_GCv74w1RaiF3FIw_Ku5fQ5-CM06TIlBg/edit?slide=id.g2ae4f3f4532_0_7#slide=id.g2ae4f3f4532_0_7)
+
+* ### Journal Papers
+* [Graph Embedding algorithm using Kinetica-Graph](https://arxiv.org/abs/2407.15906)
+* [Kinetica-Graph Design technical journal paper](https://arxiv.org/abs/2201.02136)
+* [Patented adapted markov chain solver for map matching](https://www.tandfonline.com/doi/pdf/10.1080/10095020.2020.1866956)
+* [Novel Data structures for labeled queries for billion+ graphs](https://arxiv.org/abs/2311.03631)
+* [Optimal routing algorithms for trips involving thousands of ev-charging stations using Kinetica-Graph](https://arxiv.org/abs/2206.06241)
   
 ## Core Technical Advantages
 
