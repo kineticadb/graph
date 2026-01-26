@@ -4,6 +4,7 @@
 **Kinetica Graph** is a **distributed**, hybrid graph database engineered to work in tandem with the Kinetica relational engine. By bridging the gap between property graphs and **OLAP expression support**, it allows for high-performance analytics within a unified ecosystem (**SQL**/Python/C++/Java etc.) that is **GQL compliant** and fully supports **cypher query** syntax. 
 
 * [Core Technical Advantages](#core-technical-advantages)
+* [Get Free Developer Edition Kinetica DB+Graph](https://www.kinetica.com/kinetica-developer-edition/)  
 * [Quick Guide on Wikipedia Example](./quickguide.md)
 * [Kinetica Graph Solvers](#scalable-analytics-and-solvers)
 * [Graph Restful Endpoints](./restapi_schemas.md)
