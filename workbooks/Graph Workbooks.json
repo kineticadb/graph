@@ -5,7 +5,7 @@
       "example_id": "9aed4ffc-8ba6-4012-8a26-efbf5806f232",
       "features": ["Graph queries", "Graph Workbooks"],
       "approx_time": "10 mins",
-      "thumbnail": "https://raw.githubusercontent.com/kineticadb/graph/kinetica_graph_logo.png"
+      "thumbnail": "https://github.com/kineticadb/graph/blob/master/title_image.png"
     },
     "config": {},
     "id": "6df54be0-f60f-11f0-bba6-8baf07df6e75",
