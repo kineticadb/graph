@@ -2,7 +2,7 @@
   "workbook": {
     "metadata": {
       "revision": 20260218,
-      "example_id": "9aed4ffc-8ba6-4012-8a26-efbf5806f232",
+      "example_id": "11df7fa8-4308-4b17-8ee2-8e547e81343b",
       "features": ["Graph queries", "Graph Workbooks"],
       "approx_time": "10 mins",
       "thumbnail": "https://github.com/kineticadb/graph/blob/master/title_image.png?raw=true"
