@@ -1,0 +1,2040 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kinetica-Graph Explorer</title>
+    <link rel="icon" type="image/png" href="kinetica_graph_logo.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://unpkg.com/force-graph"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@hpcc-js/wasm@2.13.0/dist/graphviz.umd.js"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body, #root { height: 100%; overflow: hidden; }
+        body { font-family: 'DM Sans', 'Segoe UI', Roboto, sans-serif; background: #f4f6f9; }
+
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+        * { scrollbar-width: thin; scrollbar-color: #dfe6e9 transparent; }
+        *::-webkit-scrollbar { width: 6px; }
+        *::-webkit-scrollbar-thumb { background: #dfe6e9; border-radius: 3px; }
+
+        .node-highlight ellipse, .node-highlight polygon, .node-highlight path { stroke: #0984e3 !important; stroke-width: 10px !important; transition: 0.3s; }
+        .edge-highlight path { stroke: #0984e3 !important; stroke-width: 8px !important; transition: 0.3s; }
+        .dimmed { opacity: 0.15 !important; transition: 0.3s; pointer-events: none; }
+    </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+/* ═══════════════════════ CONSTANTS ════════════════════════ */
+const SAFETY_TIMEOUT_MS = 10 * 60 * 1000;
+const PALETTE = [
+    { solid: '#0984e3', light: '#e1f0fb' }, { solid: '#00cec9', light: '#e0f9f8' },
+    { solid: '#6c5ce7', light: '#f0eefc' }, { solid: '#fab1a0', light: '#fff1ed' },
+    { solid: '#fdcb6e', light: '#fff7e9' }, { solid: '#e17055', light: '#fbeae4' },
+    { solid: '#d63031', light: '#fbeaea' }, { solid: '#e84393', light: '#fcecf4' },
+    { solid: '#2d3436', light: '#eaebec' }, { solid: '#b2bec3', light: '#f1f2f3' },
+];
+const DEFAULT_PROFILES = [
+    { label: "Localhost", url: "http://127.0.0.1:9191", user: "admin", pass: "***REMOVED***" },
+    { label: "Demo72",   url: "https://demo72.kinetica.com/_gpudb", user: "", pass: "" },
+];
+
+/* ═══════════════════════ HELPERS ══════════════════════════ */
+function formatElapsed(ms) {
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return s + 's ago';
+    if (s < 3600) return Math.floor(s / 60) + 'm ago';
+    return Math.floor(s / 3600) + 'h ago';
+}
+function safeParse(str, fallback) {
+    if (fallback === undefined) fallback = null;
+    if (typeof str === 'object' && str !== null) return str;
+    try { return JSON.parse(str); } catch(e) { return fallback; }
+}
+
+function extractGraphTable(originalRequest, graphName) {
+    if (!originalRequest || !originalRequest.length) return null;
+    var entry = originalRequest[0];
+    if (typeof entry === "string") entry = safeParse(entry);
+    if (!entry) return null;
+    var statement = entry.statement || "";
+    var match = statement.match(/graph_table\s*=\s*'([^']+)'/i);
+    if (!match) return null;
+    var tableName = match[1];
+    // Prepend schema from graphName if table doesn't already have one
+    if (tableName.indexOf('.') === -1 && graphName && graphName.indexOf('.') !== -1) {
+        var schema = graphName.substring(0, graphName.indexOf('.'));
+        tableName = schema + '.' + tableName;
+    }
+    return tableName;
+}
+
+// Resolve column name from headers, trying multiple variants (e.g. NODE1_NAME or EDGE_NODE1_NAME)
+function resolveCol(headers, candidates) {
+    for (var i = 0; i < candidates.length; i++) {
+        for (var j = 0; j < headers.length; j++) {
+            if (headers[j].toUpperCase() === candidates[i].toUpperCase()) return headers[j];
+        }
+    }
+    return null;
+}
+
+/* ═══════════════════ HOOK: useKineticaApi ═════════════════ */
+function useKineticaApi() {
+    const abortRef   = useRef(null);
+    const timeoutRef = useRef(null);
+    const [loading, setLoading] = useState(false);
+
+    const cancel = useCallback(function() {
+        if (abortRef.current)   abortRef.current.abort();
+        if (timeoutRef.current) clearTimeout(timeoutRef.current);
+        setLoading(false);
+    }, []);
+
+    const request = useCallback(async function(url, body, creds) {
+        cancel();
+        setLoading(true);
+        abortRef.current = new AbortController();
+        timeoutRef.current = setTimeout(function() { cancel(); alert("Request timed out (10 min)."); }, SAFETY_TIMEOUT_MS);
+
+        var headers = { "Content-Type": "application/json" };
+        if (creds.user || creds.pass) {
+            headers["Authorization"] = "Basic " + btoa(creds.user + ":" + creds.pass);
+        }
+        try {
+            var res = await fetch(url, { method: "POST", headers: headers, body: JSON.stringify(body), signal: abortRef.current.signal });
+            if (!res.ok) {
+                var errText = await res.text().catch(function() { return res.statusText; });
+                throw new Error("HTTP " + res.status + ": " + errText);
+            }
+            return await res.json();
+        } catch(err) {
+            if (err.name === 'AbortError') return { _cancelled: true };
+            throw err;
+        } finally {
+            clearTimeout(timeoutRef.current);
+            setLoading(false);
+        }
+    }, [cancel]);
+
+    useEffect(function() { return function() { cancel(); }; }, [cancel]);
+    return { request: request, loading: loading, cancel: cancel };
+}
+
+/* ═══════════════════ LoaderOverlay ════════════════════════ */
+
+/* ═══════════════════ CornerHandle (resize from corner) ═══ */
+function CornerHandle(props) {
+    var onDrag = props.onDrag;
+    const [active, setActive] = useState(false);
+    const [hover, setHover] = useState(false);
+
+    var handleMouseDown = function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        setActive(true);
+        var lastX = e.clientX, lastY = e.clientY;
+        document.body.style.cursor = "nwse-resize";
+        document.body.style.userSelect = "none";
+        var onMove = function(ev) {
+            var dx = ev.clientX - lastX;
+            var dy = ev.clientY - lastY;
+            lastX = ev.clientX;
+            lastY = ev.clientY;
+            if (onDrag) onDrag(dx, dy);
+        };
+        var onUp = function() {
+            setActive(false);
+            document.body.style.cursor = "";
+            document.body.style.userSelect = "";
+            document.removeEventListener("mousemove", onMove);
+            document.removeEventListener("mouseup", onUp);
+        };
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp);
+    };
+
+    var show = active || hover;
+    return (
+        <div onMouseDown={handleMouseDown}
+            onMouseEnter={function(){ setHover(true); }}
+            onMouseLeave={function(){ setHover(false); }}
+            style={{
+                position: "absolute",
+                left: "calc(" + ((props.hSplit || 0.65) * 100) + "% - 10px)",
+                top: "calc(" + ((props.vSplit || 0.5) * 100) + "% - 10px)",
+                width: 20, height: 20, cursor: "nwse-resize",
+                zIndex: 20, display: "flex", alignItems: "center", justifyContent: "center",
+                background: show ? "rgba(9,132,227,0.15)" : "transparent",
+                borderRadius: 4, transition: "background 0.15s",
+            }}
+        >
+            <div style={{
+                width: 10, height: 10,
+                borderRight: "3px solid " + (show ? "#0984e3" : "#bbb"),
+                borderBottom: "3px solid " + (show ? "#0984e3" : "#bbb"),
+                transition: "border-color 0.15s",
+            }}/>
+        </div>
+    );
+}
+
+/* ═══════════════════ SplitPane (resizable) ═══════════════ */
+function SplitPane(props) {
+    var direction = props.direction || "horizontal";
+    var initialSplit = props.initialSplit || 0.65;
+    var minA = props.minA || 100;
+    var minB = props.minB || 100;
+    var controlledSplit = props.split;
+    var onSplitChange = props.onSplitChange;
+    var children = React.Children.toArray(props.children);
+    if (children.length < 2) return <div style={{ flex:1 }}>{children[0]}</div>;
+
+    const [internalSplit, setInternalSplit] = useState(initialSplit);
+    var split = controlledSplit !== undefined ? controlledSplit : internalSplit;
+    var setSplit = onSplitChange || setInternalSplit;
+    const [isDragging, setIsDragging] = useState(false);
+    const containerRef = useRef(null);
+
+    var handleMouseDown = function(e) {
+        e.preventDefault();
+        setIsDragging(true);
+        var isH = direction === "horizontal";
+        document.body.style.cursor = isH ? "col-resize" : "row-resize";
+        document.body.style.userSelect = "none";
+        var onMove = function(ev) {
+            if (!containerRef.current) return;
+            var rect = containerRef.current.getBoundingClientRect();
+            var pos = isH ? ev.clientX - rect.left : ev.clientY - rect.top;
+            var size = isH ? rect.width : rect.height;
+            var ratio = Math.max(minA / size, Math.min(1 - minB / size, pos / size));
+            setSplit(ratio);
+        };
+        var onUp = function() {
+            setIsDragging(false);
+            document.body.style.cursor = "";
+            document.body.style.userSelect = "";
+            document.removeEventListener("mousemove", onMove);
+            document.removeEventListener("mouseup", onUp);
+        };
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp);
+    };
+
+    // Double-click to reset
+    var handleDblClick = function() { setSplit(initialSplit); };
+
+    var isH = direction === "horizontal";
+
+    // Grip dots for visual affordance
+    var gripDots = isH
+        ? <div style={{ display:"flex", flexDirection:"column", gap:3, alignItems:"center", justifyContent:"center", height:"100%" }}>
+            <div style={{ width:3, height:3, borderRadius:"50%", background:"#999" }}/>
+            <div style={{ width:3, height:3, borderRadius:"50%", background:"#999" }}/>
+            <div style={{ width:3, height:3, borderRadius:"50%", background:"#999" }}/>
+            <div style={{ width:3, height:3, borderRadius:"50%", background:"#999" }}/>
+            <div style={{ width:3, height:3, borderRadius:"50%", background:"#999" }}/>
+          </div>
+        : <div style={{ display:"flex", gap:3, alignItems:"center", justifyContent:"center", width:"100%" }}>
+            <div style={{ width:3, height:3, borderRadius:"50%", background:"#999" }}/>
+            <div style={{ width:3, height:3, borderRadius:"50%", background:"#999" }}/>
+            <div style={{ width:3, height:3, borderRadius:"50%", background:"#999" }}/>
+            <div style={{ width:3, height:3, borderRadius:"50%", background:"#999" }}/>
+            <div style={{ width:3, height:3, borderRadius:"50%", background:"#999" }}/>
+          </div>;
+
+    return (
+        <div ref={containerRef} style={{ display:"flex", flexDirection: isH ? "row" : "column", flex:1, minHeight:0, minWidth:0, overflow:"hidden" }}>
+            <div style={isH
+                ? { width: (split * 100) + "%", minWidth: minA, display:"flex", flexDirection:"column", overflow:"hidden" }
+                : { height: (split * 100) + "%", minHeight: minA, display:"flex", flexDirection:"column", overflow:"hidden" }
+            }>
+                {children[0]}
+            </div>
+            <div
+                onMouseDown={handleMouseDown}
+                onDoubleClick={handleDblClick}
+                style={{
+                    flex: "0 0 8px",
+                    background: isDragging ? "#0984e3" : "#e8eaed",
+                    cursor: isH ? "col-resize" : "row-resize",
+                    borderRadius: 4,
+                    transition: isDragging ? "none" : "background 0.2s",
+                    position: "relative",
+                    zIndex: 2,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                }}
+                onMouseEnter={function(e){ if (!isDragging) e.currentTarget.style.background = "#0984e3"; }}
+                onMouseLeave={function(e){ if (!isDragging) e.currentTarget.style.background = "#e8eaed"; }}
+            >
+                {gripDots}
+            </div>
+            <div style={isH
+                ? { flex:1, minWidth: minB, display:"flex", flexDirection:"column", overflow:"hidden" }
+                : { flex:1, minHeight: minB, display:"flex", flexDirection:"column", overflow:"hidden" }
+            }>
+                {children[1]}
+            </div>
+        </div>
+    );
+}
+
+/* ═══════════════════ Label helper ════════════════════════ */
+function Label(props) {
+    return <label style={{ display:'block', fontSize:10, fontWeight:700, color:'#636e72', marginBottom:5, textTransform:'uppercase', letterSpacing:0.8 }}>{props.children}</label>;
+}
+
+/* ═══════════════════ Sidebar ═════════════════════════════ */
+function Sidebar(props) {
+    var onConnect = props.onConnect, onClearGraphs = props.onClearGraphs, graphs = props.graphs, activeGraph = props.activeGraph, onSelectGraph = props.onSelectGraph, loading = props.loading;
+    const [profileIdx, setProfileIdx] = useState(0);
+    const [url,  setUrl]  = useState(DEFAULT_PROFILES[0].url);
+    const [user, setUser] = useState(DEFAULT_PROFILES[0].user);
+    const [pass, setPass] = useState(DEFAULT_PROFILES[0].pass);
+    const [showPass, setShowPass] = useState(false);
+    const [status, setStatus] = useState({ text:'', error:false });
+
+    var handleProfile = function(e) {
+        var idx = parseInt(e.target.value);
+        setProfileIdx(idx);
+        if (idx < DEFAULT_PROFILES.length) {
+            var p = DEFAULT_PROFILES[idx];
+            setUrl(p.url); setUser(p.user); setPass(p.pass);
+        } else { setUrl(''); setUser(''); setPass(''); }
+        if (onClearGraphs) onClearGraphs();
+    };
+
+    var handleUrlChange = function(e) {
+        setUrl(e.target.value);
+        if (onClearGraphs) onClearGraphs();
+    };
+
+    var handleConnect = async function() {
+        setStatus({ text:'Connecting…', error:false });
+        try {
+            await onConnect({ url: url.replace(/\/+$/, ''), user: user, pass: pass });
+            setStatus({ text:'Connected.', error:false });
+        } catch(err) {
+            setStatus({ text: err.message, error:true });
+        }
+    };
+
+    var inp = { width:'100%', padding:'10px 12px', border:'1px solid #dfe6e9', borderRadius:6, boxSizing:'border-box', fontSize:13, marginBottom:10, background:'#fff', outline:'none', fontFamily:'inherit' };
+
+    return (
+        <div style={{ width:320, minWidth:320, background:'#fff', borderRight:'1px solid #dfe6e9', display:'flex', flexDirection:'column', padding:20, boxShadow:'2px 0 8px rgba(0,0,0,0.04)', zIndex:10, height:'100vh', boxSizing:'border-box', overflowY:'auto' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:24, flexShrink:0 }}>
+                <img src="kinetica_graph_logo.png" style={{ height:32, width:'auto' }} alt="Logo" onError={function(e){ e.target.style.display='none'; }} />
+                <span style={{ fontWeight:700, fontSize:17, color:'#0984e3', letterSpacing:-0.3 }}>Graph Explorer</span>
+            </div>
+
+            <div style={{ marginBottom:20, flexShrink:0 }}>
+                <Label>Profile</Label>
+                <select value={profileIdx} onChange={handleProfile} style={Object.assign({}, inp, { cursor:'pointer' })}>
+                    {DEFAULT_PROFILES.map(function(p,i) { return <option key={i} value={i}>{p.label}</option>; })}
+                    <option value={DEFAULT_PROFILES.length}>— Custom —</option>
+                </select>
+
+                <Label>Server URL</Label>
+                <input style={inp} value={url} onChange={handleUrlChange} placeholder="https://..." />
+
+                <Label>Username</Label>
+                <input style={inp} value={user} onChange={function(e){ setUser(e.target.value); }} />
+
+                <Label>Password</Label>
+                <div style={{ position:'relative' }}>
+                    <input style={inp} type={showPass ? 'text' : 'password'} value={pass} onChange={function(e){ setPass(e.target.value); }} />
+                    <span onClick={function(){ setShowPass(!showPass); }} style={{ position:'absolute', right:10, top:8, cursor:'pointer', fontSize:16, userSelect:'none' }}>{showPass ? '🙈' : '👁️'}</span>
+                </div>
+
+                <button onClick={handleConnect} disabled={loading || !url} style={{
+                    width:'100%', padding:'11px 0', border:'none', borderRadius:6, cursor: loading ? 'not-allowed':'pointer',
+                    fontWeight:700, color:'#fff', fontSize:13, fontFamily:'inherit',
+                    background: loading ? '#74b9ff' : 'linear-gradient(135deg,#0984e3,#0872c4)', transition:'0.2s',
+                }}>
+                    {loading ? 'Connecting…' : 'Connect & List Graphs'}
+                </button>
+                {status.text && <p style={{ marginTop:8, fontSize:12, color: status.error ? '#d63031':'#00b894', fontWeight:600 }}>{status.text}</p>}
+            </div>
+
+            <Label>Available Graphs</Label>
+            <div style={{ flexGrow:1, overflowY:'auto', border:'1px solid #eee', borderRadius:8, marginTop:6 }}>
+                {graphs.length === 0
+                    ? <p style={{ padding:24, color:'#b2bec3', fontSize:12, textAlign:'center' }}>No active connection</p>
+                    : graphs.map(function(name) {
+                        return (
+                            <div key={name} onClick={function(){ onSelectGraph(name); }} style={{
+                                padding:'12px 14px', borderBottom:'1px solid #f1f2f6', cursor:'pointer', fontSize:13, transition:'0.15s',
+                                fontWeight: activeGraph===name ? 700:400, background: activeGraph===name ? '#eef2f7':'transparent',
+                                color: activeGraph===name ? '#0984e3':'#2d3436', borderLeft: activeGraph===name ? '4px solid #0984e3':'4px solid transparent',
+                            }}>{name}</div>
+                        );
+                    })
+                }
+            </div>
+        </div>
+    );
+}
+
+/* ═══════════════════ SummaryCards ═════════════════════════ */
+function SummaryCards(props) {
+    var data = props.data, server = props.server;
+    var items = [
+        { label:'LABELED NODES',   value: data.total_labeled_nodes },
+        { label:'UNLABELED NODES', value: data.total_unlabeled_nodes },
+        { label:'LABELED EDGES',   value: data.total_labeled_edges },
+        { label:'UNLABELED EDGES', value: data.total_unlabeled_edges },
+    ];
+    return (
+        <div style={{ background:'#fff', borderRadius:12, boxShadow:'0 2px 8px rgba(0,0,0,0.04)', padding:'12px 14px', marginBottom:0, borderLeft:'6px solid #6c5ce7', display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(90px, 1fr))', gap:12, alignItems:'center' }}>
+            {items.map(function(item) {
+                return (
+                    <div key={item.label}>
+                        <p style={{ margin:0, fontSize:10, color:'#636e72', fontWeight:600, letterSpacing:0.5 }}>{item.label}</p>
+                        <h3 style={{ margin:'3px 0 0', fontSize:14, fontWeight:800, color:'#2d3436' }}>{(item.value||0).toLocaleString()}</h3>
+                    </div>
+                );
+            })}
+            <div style={{ borderLeft:'1px solid #eee', paddingLeft:16 }}>
+                <p style={{ margin:0, fontSize:10, color:'#636e72', fontWeight:600, letterSpacing:0.5 }}>SOURCE</p>
+                <p style={{ margin:'3px 0 0', fontWeight:700, fontSize:13, color:'#2d3436', wordBreak:'break-all' }}>{server}</p>
+            </div>
+        </div>
+    );
+}
+
+/* ═══════════════════ LabelChart (doughnut + table) ═══════ */
+function LabelChart(props) {
+    var title = props.title, items = props.items, total = props.total, pickingEnabled = props.pickingEnabled, onHoverLabels = props.onHoverLabels, selectedLabels = props.selectedLabels || [], onToggleLabel = props.onToggleLabel;
+    const canvasRef = useRef(null);
+    const chartRef  = useRef(null);
+    const [highlightIdx, setHighlightIdx] = useState(null);
+    const sorted = useMemo(function() { return [].concat(items||[]).sort(function(a,b){ return b.count - a.count; }); }, [items]);
+
+    useEffect(function() {
+        if (!canvasRef.current) return;
+        if (chartRef.current) chartRef.current.destroy();
+
+        var labels = sorted.map(function(i){ return i.labels && i.labels.length ? i.labels.join(', ') : 'None'; });
+        var counts = sorted.map(function(i){ return i.count||0; });
+        var colors = sorted.map(function(_,idx){ return PALETTE[idx % PALETTE.length].solid; });
+
+        chartRef.current = new Chart(canvasRef.current, {
+            type: 'doughnut',
+            data: { labels: labels, datasets: [{ data: counts, backgroundColor: colors, borderWidth:1 }] },
+            options: {
+                responsive:true, maintainAspectRatio:false, cutout:'75%',
+                plugins: { legend: { display:false } },
+                onHover: function(_event, elements) {
+                    if (!pickingEnabled) return;
+                    if (elements.length > 0) {
+                        var idx = elements[0].index;
+                        setHighlightIdx(idx);
+                        if (onHoverLabels) onHoverLabels(sorted[idx].labels);
+                    } else {
+                        setHighlightIdx(null);
+                        if (onHoverLabels) onHoverLabels(null);
+                    }
+                },
+                onClick: function(_event, elements) {
+                    if (elements.length > 0) {
+                        var idx = elements[0].index;
+                        if (onToggleLabel && sorted[idx].labels && sorted[idx].labels.length) {
+                            sorted[idx].labels.forEach(function(lb) { onToggleLabel(lb); });
+                        }
+                    }
+                },
+            },
+        });
+        return function() { if (chartRef.current) chartRef.current.destroy(); };
+    }, [sorted, pickingEnabled]);
+
+    var handleRowEnter = function(idx) {
+        if (!pickingEnabled || !chartRef.current) return;
+        setHighlightIdx(idx);
+        chartRef.current.setActiveElements([{ datasetIndex:0, index:idx }]);
+        chartRef.current.update();
+        if (onHoverLabels) onHoverLabels(sorted[idx].labels);
+    };
+    var handleRowLeave = function() {
+        if (!pickingEnabled || !chartRef.current) return;
+        setHighlightIdx(null);
+        chartRef.current.setActiveElements([]);
+        chartRef.current.update();
+        if (onHoverLabels) onHoverLabels(null);
+    };
+
+    return (
+        <div style={{ background:'#fff', borderRadius:12, boxShadow:'0 2px 8px rgba(0,0,0,0.04)', padding:10, minWidth:0, flex:1, display:'flex', flexDirection:'column', overflow:'hidden', minHeight:0 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}><h2 style={{ margin:0, fontSize:14, fontWeight:700, color:"#2d3436" }}>{title}</h2>{selectedLabels.length > 0 && <button onClick={function(){ selectedLabels.forEach(function(l){ onToggleLabel(l); }); }} style={{ border:"none", background:"#d63031", color:"#fff", fontSize:10, fontWeight:700, borderRadius:6, padding:"4px 10px", cursor:"pointer", fontFamily:"inherit" }}>Clear Selection</button>}</div>
+            <div style={{ position:'relative', flex:'1 1 0', minHeight:80 }}><canvas ref={canvasRef}/></div>
+            <div style={{ flex:'1 1 0', minHeight:60, overflowY:'auto', border:'1px solid #eee', borderRadius:8, marginTop:14 }}>
+                <table style={{ width:'100%', borderCollapse:'collapse' }}>
+                    <thead><tr>
+                        {['Labels','Count','%'].map(function(h){ return <th key={h} style={{ position:'sticky', top:0, background:'#f1f2f6', padding:10, textAlign:'left', fontSize:10, fontWeight:700, color:'#636e72', zIndex:1 }}>{h}</th>; })}
+                    </tr></thead>
+                    <tbody>
+                        {sorted.map(function(item, idx) {
+                            var labelStr = item.labels && item.labels.length ? item.labels.join(', ') : 'None';
+                            var pct = total > 0 ? (((item.count||0)/total)*100).toFixed(1) : '0.0';
+                            var isSelected = selectedLabels.length > 0 && item.labels && item.labels.some(function(lb){ return selectedLabels.indexOf(lb) !== -1; });
+                            var hl = highlightIdx === idx;
+                            return (
+                                <tr key={idx} data-label={labelStr}
+                                    onMouseEnter={function(){ handleRowEnter(idx); }}
+                                    onClick={function(){ if (onToggleLabel && item.labels && item.labels.length) { item.labels.forEach(function(lb) { onToggleLabel(lb); }); } }}
+                                    onMouseLeave={handleRowLeave}
+                                    style={{
+                                        background: isSelected ? PALETTE[idx % PALETTE.length].solid + '22' : PALETTE[idx % PALETTE.length].light,
+                                        borderLeft: '5px solid ' + PALETTE[idx % PALETTE.length].solid,
+                                        cursor: pickingEnabled ? 'pointer':'default', transition:'0.15s',
+                                        transform: hl ? 'scale(1.01)':'none',
+                                        boxShadow: hl ? '0 4px 12px rgba(0,0,0,0.1)':'none',
+                                        fontWeight: hl ? 700:400,
+                                        outline: isSelected ? '3px solid ' + PALETTE[idx % PALETTE.length].solid : (hl ? '3px solid #0984e3':'none'),
+                                    }}>
+                                    <td style={{ padding:10, fontSize:12 }}><strong>{labelStr}</strong>{isSelected && <span style={{ marginLeft:6, background:PALETTE[idx % PALETTE.length].solid, color:"#fff", fontSize:9, fontWeight:700, padding:"1px 6px", borderRadius:10 }}>SELECTED</span>}</td>
+                                    <td style={{ padding:10, fontSize:12 }}>{(item.count||0).toLocaleString()}</td>
+                                    <td style={{ padding:10, fontSize:12 }}>{pct}%</td>
+                                </tr>
+                            );
+                        })}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    );
+}
+
+/* ═══════════════════ OntologyViewer ══════════════════════ */
+function OntologyViewer(props) {
+    var dotString = props.dotString, pickingEnabled = props.pickingEnabled, onPickLabel = props.onPickLabel, apiRef = props.apiRef;
+    const containerRef = useRef(null);
+    const svgRef       = useRef(null);
+    const innerGRef    = useRef(null);
+    const zoomRef      = useRef(null);
+    const graphvizRef  = useRef(null);
+
+    var resetView = useCallback(function(animate) {
+        if (animate === undefined) animate = true;
+        if (!svgRef.current || !innerGRef.current || !containerRef.current) return;
+        var width = containerRef.current.clientWidth, height = containerRef.current.clientHeight || 400;
+        svgRef.current.attr('style', 'width:' + width + 'px;height:' + height + 'px;pointer-events:all;');
+        var bbox = innerGRef.current.node().getBBox(), padding = 60;
+        var scale = Math.min((width-padding)/Math.max(bbox.width,10), (height-padding)/Math.max(bbox.height,10), 1.1);
+        var tx = width/2 - (bbox.x + bbox.width/2)*scale;
+        var ty = height/2 - (bbox.y + bbox.height/2)*scale;
+        var target = d3.zoomIdentity.translate(tx, ty).scale(scale);
+        if (animate) svgRef.current.transition().duration(750).call(zoomRef.current.transform, target);
+        else svgRef.current.call(zoomRef.current.transform, target);
+    }, []);
+
+    var highlightOnGraph = useCallback(function(labelSet) {
+        if (!innerGRef.current) return;
+        // Clear all highlights first
+        innerGRef.current.selectAll('.node, .edge').classed('node-highlight', false).classed('edge-highlight', false).classed('dimmed', false);
+        if (!labelSet || labelSet.length === 0) return;
+        var cleanLabels = labelSet.map(function(l){ return l.trim().toLowerCase().replace(/\s+/g, ''); });
+        innerGRef.current.selectAll('.node, .edge').each(function() {
+            var el = d3.select(this);
+            var text = el.text().toLowerCase().replace(/\s+/g, '');
+            if (cleanLabels.some(function(label){ return text.includes(label); })) {
+                el.classed(el.classed('node') ? 'node-highlight' : 'edge-highlight', true);
+            } else {
+                el.classed('dimmed', true);
+            }
+        });
+    }, []);
+
+    // Expose resetView and highlightOnGraph to parent via apiRef
+    useEffect(function() {
+        if (apiRef) apiRef.current = { resetView: resetView, highlightOnGraph: highlightOnGraph };
+    }, [apiRef, resetView, highlightOnGraph]);
+
+    // Auto-refit when container is resized (e.g. by SplitPane drag)
+    useEffect(function() {
+        if (!containerRef.current) return;
+        var debounceTimer = null;
+        var ro = new ResizeObserver(function() {
+            clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(function() { resetView(false); }, 100);
+        });
+        ro.observe(containerRef.current);
+        return function() { clearTimeout(debounceTimer); ro.disconnect(); };
+    }, [resetView]);
+
+    // Attach click handlers
+    var attachClicks = useCallback(function() {
+        if (!innerGRef.current) return;
+        innerGRef.current.selectAll('.node, .edge')
+            .style('cursor', 'pointer').style('pointer-events', 'all')
+            .on('click', function(e) {
+                if (!pickingEnabled) return;
+                var text = '';
+                d3.select(this).selectAll('text').each(function() { text += ' ' + d3.select(this).text(); });
+                if (onPickLabel) onPickLabel(text.trim());
+                e.stopPropagation();
+            });
+    }, [pickingEnabled, onPickLabel]);
+
+    useEffect(function() {
+        if (!dotString || !containerRef.current) return;
+        var container = d3.select(containerRef.current);
+        container.html('<p style="padding:20px;color:#636e72;animation:pulse 1.5s infinite">Calculating Layout…</p>');
+
+        (async function() {
+            try {
+                if (!graphvizRef.current) {
+                    graphvizRef.current = await window["@hpcc-js/wasm"].Graphviz.load();
+                }
+                var svgStr = graphvizRef.current.layout(dotString, 'svg', 'dot');
+                container.html(svgStr);
+                svgRef.current = container.select('svg');
+                svgRef.current.attr('width', null).attr('height', null).attr('viewBox', null);
+                innerGRef.current = svgRef.current.select('g');
+                attachClicks();
+                zoomRef.current = d3.zoom().scaleExtent([0.01, 10]).on('zoom', function(event) { innerGRef.current.attr('transform', event.transform); });
+                svgRef.current.call(zoomRef.current);
+                resetView(false);
+                // Re-publish after render since innerGRef is now populated
+                if (apiRef) apiRef.current = { resetView: resetView, highlightOnGraph: highlightOnGraph };
+            } catch(err) {
+                container.html('<span style="color:#d63031;padding:20px;">Layout Error: ' + err.message + '</span>');
+            }
+        })();
+    }, [dotString]);
+
+    // Re-bind clicks when picking toggle changes
+    useEffect(function() { attachClicks(); }, [attachClicks]);
+
+    return (
+        <div style={{ background:'#fff', borderRadius:12, boxShadow:'0 2px 8px rgba(0,0,0,0.04)', padding:10, marginBottom:0, flex:1, display:'flex', flexDirection:'column', minHeight:0, overflow:'hidden' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
+                <h2 style={{ margin:0, fontSize:12, fontWeight:700, color:'#fd9644' }}>Graph Ontology</h2>
+                <button onClick={function(){ resetView(true); }} style={{ padding:'6px 14px', fontSize:11, fontWeight:700, color:'#fff', background:'#0984e3', border:'none', borderRadius:6, cursor:'pointer', fontFamily:'inherit' }}>Reset View</button>
+            </div>
+            <div ref={containerRef} style={{ width:'100%', flex:1, minHeight:200, background:'#fafafa', border:'1px solid #eee', borderRadius:8, overflow:'hidden', cursor:'grab' }}/>
+        </div>
+    );
+}
+
+/* ═══════════════════ DashboardHeader ═════════════════════ */
+function DashboardHeader(props) {
+    var graphName = props.graphName, server = props.server, lastRefresh = props.lastRefresh, pickingEnabled = props.pickingEnabled;
+    var onTogglePicking = props.onTogglePicking, onRefresh = props.onRefresh, onOntology = props.onOntology, onQuery = props.onQuery, onSave = props.onSave, onLoad = props.onLoad, autoRunQueries = props.autoRunQueries, onToggleAutoRun = props.onToggleAutoRun, loading = props.loading;
+    var autoRefresh = props.autoRefresh, autoInterval = props.autoInterval, onToggleAutoRefresh = props.onToggleAutoRefresh, onChangeInterval = props.onChangeInterval;
+    const [elapsed, setElapsed] = useState('');
+
+    useEffect(function() {
+        if (!lastRefresh) return;
+        var id = setInterval(function() { setElapsed(formatElapsed(Date.now() - lastRefresh)); }, 1000);
+        return function() { clearInterval(id); };
+    }, [lastRefresh]);
+
+    var smallBtn = function(label, color, onClick) {
+        return (
+            <button onClick={onClick} disabled={loading} style={{
+                padding:'4px 10px', border:'none', borderRadius:4, cursor: loading ? 'not-allowed':'pointer',
+                fontWeight:700, color:'#fff', background:color, fontSize:10, whiteSpace:'nowrap',
+                opacity: loading ? 0.5:1, transition:'0.2s', fontFamily:'inherit',
+            }}>{label}</button>
+        );
+    };
+
+    return (
+        <div style={{ marginBottom:8, borderBottom:'1px solid #eee', paddingBottom:6 }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:6 }}>
+                <div style={{ fontSize:11, color:'#636e72', lineHeight:1.4 }}>
+                    <span style={{ fontWeight:800, fontSize:13, color:'#2d3436' }}>{graphName}</span>
+                    <span style={{ margin:'0 6px', color:'#ddd' }}>|</span>
+                    <span>{server}</span>
+                    {lastRefresh && <span style={{ margin:'0 6px', color:'#ddd' }}>|</span>}
+                    {lastRefresh && <span>Updated: {new Date(lastRefresh).toLocaleTimeString()} <span style={{ color:'#0984e3' }}>({elapsed})</span></span>}
+                </div>
+                <div style={{ display:'flex', gap:4, alignItems:'center', flexWrap:'wrap' }}>
+                    <div onClick={onTogglePicking} style={{ display:'inline-flex', alignItems:'center', gap:4, background:'#f1f2f6', padding:'3px 8px', borderRadius:4, cursor:'pointer', userSelect:'none', fontSize:10, fontWeight:700, color: pickingEnabled ? '#00b894':'#636e72' }}>
+                        Pick
+                        <div style={{ width:24, height:12, borderRadius:20, position:'relative', background: pickingEnabled ? '#00b894':'#ccc', transition:'0.2s' }}>
+                            <div style={{ width:8, height:8, borderRadius:'50%', background:'#fff', position:'absolute', top:2, left: pickingEnabled ? 14:2, transition:'0.2s' }}/>
+                        </div>
+                    </div>
+                    {smallBtn('Ontology', '#fd9644', onOntology)}
+                    {smallBtn('Query', '#6c5ce7', onQuery)}
+                    {smallBtn('Refresh', '#00b894', onRefresh)}
+                    {smallBtn('Save', '#636e72', onSave)}
+                    <label style={{ padding:'4px 10px', border:'none', borderRadius:4, cursor:'pointer', fontWeight:700, color:'#fff', background:'#636e72', fontSize:10, whiteSpace:'nowrap', transition:'0.2s', fontFamily:'inherit', display:'inline-block' }}>
+                        Load<input type="file" accept=".json" style={{ display:'none' }} onChange={function(e){ if (e.target.files[0] && onLoad) { onLoad(e.target.files[0]); e.target.value = ''; } }} />
+                    </label>
+                    <div onClick={onToggleAutoRun} style={{ display:'inline-flex', alignItems:'center', gap:3, background:'#f1f2f6', padding:'3px 6px', borderRadius:4, cursor:'pointer', userSelect:'none' }}>
+                        <span style={{ fontSize:9, fontWeight:700, color: autoRunQueries ? '#6c5ce7':'#636e72' }}>Auto-run</span>
+                        <div style={{ width:24, height:12, borderRadius:20, position:'relative', background: autoRunQueries ? '#6c5ce7':'#ccc', transition:'0.2s' }}>
+                            <div style={{ width:8, height:8, borderRadius:'50%', background:'#fff', position:'absolute', top:2, left: autoRunQueries ? 14:2, transition:'0.2s' }}/>
+                        </div>
+                    </div>
+                    <div style={{ display:'inline-flex', alignItems:'center', gap:4, background: autoRefresh ? '#e8f8f5':'#f1f2f6', padding:'3px 6px', borderRadius:4 }}>
+                        <div onClick={onToggleAutoRefresh} style={{ display:'inline-flex', alignItems:'center', gap:3, cursor:'pointer', userSelect:'none' }}>
+                            <span style={{ fontSize:10, fontWeight:700, color: autoRefresh ? '#00b894':'#636e72' }}>Auto</span>
+                            <div style={{ width:24, height:12, borderRadius:20, position:'relative', background: autoRefresh ? '#00b894':'#ccc', transition:'0.2s' }}>
+                                <div style={{ width:8, height:8, borderRadius:'50%', background:'#fff', position:'absolute', top:2, left: autoRefresh ? 14:2, transition:'0.2s' }}/>
+                            </div>
+                        </div>
+                        {autoRefresh && (
+                            <select value={autoInterval} onChange={function(e){ onChangeInterval(parseInt(e.target.value)); }} style={{ fontSize:10, border:'1px solid #ddd', borderRadius:3, padding:'1px 2px', fontFamily:'inherit' }}>
+                                <option value={5}>5s</option><option value={10}>10s</option><option value={15}>15s</option>
+                                <option value={30}>30s</option><option value={60}>60s</option><option value={300}>5m</option>
+                            </select>
+                        )}
+                    </div>
+                    {loading && <span style={{ fontSize:10, color:'#0984e3', fontWeight:700 }}>\u23F3</span>}
+                </div>
+            </div>
+        </div>
+    );
+}
+
+/* ═══════════════════ QueryPanel (unified SQL + results + visualization) ════ */
+function QueryPanel(props) {
+    var onClose = props.onClose, credentials = props.credentials, labelData = props.labelData, panelIndex = props.panelIndex || 0;
+    var initialSql = props.initialSql || '', initialTab = props.initialTab || null, stateRef = props.stateRef, autoRun = props.autoRun;
+    const [sql, setSql] = useState(initialSql);
+    const [result, setResult] = useState(null);
+    const [error, setError] = useState(null);
+    const [loading, setLoading] = useState(false);
+    const [pos, setPos] = useState({ x: 120 + panelIndex * 30, y: 60 + panelIndex * 30 });
+    const [size, setSize] = useState({ w: 600, h: 460 });
+    const [activeTab, setActiveTab] = useState(initialTab); // null | 'results' | 'graph'
+    var graphContainerRef = useRef(null);
+    var graphRef = useRef(null);
+
+    // Auto-run query on mount if autoRun is set
+    var didAutoRun = useRef(false);
+    useEffect(function() {
+        if (autoRun && initialSql && !didAutoRun.current) {
+            didAutoRun.current = true;
+            executeQuery(initialSql);
+        }
+    }, []);
+
+    // Expose current state for session save
+    useEffect(function() {
+        if (stateRef) stateRef.current = { sql: sql, activeTab: activeTab };
+    }, [sql, activeTab, stateRef]);
+
+    // Execute query
+    var executeQuery = async function(statement) {
+        if (!credentials || !credentials.url) return;
+        setError(null); setResult(null); setLoading(true);
+        try {
+            var hdrs = { "Content-Type": "application/json" };
+            if (credentials.user || credentials.pass) {
+                hdrs["Authorization"] = "Basic " + btoa(credentials.user + ":" + credentials.pass);
+            }
+            var res = await fetch(credentials.url + '/execute/sql', {
+                method: "POST", headers: hdrs,
+                body: JSON.stringify({ statement: statement, offset: 0, limit: 10000, encoding: "json" }),
+            });
+            if (!res.ok) {
+                var errText = await res.text().catch(function() { return res.statusText; });
+                throw new Error("HTTP " + res.status + ": " + errText);
+            }
+            setResult(await res.json());
+        } catch(err) { setError(err.message); }
+        finally { setLoading(false); }
+    };
+
+    // Draggable title bar
+    var handleDragStart = function(e) {
+        e.preventDefault();
+        var startX = e.clientX, startY = e.clientY, startPos = { x: pos.x, y: pos.y };
+        var onMove = function(ev) { setPos({ x: startPos.x + ev.clientX - startX, y: startPos.y + ev.clientY - startY }); };
+        var onUp = function() { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+        document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp);
+    };
+
+    // Resizable from bottom-right corner
+    var handleResizeStart = function(e) {
+        e.preventDefault(); e.stopPropagation();
+        var startX = e.clientX, startY = e.clientY, startSize = { w: size.w, h: size.h };
+        var onMove = function(ev) { setSize({ w: Math.max(400, startSize.w + ev.clientX - startX), h: Math.max(250, startSize.h + ev.clientY - startY) }); };
+        var onUp = function() { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+        document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp);
+    };
+
+    var handleKeyDown = function(e) {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+            e.preventDefault();
+            if (sql.trim() && !loading) executeQuery(sql.trim());
+        }
+    };
+
+    // ─── Helper: parse column-oriented object into rows ───
+    var parseColumnar = function(obj) {
+        var headers = obj.column_headers || [];
+        var datatypes = obj.column_datatypes || [];
+        var numCols = headers.length;
+        var numRows = numCols > 0 && obj['column_1'] ? obj['column_1'].length : 0;
+        var rows = [];
+        for (var r = 0; r < numRows; r++) {
+            var row = {};
+            for (var c = 0; c < numCols; c++) {
+                row[headers[c]] = obj['column_' + (c + 1)] ? obj['column_' + (c + 1)][r] : null;
+            }
+            rows.push(row);
+        }
+        return { headers: headers, datatypes: datatypes, rows: rows };
+    };
+
+    // ─── Unwrap result (memoized) ───
+    var inner = useMemo(function() {
+        if (!result) return null;
+        var i = result;
+        if (result.data_str) { var ds = safeParse(result.data_str); if (ds) i = ds; }
+        return i;
+    }, [result]);
+
+    var info = inner ? (inner.info || {}) : {};
+    var count = parseInt(info.count || (inner && inner.count_affected) || '0', 10);
+
+    // ─── "View Results" table: from json_encoded_response (RETURN statement columns) ───
+    var tableData = useMemo(function() {
+        if (!inner) return { headers: [], datatypes: [], rows: [] };
+        var jer = safeParse(inner.json_encoded_response);
+        if (jer && typeof jer === 'object' && !Array.isArray(jer) && jer.column_headers) {
+            return parseColumnar(jer);
+        }
+        // Fallback: use gql_result if no json_encoded_response
+        var gql = safeParse(info.gql_result);
+        if (gql && typeof gql === 'object' && gql.column_headers) {
+            return parseColumnar(gql);
+        }
+        return { headers: [], datatypes: [], rows: [] };
+    }, [inner]);
+
+    // ─── "Visualization" graph: from gql_result (hop-based path columns) ───
+    var graphParsed = useMemo(function() {
+        if (!inner) return { headers: [], rows: [] };
+        var gql = safeParse(info.gql_result);
+        if (gql && typeof gql === 'object' && gql.column_headers) {
+            return parseColumnar(gql);
+        }
+        return { headers: [], rows: [] };
+    }, [inner]);
+
+    var hasHops = graphParsed.headers.some(function(h) { return /^NODE1_HOP_/.test(h); });
+    var hasResults = tableData.rows.length > 0 || graphParsed.rows.length > 0;
+
+    // ─── Graph visualization data ───
+    // Build color map once from initial labelData; ignore subsequent refreshes
+    var initialLabelData = useRef(null);
+    if (labelData && !initialLabelData.current) initialLabelData.current = labelData;
+    var labelColorMap = useMemo(function() {
+        var map = {};
+        var ld = initialLabelData.current;
+        if (ld) {
+            var nl = [].concat(ld.node_labels || []).sort(function(a, b) { return b.count - a.count; });
+            nl.forEach(function(item, idx) { (item.labels || []).forEach(function(l) { map[l] = PALETTE[idx % PALETTE.length].solid; }); });
+            var el = [].concat(ld.edge_labels || []).sort(function(a, b) { return b.count - a.count; });
+            el.forEach(function(item, idx) { (item.labels || []).forEach(function(l) { if (!map[l]) map[l] = PALETTE[(nl.length + idx) % PALETTE.length].solid; }); });
+        }
+        return map;
+    }, [initialLabelData.current]);
+
+    var getColor = function(label) { return labelColorMap[label] || '#b2bec3'; };
+
+    var graphData = useMemo(function() {
+        if (!hasHops || graphParsed.rows.length === 0) return { nodes: [], links: [], maxDegree: 1 };
+        var gHeaders = graphParsed.headers, gRows = graphParsed.rows;
+        var nodeMap = {}, linkMap = {};
+        var parseLabel = function(val) {
+            if (!val) return '';
+            if (typeof val === 'string' && val.charAt(0) === '[') {
+                try { var arr = JSON.parse(val); return Array.isArray(arr) ? arr.join(', ') : val; } catch(e) { return val; }
+            }
+            return val;
+        };
+        var maxHop = 0;
+        gHeaders.forEach(function(h) { var m = h.match(/_HOP_(\d+)$/); if (m) { var n = parseInt(m[1]); if (n > maxHop) maxHop = n; } });
+        gRows.forEach(function(row) {
+            for (var hop = 1; hop <= maxHop; hop++) {
+                var n1id = row['NODE1_HOP_' + hop], n2id = row['NODE2_HOP_' + hop];
+                if (!n1id || !n2id) continue;
+                var n1label = parseLabel(row['NODE1_LABELS_HOP_' + hop]);
+                var n2label = parseLabel(row['NODE2_LABELS_HOP_' + hop]);
+                var edgeLabel = parseLabel(row['EDGE_LABELS_HOP_' + hop]);
+                if (!nodeMap[n1id]) nodeMap[n1id] = { id: n1id, label: n1label, color: getColor(n1label), degree: 0 };
+                if (!nodeMap[n2id]) nodeMap[n2id] = { id: n2id, label: n2label, color: getColor(n2label), degree: 0 };
+                var linkKey = n1id + '\u2192' + n2id + '|' + edgeLabel;
+                if (!linkMap[linkKey]) {
+                    linkMap[linkKey] = { source: n1id, target: n2id, edgeLabel: edgeLabel, color: getColor(edgeLabel) || '#636e72' };
+                    nodeMap[n1id].degree++; nodeMap[n2id].degree++;
+                }
+            }
+        });
+        var nodes = Object.values(nodeMap), links = Object.values(linkMap), maxDegree = 1;
+        nodes.forEach(function(n) { if (n.degree > maxDegree) maxDegree = n.degree; });
+        return { nodes: nodes, links: links, maxDegree: maxDegree };
+    }, [graphParsed, labelColorMap]);
+
+    var legendItems = useMemo(function() {
+        var seen = {}, items = [];
+        graphData.nodes.forEach(function(n) { if (n.label && !seen['n:' + n.label]) { seen['n:' + n.label] = true; items.push({ type: 'node', label: n.label, color: n.color }); } });
+        graphData.links.forEach(function(l) { if (l.edgeLabel && !seen['e:' + l.edgeLabel]) { seen['e:' + l.edgeLabel] = true; items.push({ type: 'edge', label: l.edgeLabel, color: l.color }); } });
+        return items;
+    }, [graphData]);
+
+    // ─── Force-graph lifecycle ───
+    useEffect(function() {
+        if (activeTab !== 'graph' || !graphContainerRef.current || graphData.nodes.length === 0) return;
+        if (graphRef.current) { graphRef.current._destructor && graphRef.current._destructor(); graphRef.current = null; }
+        graphContainerRef.current.innerHTML = '';
+
+        var width = graphContainerRef.current.clientWidth || 600;
+        var height = graphContainerRef.current.clientHeight || 400;
+        var maxDeg = graphData.maxDegree || 1;
+        var nodeRadius = function(d) { return 4 + Math.sqrt((d.degree || 0) / maxDeg) * 14; };
+
+        var graph = new ForceGraph(graphContainerRef.current)
+            .width(width).height(height)
+            .backgroundColor('#0a0a1a')
+            .graphData(graphData)
+            .nodeId('id')
+            .nodeVal(function(n) { return n.degree || 1; })
+            .nodeCanvasObjectMode(function() { return 'replace'; })
+            .nodeCanvasObject(function(node, ctx, globalScale) {
+                var r = nodeRadius(node);
+                ctx.shadowColor = node.color || '#b2bec3'; ctx.shadowBlur = 6;
+                ctx.beginPath(); ctx.arc(node.x, node.y, r, 0, 2 * Math.PI, false);
+                ctx.fillStyle = node.color || '#b2bec3'; ctx.globalAlpha = 0.85; ctx.fill();
+                ctx.globalAlpha = 1.0; ctx.shadowBlur = 0;
+                if (globalScale > 0.4) {
+                    var fontSize = Math.max(r * 0.5, 3);
+                    ctx.font = 'bold ' + fontSize + 'px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff';
+                    var text = node.label || ''; if (text.length > 16) text = text.substring(0, 14) + '\u2026';
+                    ctx.fillText(text, node.x, node.y);
+                }
+                if (globalScale > 0.8) {
+                    var idFontSize = Math.max(r * 0.35, 2.5);
+                    ctx.font = idFontSize + 'px sans-serif'; ctx.fillStyle = 'rgba(255,255,255,0.6)';
+                    var idText = node.id; if (idText.length > 20) idText = idText.substring(0, 8) + '\u2026' + idText.substring(idText.length - 6);
+                    ctx.fillText(idText, node.x, node.y + r + idFontSize + 1);
+                }
+            })
+            .nodeLabel(function(n) { return n.id + (n.label ? ' [' + n.label + ']' : ''); })
+            .linkSource('source').linkTarget('target')
+            .linkColor(function(l) { return l.color || 'rgba(255,255,255,0.2)'; })
+            .linkWidth(1.5)
+            .linkLabel(function(l) { return l.edgeLabel || ''; })
+            .linkDirectionalArrowLength(6).linkDirectionalArrowRelPos(1)
+            .linkDirectionalParticles(1).linkDirectionalParticleWidth(2)
+            .linkDirectionalParticleColor(function(l) { return l.color || '#fff'; })
+            .d3Force('charge', d3.forceManyBody().strength(-200))
+            .d3Force('link', d3.forceLink().id(function(n) { return n.id; }).distance(80));
+
+        graphRef.current = graph;
+        return function() { if (graphRef.current) { graphRef.current._destructor && graphRef.current._destructor(); graphRef.current = null; } };
+    }, [activeTab, graphData]);
+
+    // Resize force-graph when container resizes (via ResizeObserver)
+    useEffect(function() {
+        if (activeTab !== 'graph' || !graphContainerRef.current) return;
+        var debounce = null;
+        var ro = new ResizeObserver(function() {
+            clearTimeout(debounce);
+            debounce = setTimeout(function() {
+                if (!graphRef.current || !graphContainerRef.current) return;
+                var w = graphContainerRef.current.clientWidth || 600;
+                var h = graphContainerRef.current.clientHeight || 400;
+                graphRef.current.width(w).height(h).zoomToFit(300, 40);
+            }, 50);
+        });
+        ro.observe(graphContainerRef.current);
+        return function() { clearTimeout(debounce); ro.disconnect(); };
+    }, [activeTab]);
+
+    // Auto-expand when switching to a tab
+    var handleTab = function(tab) {
+        setActiveTab(function(prev) { return prev === tab ? null : tab; });
+        if (size.h < 500) setSize(function(s) { return { w: Math.max(s.w, 640), h: 560 }; });
+    };
+
+    // ─── Tab button helper ───
+    var tabBtn = function(id, label) {
+        var active = activeTab === id;
+        return (
+            <button onClick={function() { handleTab(id); }} style={{
+                padding:'5px 14px', border:'none', borderRadius:6, cursor:'pointer',
+                fontWeight:700, fontSize:11, fontFamily:'inherit', transition:'0.15s',
+                color: active ? '#fff' : '#636e72',
+                background: active ? '#6c5ce7' : '#e8e8ee',
+            }}>{label}</button>
+        );
+    };
+
+    return (
+        <div style={{
+            position:'fixed', left:pos.x, top:pos.y, width:size.w, height:size.h,
+            background:'#fff', borderRadius:12, boxShadow:'0 8px 32px rgba(0,0,0,0.18)',
+            border:'1px solid #dfe6e9', zIndex:1000, display:'flex', flexDirection:'column',
+            overflow:'hidden', fontFamily:'inherit',
+        }}>
+            {/* Title bar */}
+            <div onMouseDown={handleDragStart} style={{
+                display:'flex', justifyContent:'space-between', alignItems:'center',
+                padding:'8px 12px', background:'#6c5ce7', color:'#fff', cursor:'move',
+                flexShrink:0, userSelect:'none',
+            }}>
+                <span style={{ fontWeight:700, fontSize:12 }}>
+                    SQL Query{count > 0 ? ' — ' + count + ' record' + (count !== 1 ? 's' : '') : ''}
+                </span>
+                <button onClick={onClose} style={{
+                    border:'none', background:'rgba(255,255,255,0.2)', color:'#fff',
+                    borderRadius:4, cursor:'pointer', fontWeight:700, fontSize:12,
+                    padding:'2px 8px', fontFamily:'inherit',
+                }}>{'\u2715'}</button>
+            </div>
+
+            {/* SQL input area */}
+            <div style={{ display:'flex', flexDirection:'column', padding:10, gap:8, flexShrink:0, maxHeight: activeTab ? 240 : undefined, minHeight:120 }}>
+                <textarea
+                    value={sql} onChange={function(e){ setSql(e.target.value); }}
+                    onKeyDown={handleKeyDown}
+                    placeholder="Enter SQL query... (Ctrl+Enter to run)"
+                    spellCheck="false"
+                    style={{
+                        flex:1, resize:'none', border:'1px solid #dfe6e9', borderRadius:6,
+                        padding:10, fontFamily:'monospace', fontSize:12, outline:'none',
+                        minHeight: activeTab ? 120 : 160, background:'#fafafa',
+                    }}
+                />
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                    <span style={{ fontSize:10, color:'#b2bec3' }}>Ctrl+Enter to run</span>
+                    <button onClick={function(){ if (sql.trim()) executeQuery(sql.trim()); }} disabled={loading || !sql.trim()} style={{
+                        padding:'6px 18px', border:'none', borderRadius:6, cursor: loading || !sql.trim() ? 'not-allowed':'pointer',
+                        fontWeight:700, color:'#fff', background: loading ? '#a29bfe':'#6c5ce7',
+                        fontSize:11, fontFamily:'inherit', transition:'0.2s',
+                    }}>{loading ? 'Running\u2026' : 'Run'}</button>
+                </div>
+                {error && <div style={{ fontSize:11, color:'#d63031', fontWeight:600, padding:6, background:'#ffeaea', borderRadius:6, maxHeight:40, overflow:'auto' }}>{error}</div>}
+            </div>
+
+            {/* Action buttons — only shown after results */}
+            {result && hasResults && (
+                <div style={{ display:'flex', gap:6, padding:'6px 10px', flexShrink:0, borderTop:'1px solid #eee' }}>
+                    {tableData.rows.length > 0 && tabBtn('results', 'View Results (' + tableData.rows.length + ')')}
+                    {hasHops && tabBtn('graph', 'Visualization (' + graphData.nodes.length + ' nodes)')}
+                </div>
+            )}
+
+            {/* Tab content */}
+            {activeTab === 'results' && (
+                <div style={{ flex:1, overflow:'auto', padding:8, minHeight:0 }}>
+                    {tableData.rows.length === 0 ? (
+                        <div style={{ padding:20, textAlign:'center', color:'#b2bec3', fontSize:12 }}>No records.</div>
+                    ) : (
+                        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:11, minWidth: tableData.headers.length * 100 }}>
+                            <thead><tr>
+                                {tableData.headers.map(function(h, i) {
+                                    return (
+                                        <th key={i} style={{ position:'sticky', top:0, background:'#f1f2f6', padding:'6px 8px', textAlign:'left', fontWeight:700, fontSize:10, color:'#636e72', whiteSpace:'nowrap', borderBottom:'2px solid #dfe6e9' }}>
+                                            {h}
+                                            {tableData.datatypes[i] && <span style={{ display:'block', fontSize:9, fontWeight:400, color:'#b2bec3' }}>{tableData.datatypes[i]}</span>}
+                                        </th>
+                                    );
+                                })}
+                            </tr></thead>
+                            <tbody>
+                                {tableData.rows.map(function(row, rowIdx) {
+                                    return (
+                                        <tr key={rowIdx} style={{ borderBottom:'1px solid #f1f2f6', background: rowIdx % 2 === 0 ? '#fff':'#fafafa' }}>
+                                            {tableData.headers.map(function(h, colIdx) {
+                                                var val = row[h];
+                                                return <td key={colIdx} style={{ padding:'5px 8px', maxWidth:250, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{val == null ? '' : String(val)}</td>;
+                                            })}
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    )}
+                </div>
+            )}
+
+            {activeTab === 'graph' && (
+                <div style={{ flex:1, display:'flex', flexDirection:'column', minHeight:0 }}>
+                    {legendItems.length > 0 && (
+                        <div style={{ display:'flex', flexWrap:'wrap', gap:6, padding:'6px 10px', background:'#1a1a2e', flexShrink:0 }}>
+                            {legendItems.map(function(item, i) {
+                                return (
+                                    <span key={i} style={{ display:'inline-flex', alignItems:'center', gap:4, fontSize:10, color:'#dfe6e9' }}>
+                                        {item.type === 'node'
+                                            ? <span style={{ width:10, height:10, borderRadius:'50%', background:item.color, display:'inline-block' }}/>
+                                            : <span style={{ width:14, height:3, background:item.color, display:'inline-block', borderRadius:2 }}/>}
+                                        {item.label}
+                                    </span>
+                                );
+                            })}
+                        </div>
+                    )}
+                    <div ref={graphContainerRef} style={{ flex:1, minHeight:0 }}/>
+                </div>
+            )}
+
+            {/* Resize handle */}
+            <div onMouseDown={handleResizeStart} style={{
+                position:'absolute', right:0, bottom:0, width:16, height:16,
+                cursor:'nwse-resize', display:'flex', alignItems:'center', justifyContent:'center',
+            }}>
+                <div style={{ width:8, height:8, borderRight:'2px solid ' + (activeTab === 'graph' ? 'rgba(255,255,255,0.3)' : '#bbb'), borderBottom:'2px solid ' + (activeTab === 'graph' ? 'rgba(255,255,255,0.3)' : '#bbb') }}/>
+            </div>
+        </div>
+    );
+}
+
+/* ═══════════════════ WelcomeScreen ═══════════════════════ */
+function WelcomeScreen() {
+    return (
+        <div style={{ textAlign:'center', marginTop:120, color:'#b2bec3', animation:'fadeIn 0.6s ease-out' }}>
+            <img src="kinetica_graph_logo.png" style={{ height:80, marginBottom:20 }} alt="Logo" onError={function(e){ e.target.style.display='none'; }} />
+            <h2 style={{ color:'#636e72', fontWeight:700, fontSize:24, margin:'0 0 8px' }}>Kinetica Graph Explorer</h2>
+            <p style={{ fontSize:15, maxWidth:400, margin:'0 auto', lineHeight:1.6 }}>Connect to a Kinetica instance, select a graph, and explore label distributions and ontology structures.</p>
+        </div>
+    );
+}
+
+
+
+/* ═══════════════════ GraphTablePreview ═══════════════════ */
+function GraphTablePreview(props) {
+    var graphTable = props.graphTable, data = props.data, error = props.error, onFetch = props.onFetch, loading = props.loading, onVisualize = props.onVisualize, showingGraph = props.showingGraph, fetchProgress = props.fetchProgress;
+    const [showDetail, setShowDetail] = useState(false);
+
+    if (!graphTable) return null;
+
+    var renderTable = function(tableData, title) {
+        if (!tableData || !tableData.records || tableData.records.length === 0) return <p style={{ color:"#b2bec3", fontSize:12 }}>No records loaded.</p>;
+        var headers = tableData.headers || [];
+        var records = tableData.records;
+        var total = tableData.total || records.length;
+        var PREVIEW_LIMIT = 20;
+        var previewRecords = records.slice(0, PREVIEW_LIMIT);
+        return (
+            <div style={{ marginBottom:16 }}>
+                <h4 style={{ margin:"0 0 8px", fontSize:12, fontWeight:700, color:"#636e72" }}>{title} — <span style={{ color:"#0984e3" }}>{records.length.toLocaleString()}</span> loaded of {total.toLocaleString()} total</h4>
+                <div style={{ maxHeight:120, overflowY:"auto", overflowX:"auto", border:"1px solid #eee", borderRadius:6 }}>
+                    <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11, minWidth: headers.length * 120 }}>
+                        <thead><tr>
+                            {headers.map(function(h, i) {
+                                return <th key={i} style={{ position:"sticky", top:0, background:"#f1f2f6", padding:"6px 8px", textAlign:"left", fontWeight:700, fontSize:10, color:"#636e72", whiteSpace:"nowrap" }}>{h}</th>;
+                            })}
+                        </tr></thead>
+                        <tbody>
+                            {previewRecords.map(function(rec, rowIdx) {
+                                return (
+                                    <tr key={rowIdx} style={{ borderBottom:"1px solid #f1f2f6", background: rowIdx % 2 === 0 ? "#fff":"#fafafa" }}>
+                                        {headers.map(function(h, colIdx) {
+                                            var val = rec[h];
+                                            return <td key={colIdx} style={{ padding:"5px 8px", maxWidth:200, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{val == null ? "" : String(val)}</td>;
+                                        })}
+                                    </tr>
+                                );
+                            })}
+                            {records.length > PREVIEW_LIMIT && (
+                                <tr><td colSpan={headers.length} style={{ padding:8, textAlign:"center", fontSize:11, color:"#636e72", fontStyle:"italic" }}>{"\u2026and " + (records.length - PREVIEW_LIMIT).toLocaleString() + " more rows (preview only)"}</td></tr>
+                            )}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        );
+    };
+
+    // Check if visualization is possible (case-insensitive)
+    var eH = (data && data.edges && data.edges.headers) || [];
+    var canVisualize = eH.length > 0 && resolveCol(eH, ["NODE1_NAME","EDGE_NODE1_NAME"]) !== null && resolveCol(eH, ["NODE2_NAME","EDGE_NODE2_NAME"]) !== null && resolveCol(eH, ["EDGE_WKTLINE","WKTLINE"]) === null;
+    // end canVisualize
+
+
+
+    return (
+        <div style={{ background:"#fff", borderRadius:12, boxShadow:"0 2px 8px rgba(0,0,0,0.04)", padding:8, marginBottom:0, borderLeft:"6px solid #0984e3" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12, flexWrap:"wrap", gap:8 }}>
+                <div>
+                    <h2 style={{ margin:0, fontSize:12, fontWeight:700, color:"#2d3436" }}>Graph Table Data</h2>
+                    <p style={{ margin:"4px 0 0", fontSize:12, color:"#636e72" }}>Edges: <strong>{graphTable}</strong> &nbsp;|&nbsp; Nodes: <strong>{graphTable}_nodes</strong></p>
+                </div>
+                <div style={{ display:"flex", gap:8 }}>
+                    <button onClick={onFetch} disabled={loading} style={{
+                        padding:"8px 16px", border:"none", borderRadius:6, cursor: loading ? "not-allowed":"pointer",
+                        fontWeight:700, color:"#fff", background: loading ? "#74b9ff":"#0984e3", fontSize:12, fontFamily:"inherit", transition:"0.2s"
+                    }}>{loading ? (fetchProgress ? ("\u23F3 Edges: " + (fetchProgress.edgesDone || 0).toLocaleString() + "/" + (fetchProgress.edgesTotal || "?").toLocaleString() + " Nodes: " + (fetchProgress.nodesDone || 0).toLocaleString() + "/" + (fetchProgress.nodesTotal || "?").toLocaleString()) : "Fetching\u2026") : "\uD83D\uDCCA Fetch All Data"}</button>
+                    {canVisualize && (
+                        <button onClick={onVisualize} style={{
+                            padding:"8px 16px", border:"none", borderRadius:6, cursor:"pointer",
+                            fontWeight:700, color:"#fff", background: showingGraph ? "#636e72" : "#00cec9", fontSize:12, fontFamily:"inherit", transition:"0.2s"
+                        }}>{showingGraph ? "\u2715 Hide Graph" : "\uD83D\uDD17 Visualize"}</button>
+                    )}
+                    {data && <button onClick={function(){ setShowDetail(function(p){ return !p; }); }} style={{ padding:"6px 12px", border:"none", borderRadius:6, cursor:"pointer", fontWeight:700, color: showDetail ? "#fff" : "#636e72", background: showDetail ? "#636e72" : "#f1f2f6", fontSize:11, fontFamily:"inherit" }}>{showDetail ? "\u25B2 Hide Tables" : "\u25BC Show Tables"}</button>}
+                </div>
+            </div>
+            {error && <p style={{ color:"#d63031", fontSize:12, fontWeight:600 }}>Error: {error}</p>}
+            {fetchProgress && (
+                <div style={{ marginBottom:12 }}>
+                    <div style={{ display:"flex", gap:16, fontSize:11, fontWeight:600, color:"#636e72", marginBottom:6 }}>
+                        <span>Edges: {typeof fetchProgress.edgesDone === "number" ? fetchProgress.edgesDone.toLocaleString() : "0"} / {typeof fetchProgress.edgesTotal === "number" ? fetchProgress.edgesTotal.toLocaleString() : "?"}</span>
+                        <span>Nodes: {typeof fetchProgress.nodesDone === "number" ? fetchProgress.nodesDone.toLocaleString() : "0"} / {typeof fetchProgress.nodesTotal === "number" ? fetchProgress.nodesTotal.toLocaleString() : "?"}</span>
+                    </div>
+                    <div style={{ height:6, background:"#eee", borderRadius:3, overflow:"hidden" }}>
+                        <div style={{ height:"100%", borderRadius:3, background:"linear-gradient(90deg, #0984e3, #00cec9)", transition:"width 0.3s",
+                            width: (function(){ var eT = fetchProgress.edgesTotal || 1; var nT = fetchProgress.nodesTotal || 1; var eD = fetchProgress.edgesDone || 0; var nD = fetchProgress.nodesDone || 0; return Math.round((eD + nD) / (eT + nT) * 100) + "%"; })()
+                        }}/>
+                    </div>
+                </div>
+            )}
+            {showDetail && data && renderTable(data.edges, "Edges (" + data.edgeTable + ")")}
+            {showDetail && data && renderTable(data.nodes, "Nodes (" + data.nodeTable + ")")}
+        </div>
+    );
+}
+
+/* ═══════════════════ CanvasGraph (force-graph Canvas) ═════ */
+function CanvasGraph(props) {
+    var graphTableData = props.data, graphName = props.graphName, selectedNodeLabels = props.selectedNodeLabels || [], selectedEdgeLabels = props.selectedEdgeLabels || [];
+    var containerRef = useRef(null);
+    var graphRef = useRef(null);
+    const [nodeLimit, setNodeLimit] = useState(500);
+    const [edgeLimit, setEdgeLimit] = useState(2000);
+    const [focusNode, setFocusNode] = useState(null);
+    const [hoverNode, setHoverNode] = useState(null);
+
+    var edgeHeaders = graphTableData.edges.headers;
+    var nodeHeaders = graphTableData.nodes.headers;
+    var colN1 = resolveCol(edgeHeaders, ["NODE1_NAME", "EDGE_NODE1_NAME"]);
+    var colN2 = resolveCol(edgeHeaders, ["NODE2_NAME", "EDGE_NODE2_NAME"]);
+    var colEdgeLabel = resolveCol(edgeHeaders, ["EDGE_LABEL"]);
+    var colDir = resolveCol(edgeHeaders, ["EDGE_DIRECTION"]);
+    var colWeight = resolveCol(edgeHeaders, ["WEIGHTS_VALUESPECIFIED"]);
+    var colNodeName = resolveCol(nodeHeaders, ["NODE_NAME"]);
+    var colNodeLabel = resolveCol(nodeHeaders, ["NODE_LABEL"]);
+    var hasWkt = resolveCol(edgeHeaders, ["EDGE_WKTLINE", "WKTLINE"]) !== null;
+
+    if (hasWkt) return <div style={{ background:"#fff", borderRadius:12, padding:20, marginBottom:20, borderLeft:"6px solid #fd9644" }}><p style={{ color:"#636e72", fontSize:13 }}>This graph has EDGE_WKTLINE geometry. Use a geospatial viewer.</p></div>;
+    if (!colN1 || !colN2) return <div style={{ background:"#fff", borderRadius:12, padding:20, marginBottom:20, borderLeft:"6px solid #fd9644" }}><p style={{ color:"#636e72", fontSize:13 }}>Missing NODE1_NAME / NODE2_NAME columns.</p></div>;
+
+    // Build color map
+    var labelColorMap = useRef({});
+    var labelColorIdx = useRef(0);
+    var getLabelColor = function(label) {
+        if (!label) return "#b2bec3";
+        if (!labelColorMap.current[label]) {
+            labelColorMap.current[label] = PALETTE[labelColorIdx.current % PALETTE.length].solid;
+            labelColorIdx.current++;
+        }
+        return labelColorMap.current[label];
+    };
+
+    // Build graph data from records, filtered by selected labels
+    var graphData = useMemo(function() {
+        labelColorMap.current = {};
+        labelColorIdx.current = 0;
+
+        // Node label map
+        var nodeLabelMap = {};
+        if (colNodeName && colNodeLabel) {
+            graphTableData.nodes.records.forEach(function(rec) {
+                var name = rec[colNodeName];
+                if (name) nodeLabelMap[name] = rec[colNodeLabel] || "";
+            });
+        }
+
+        // Filter edges by selected labels (node labels vs edge labels)
+        var filteredEdges = graphTableData.edges.records;
+        var hasNodeFilter = selectedNodeLabels.length > 0;
+        var hasEdgeFilter = selectedEdgeLabels.length > 0;
+        if (filteredEdges.length > 0) {
+            // Show a sample nodeLabelMap entry
+            var sampleNodeKey = Object.keys(nodeLabelMap)[0];
+        }
+        // Helper: parse a label value which may be JSON array string like '["label"]' or plain string
+        var parseLabels = function(val) {
+            if (!val) return [];
+            if (typeof val === "string" && val.charAt(0) === "[") {
+                try { var arr = JSON.parse(val); return Array.isArray(arr) ? arr : [val]; } catch(e) { return [val]; }
+            }
+            return [val];
+        };
+        if (hasNodeFilter || hasEdgeFilter) {
+            var nodeFilterSet = {};
+            selectedNodeLabels.forEach(function(l) { nodeFilterSet[l] = true; });
+            var edgeFilterSet = {};
+            selectedEdgeLabels.forEach(function(l) { edgeFilterSet[l] = true; });
+            filteredEdges = filteredEdges.filter(function(rec) {
+                // Check edge label match (parse JSON array if needed)
+                if (hasEdgeFilter && colEdgeLabel) {
+                    var edgeLabels = parseLabels(rec[colEdgeLabel]);
+                    for (var ei = 0; ei < edgeLabels.length; ei++) {
+                        if (edgeFilterSet[edgeLabels[ei]]) return true;
+                    }
+                }
+                // Check node label match via nodeLabelMap (also parse JSON)
+                if (hasNodeFilter) {
+                    var srcLabels = parseLabels(nodeLabelMap[rec[colN1]]);
+                    var tgtLabels = parseLabels(nodeLabelMap[rec[colN2]]);
+                    for (var ni = 0; ni < srcLabels.length; ni++) {
+                        if (nodeFilterSet[srcLabels[ni]]) return true;
+                    }
+                    for (var nj = 0; nj < tgtLabels.length; nj++) {
+                        if (nodeFilterSet[tgtLabels[nj]]) return true;
+                    }
+                }
+                return false;
+            });
+        }
+
+        // Limit edges
+        var totalAvailableEdges = filteredEdges.length;
+        var edges = filteredEdges.slice(0, edgeLimit);
+
+        // Collect nodes from edges
+        var nodeSet = {};
+        edges.forEach(function(e) {
+            nodeSet[e[colN1]] = true;
+            nodeSet[e[colN2]] = true;
+        });
+        var nodeNames = Object.keys(nodeSet).slice(0, nodeLimit);
+        var allowed = {};
+        nodeNames.forEach(function(n) { allowed[n] = true; });
+        edges = edges.filter(function(e) { return allowed[e[colN1]] && allowed[e[colN2]]; });
+
+        var nodes = nodeNames.map(function(name) {
+            var rawLabel = nodeLabelMap[name] || "";
+            var labels = parseLabels(rawLabel);
+            var label = labels.join(", ");
+            getLabelColor(label);
+            return { id: name, label: label, color: getLabelColor(label), degree: 0 };
+        });
+
+        // Compute degree (connection count per node)
+        var degreeMap = {};
+        edges.forEach(function(e) {
+            degreeMap[e[colN1]] = (degreeMap[e[colN1]] || 0) + 1;
+            degreeMap[e[colN2]] = (degreeMap[e[colN2]] || 0) + 1;
+        });
+        var maxDegree = 1;
+        nodes.forEach(function(n) {
+            n.degree = degreeMap[n.id] || 0;
+            if (n.degree > maxDegree) maxDegree = n.degree;
+        });
+
+        // Also compute edge label colors
+        var edgeLabelColors = {};
+
+        var links = edges.map(function(rec, i) {
+            var rawEdgeLabel = colEdgeLabel ? (rec[colEdgeLabel] || "") : "";
+            var edgeLabels = parseLabels(rawEdgeLabel);
+            var elStr = edgeLabels.join(", ");
+            if (elStr && !edgeLabelColors[elStr]) edgeLabelColors[elStr] = getLabelColor(elStr);
+            return {
+                source: rec[colN1],
+                target: rec[colN2],
+                edgeLabel: elStr,
+                edgeColor: edgeLabelColors[elStr] || "rgba(255,255,255,0.15)",
+                weight: colWeight ? rec[colWeight] : null
+            };
+        });
+
+        return { nodes: nodes, links: links, maxDegree: maxDegree, totalAvailableEdges: totalAvailableEdges, totalAvailableNodes: Object.keys(nodeSet).length };
+    }, [graphTableData, selectedNodeLabels, selectedEdgeLabels, nodeLimit, edgeLimit]);
+
+    // Auto-adjust limits when label selection changes to show all filtered data
+    useEffect(function() {
+        if (!graphTableData || (selectedNodeLabels.length === 0 && selectedEdgeLabels.length === 0)) {
+            // No filter active — reset to defaults
+            setNodeLimit(500);
+            setEdgeLimit(2000);
+            return;
+        }
+        // Compute filtered edge count (same logic as useMemo filter)
+        var edgeHeaders = graphTableData.edges.headers;
+        var nodeHeaders = graphTableData.nodes.headers;
+        var _colN1 = resolveCol(edgeHeaders, ["NODE1_NAME", "EDGE_NODE1_NAME"]);
+        var _colN2 = resolveCol(edgeHeaders, ["NODE2_NAME", "EDGE_NODE2_NAME"]);
+        var _colEdgeLabel = resolveCol(edgeHeaders, ["EDGE_LABEL"]);
+        var _colNodeName = resolveCol(nodeHeaders, ["NODE_NAME"]);
+        var _colNodeLabel = resolveCol(nodeHeaders, ["NODE_LABEL"]);
+        var _nodeLabelMap = {};
+        if (_colNodeName && _colNodeLabel) {
+            graphTableData.nodes.records.forEach(function(rec) {
+                if (rec[_colNodeName]) _nodeLabelMap[rec[_colNodeName]] = rec[_colNodeLabel] || "";
+            });
+        }
+        var _parseLabels = function(val) {
+            if (!val) return [];
+            if (typeof val === "string" && val.charAt(0) === "[") {
+                try { var arr = JSON.parse(val); return Array.isArray(arr) ? arr : [val]; } catch(e) { return [val]; }
+            }
+            return [val];
+        };
+        var nodeFilterSet = {};
+        selectedNodeLabels.forEach(function(l) { nodeFilterSet[l] = true; });
+        var edgeFilterSet = {};
+        selectedEdgeLabels.forEach(function(l) { edgeFilterSet[l] = true; });
+        var hasNF = selectedNodeLabels.length > 0;
+        var hasEF = selectedEdgeLabels.length > 0;
+        var filteredCount = 0;
+        var nodeSet = {};
+        graphTableData.edges.records.forEach(function(rec) {
+            var match = false;
+            if (hasEF && _colEdgeLabel) {
+                var els = _parseLabels(rec[_colEdgeLabel]);
+                for (var i = 0; i < els.length; i++) { if (edgeFilterSet[els[i]]) { match = true; break; } }
+            }
+            if (!match && hasNF) {
+                var sl = _parseLabels(_nodeLabelMap[rec[_colN1]]);
+                var tl = _parseLabels(_nodeLabelMap[rec[_colN2]]);
+                for (var i = 0; i < sl.length; i++) { if (nodeFilterSet[sl[i]]) { match = true; break; } }
+                if (!match) for (var i = 0; i < tl.length; i++) { if (nodeFilterSet[tl[i]]) { match = true; break; } }
+            }
+            if (match) {
+                filteredCount++;
+                nodeSet[rec[_colN1]] = true;
+                nodeSet[rec[_colN2]] = true;
+            }
+        });
+        var filteredNodes = Object.keys(nodeSet).length;
+        // Set limits to show all filtered data, capped at 50K for safety
+        setEdgeLimit(Math.min(filteredCount, 50000));
+        setNodeLimit(Math.min(filteredNodes, 50000));
+    }, [graphTableData, selectedNodeLabels, selectedEdgeLabels]);
+
+    // Initialize / update force-graph
+    useEffect(function() {
+        if (!containerRef.current) return;
+        
+        // Properly cleanup previous instance
+        if (graphRef.current) {
+            graphRef.current._destructor && graphRef.current._destructor();
+            graphRef.current = null;
+        }
+        containerRef.current.innerHTML = "";
+
+
+        if (graphData.nodes.length === 0) {
+            return;
+        }
+
+
+        var width = containerRef.current.clientWidth || 800;
+        var height = containerRef.current.clientHeight || 500;
+
+        var maxDeg = graphData.maxDegree || 1;
+        var numNodes = graphData.nodes.length;
+        var numEdges = graphData.links.length;
+        var nodeRadius = function(d) {
+            var base = isHuge ? 1 : (isLarge ? 1.5 : 3);
+            var scale = isHuge ? 6 : (isLarge ? 10 : 18);
+            return base + Math.sqrt(d.degree / maxDeg) * scale;
+        };
+
+        // Performance thresholds
+        var isLarge = numNodes > 500 || numEdges > 2000;
+        var isHuge = numNodes > 2000 || numEdges > 8000;
+
+        var graph = new ForceGraph(containerRef.current)
+            .width(width)
+            .height(height)
+            .backgroundColor("#0a0a1a")
+            .graphData(graphData)
+            .nodeId("id")
+            .nodeVal(function(n) { return n.degree || 1; })
+            .nodeCanvasObjectMode(function() { return "replace"; })
+            .nodeCanvasObject(function(node, ctx, globalScale) {
+                var r = nodeRadius(node);
+                // Glow - only for small graphs
+                if (!isLarge) {
+                    ctx.shadowColor = node.color || "#b2bec3";
+                    ctx.shadowBlur = (hoverNode === node.id) ? 20 : 6;
+                }
+                ctx.beginPath();
+                ctx.arc(node.x, node.y, r, 0, 2 * Math.PI, false);
+                ctx.fillStyle = node.color || "#b2bec3";
+                ctx.globalAlpha = (hoverNode === node.id) ? 1.0 : 0.8;
+                ctx.fill();
+                ctx.globalAlpha = 1.0;
+                if (!isLarge) ctx.shadowBlur = 0;
+                // Border on hover
+                if (hoverNode === node.id) {
+                    ctx.strokeStyle = "#fff";
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                }
+                // Labels only for small graphs at sufficient zoom
+                if (!isLarge && globalScale > 0.6) {
+                    var fontSize = Math.max(r * 0.55, 3);
+                    if (fontSize >= 3) {
+                        ctx.font = "bold " + fontSize + "px sans-serif";
+                        ctx.textAlign = "center";
+                        ctx.textBaseline = "middle";
+                        ctx.fillStyle = "#fff";
+                        var labelText = node.label || "";
+                        if (labelText.length > 14) labelText = labelText.substring(0, 12) + "\u2026";
+                        ctx.fillText(labelText, node.x, node.y);
+                    }
+                }
+            })
+            .nodeLabel(function(n) { return n.id + (n.label ? " [" + n.label + "]" : "") + " (" + (n.degree || 0) + " connections)"; })
+            .linkSource("source")
+            .linkTarget("target")
+            .linkColor(function(l) { return l.edgeColor || "rgba(255,255,255,0.1)"; })
+            .linkWidth(function(l) { return l.weight ? Math.min(Math.max(parseFloat(l.weight) || 0.5, 0.3), 4) : 0.5; })
+            .linkLabel(function(l) { return l.edgeLabel + (l.weight !== null ? " (w:" + l.weight + ")" : ""); })
+            .linkDirectionalArrowLength(isHuge ? 0 : 4)
+            .linkDirectionalArrowRelPos(1)
+            .onNodeClick(function(node) {
+                setFocusNode(function(prev) { return prev === node.id ? null : node.id; });
+                graph.centerAt(node.x, node.y, 500);
+                graph.zoom(3, 500);
+            })
+            .onNodeHover(function(node) {
+                setHoverNode(node ? node.id : null);
+                containerRef.current.style.cursor = node ? "pointer" : "grab";
+            });
+
+        // Edge labels only for small graphs
+        if (!isLarge) {
+            graph.linkCanvasObjectMode(function() { return "after"; })
+                .linkCanvasObject(function(link, ctx, globalScale) {
+                    if (!link.edgeLabel || globalScale < 1.0) return;
+                    var fontSize = 8 / globalScale;
+                    if (fontSize < 2.5) return;
+                    var midX = (link.source.x + link.target.x) / 2;
+                    var midY = (link.source.y + link.target.y) / 2;
+                    ctx.font = fontSize + "px sans-serif";
+                    var textWidth = ctx.measureText(link.edgeLabel).width;
+                    ctx.fillStyle = "rgba(0,0,0,0.7)";
+                    ctx.fillRect(midX - textWidth/2 - 3, midY - fontSize/2 - 2, textWidth + 6, fontSize + 4);
+                    ctx.textAlign = "center";
+                    ctx.textBaseline = "middle";
+                    ctx.fillStyle = link.edgeColor || "rgba(255,255,255,0.7)";
+                    ctx.fillText(link.edgeLabel, midX, midY);
+                });
+        }
+
+        // Force simulation tuning based on size
+        if (isHuge) {
+            // Skip simulation entirely — random positions
+            graph.cooldownTicks(0)
+                .d3AlphaDecay(1)
+                .onEngineStop(function() { graph.zoomToFit(400, 40); });
+        } else if (isLarge) {
+            // Minimal simulation
+            graph.d3Force("charge", d3.forceManyBody().strength(-30))
+                .d3Force("link", d3.forceLink().id(function(d) { return d.id; }).distance(20))
+                .cooldownTicks(50)
+                .onEngineStop(function() { graph.zoomToFit(400, 40); });
+        } else {
+            // Full simulation
+            graph.d3Force("charge", d3.forceManyBody().strength(-120))
+                .d3Force("link", d3.forceLink().id(function(d) { return d.id; }).distance(60))
+                .cooldownTicks(150)
+                .onEngineStop(function() { graph.zoomToFit(400, 40); });
+        }
+
+        graphRef.current = graph;
+        // Check if canvas was created
+        var canvases = containerRef.current.querySelectorAll("canvas");
+        if (canvases.length > 0) {
+        }
+
+        // Safety: force zoomToFit after a delay in case onEngineStop doesn't fire
+        var zoomTimer = setTimeout(function() {
+            if (graphRef.current) {
+                graphRef.current.zoomToFit(400, 40);
+            }
+        }, isHuge ? 500 : 2000);
+
+        // Handle resize
+        var resizeTimer = null;
+        var ro = new ResizeObserver(function() {
+            if (containerRef.current && graphRef.current) {
+                graphRef.current.width(containerRef.current.clientWidth);
+                graphRef.current.height(containerRef.current.clientHeight);
+                clearTimeout(resizeTimer);
+                resizeTimer = setTimeout(function() {
+                    if (graphRef.current) graphRef.current.zoomToFit(400, 40);
+                }, 200);
+            }
+        });
+        ro.observe(containerRef.current);
+
+        return function() {
+            clearTimeout(zoomTimer);
+            clearTimeout(resizeTimer);
+            ro.disconnect();
+            if (graphRef.current) {
+                graphRef.current._destructor && graphRef.current._destructor();
+                graphRef.current = null;
+            }
+        };
+
+    }, [graphData]);
+
+    // Legend
+    var legendItems = Object.keys(labelColorMap.current).map(function(l) { return { label: l, color: labelColorMap.current[l] }; });
+    var sliderStyle = { width: 90, accentColor: "#0984e3", cursor: "pointer" };
+    var ctrlStyle = { fontSize: 11, fontWeight: 600, color: "#636e72", marginRight: 4 };
+
+    return (
+        <div style={{ background:"#fff", borderRadius:12, boxShadow:"0 2px 8px rgba(0,0,0,0.04)", padding:16, borderLeft:"6px solid #00cec9", display:"flex", flexDirection:"column", flex:1, minHeight:0, overflow:"hidden" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8, flexWrap:"wrap", gap:8 }}>
+                <div>
+                    <h2 style={{ margin:0, fontSize:14, fontWeight:700, color:"#00cec9" }}>
+                        Graph Visualization {graphName && <span style={{ fontWeight:400, color:"#636e72" }}>{" \u2014 "}{graphName}</span>}
+                    </h2>
+                    <p style={{ margin:"2px 0 0", fontSize:11, color:"#b2bec3" }}>
+                        Rendering {graphData.nodes.length.toLocaleString()} nodes, {graphData.links.length.toLocaleString()} edges
+                        {(graphData.totalAvailableEdges > graphData.links.length || graphData.totalAvailableNodes > graphData.nodes.length) && <span style={{ color:"#fd9644" }}> of {graphData.totalAvailableNodes.toLocaleString()} / {graphData.totalAvailableEdges.toLocaleString()} available</span>}
+                        {(selectedNodeLabels.length > 0 || selectedEdgeLabels.length > 0) && <span style={{ color:"#6c5ce7" }}> — filtering: {selectedNodeLabels.map(function(l){ return "\u25CF " + l; }).concat(selectedEdgeLabels.map(function(l){ return "\u2194 " + l; })).join(", ")}</span>}
+                        {focusNode && <span> — focused: <strong>{focusNode}</strong> <span onClick={function(){ setFocusNode(null); if(graphRef.current) graphRef.current.zoomToFit(400, 40); }} style={{ cursor:"pointer", color:"#d63031", fontSize:10 }}>[reset]</span></span>}
+                    </p>
+                    {graphData.totalAvailableEdges > 20000 && selectedNodeLabels.length === 0 && selectedEdgeLabels.length === 0 && (
+                        <p style={{ margin:"4px 0 0", fontSize:11, color:"#fd9644", fontWeight:600 }}>
+                            Large graph detected ({graphData.totalAvailableEdges.toLocaleString()} edges). Select labels in the charts below to filter, or adjust the sliders to control rendering.
+                        </p>
+                    )}
+                </div>
+                <div style={{ display:"flex", gap:14, alignItems:"center", flexWrap:"wrap" }}>
+                    <label style={ctrlStyle}>Nodes: {nodeLimit.toLocaleString()} <input type="range" min="50" max="50000" step="50" value={nodeLimit} onChange={function(e){ setNodeLimit(parseInt(e.target.value)); }} style={sliderStyle}/></label>
+                    <label style={ctrlStyle}>Edges: {edgeLimit.toLocaleString()} <input type="range" min="100" max="100000" step="100" value={edgeLimit} onChange={function(e){ setEdgeLimit(parseInt(e.target.value)); }} style={sliderStyle}/></label>
+                </div>
+            </div>
+            {legendItems.length > 0 && (
+                <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginBottom:8 }}>
+                    {legendItems.map(function(item) {
+                        return <span key={item.label} style={{ display:"inline-flex", alignItems:"center", gap:4, fontSize:10, fontWeight:600, color:"#636e72" }}>
+                            <span style={{ width:8, height:8, borderRadius:"50%", background:item.color, display:"inline-block" }}/> {item.label}
+                        </span>;
+                    })}
+                </div>
+            )}
+            <div ref={containerRef} style={{ width:"100%", flex:"1 1 0", minHeight:200, border:"1px solid #1a1a2e", borderRadius:8, overflow:"hidden", cursor:"grab", background:"#0a0a1a" }}/>
+        </div>
+    );
+}
+
+
+
+
+function App() {
+    const [graphs, setGraphs]             = useState([]);
+    const [activeGraph, setActiveGraph]   = useState('');
+    const [credentials, setCredentials]   = useState({ url:'', user:'', pass:'' });
+    const [labelData, setLabelData]       = useState(null);
+    const [dotString, setDotString]       = useState(null);
+    const [showOntology, setShowOntology] = useState(false);
+    const [pickingEnabled, setPicking]    = useState(true);
+    const [lastRefresh, setLastRefresh]   = useState(null);
+    const [autoRefresh, setAutoRefresh]   = useState(false);
+    const [autoInterval, setAutoInterval] = useState(15);
+    const [graphTable, setGraphTable]     = useState(null);
+    const [graphTableData, setGraphTableData] = useState(null);
+    const [graphTableError, setGraphTableError] = useState(null);
+    const [showForceGraph, setShowForceGraph] = useState(false);
+    const [hSplit, setHSplit] = useState(0.65);
+    const [vSplit, setVSplit] = useState(0.5);
+    const [rightVSplit, setRightVSplit] = useState(0.5);
+    const [selectedNodeLabels, setSelectedNodeLabels] = useState([]);
+    const [selectedEdgeLabels, setSelectedEdgeLabels] = useState([]);
+    const [queryPanels, setQueryPanels] = useState([]);  // array of { id, initialSql, initialTab, stateRef, autoRun }
+    const [autoRunQueries, setAutoRunQueries] = useState(true);
+    var queryIdCounter = useRef(0);
+    const api = useKineticaApi();
+
+    // Ref to access OntologyViewer methods (resetView, highlightOnGraph)
+    const ontologyApiRef = useRef(null);
+    // Ref for the main content div (for ResizeObserver)
+    const mainContentRef = useRef(null);
+
+    var clearGraphs = useCallback(function() {
+        setGraphs([]); setActiveGraph(''); setLabelData(null); setDotString(null); setShowOntology(false); setAutoRefresh(false); setGraphTable(null); setGraphTableData(null); setGraphTableError(null); setShowForceGraph(false); setSelectedNodeLabels([]); setSelectedEdgeLabels([]); setFetchProgress(null); setQueryPanels([]);
+    }, []);
+
+    /* Connect & list graphs */
+    var handleConnect = async function(creds) {
+        setCredentials(creds);
+        setActiveGraph(''); setLabelData(null); setDotString(null); setShowOntology(false);
+        var result = await api.request(creds.url + '/show/graph', { graph_name:'', options:{} }, creds);
+        if (result._cancelled) return;
+        var outer = safeParse(result.data_str);
+        if (!outer || !outer.graph_names) throw new Error('Unexpected response format.');
+        setGraphs(outer.graph_names);
+    };
+
+    /* Load label counts (fast refresh) */
+    var loadGraphDetails = useCallback(async function(graphName) {
+        if (!graphName || !credentials.url) return;
+        var graphChanged = graphName !== activeGraph;
+        setActiveGraph(graphName);
+        if (graphChanged) { setShowOntology(false); setDotString(null); }
+        if (graphChanged) { setSelectedNodeLabels([]); setSelectedEdgeLabels([]); }
+        if (graphChanged) setQueryPanels([]);
+        if (graphChanged) setGraphTableData(null);
+        if (graphChanged) setGraphTableError(null);
+        if (graphChanged) setShowForceGraph(false);
+        if (graphChanged) setFetchProgress(null);
+        var result = await api.request(credentials.url + '/show/graph', { graph_name: graphName, options:{} }, credentials);
+        if (result._cancelled) return;
+        var outer = safeParse(result.data_str);
+        var data = { total_labeled_nodes:0, total_unlabeled_nodes:0, total_labeled_edges:0, total_unlabeled_edges:0 };
+        if (outer && outer.info && outer.info.labeljson) data = safeParse(outer.info.labeljson, data);
+        setLabelData(data);
+        setLastRefresh(Date.now());
+        // Extract graph_table from original_request statement
+        // original_request can be at top level of response OR inside data_str
+        var origReq = result.original_request || (outer && outer.original_request);
+        var gt = extractGraphTable(origReq, graphName);
+        setGraphTable(gt);
+        if (graphChanged) setGraphTableData(null);
+        if (graphChanged) setGraphTableError(null);
+        if (graphChanged) setShowForceGraph(false);
+        return gt;
+    }, [credentials, api, activeGraph]);
+
+    /* Load ontology (expensive call) */
+    var loadOntology = useCallback(async function() {
+        if (!activeGraph || !credentials.url) return;
+        var result = await api.request(credentials.url + '/modify/graph', { graph_name: activeGraph, options:{} }, credentials);
+        if (result._cancelled) return;
+        var outer = safeParse(result.data_str);
+        if (outer && outer.info && outer.info.dot) { setDotString(outer.info.dot); setShowOntology(true); }
+    }, [activeGraph, credentials, api]);
+
+
+    /* Fetch graph table data (edges + nodes) using columnar /get/records/bycolumn for speed */
+    const [fetchProgress, setFetchProgress] = useState(null);
+    var fetchGraphTableData = useCallback(async function(overrideTable) {
+        var table = (typeof overrideTable === 'string') ? overrideTable : graphTable;
+        if (!table || !credentials.url) return;
+        setGraphTableError(null);
+        setFetchProgress({ edgesDone: 0, edgesTotal: "?", nodesDone: 0, nodesTotal: "?" });
+        try {
+            var edgeTable = table;
+            var nodeTable = table + "_nodes";
+            var BATCH = 50000;
+
+            // First, do a small /get/records to discover column names and totals
+            var probe = await api.request(credentials.url + "/get/records", {
+                table_name: edgeTable, offset: 0, limit: 1, encoding: "json", options: {}
+            }, credentials);
+            if (probe._cancelled) return;
+            var probeOuter = safeParse(probe.data_str) || probe;
+            var probeRec = (probeOuter.records_json || []).map(function(r) { return safeParse(r, r); });
+            var allEdgeHeaders = probeRec.length > 0 ? Object.keys(probeRec[0]) : [];
+            var edgeTotal = probeOuter.total_number_of_records || 0;
+
+            var probeN = await api.request(credentials.url + "/get/records", {
+                table_name: nodeTable, offset: 0, limit: 1, encoding: "json", options: {}
+            }, credentials);
+            if (probeN._cancelled) return;
+            var probeNOuter = safeParse(probeN.data_str) || probeN;
+            var probeNRec = (probeNOuter.records_json || []).map(function(r) { return safeParse(r, r); });
+            var allNodeHeaders = probeNRec.length > 0 ? Object.keys(probeNRec[0]) : [];
+            var nodeTotal = probeNOuter.total_number_of_records || 0;
+
+            setFetchProgress({ edgesDone: 0, edgesTotal: edgeTotal, nodesDone: 0, nodesTotal: nodeTotal });
+
+            // Select only needed columns for edges
+            var eColN1 = resolveCol(allEdgeHeaders, ["NODE1_NAME", "EDGE_NODE1_NAME"]);
+            var eColN2 = resolveCol(allEdgeHeaders, ["NODE2_NAME", "EDGE_NODE2_NAME"]);
+            var eColLabel = resolveCol(allEdgeHeaders, ["EDGE_LABEL"]);
+            var eColDir = resolveCol(allEdgeHeaders, ["EDGE_DIRECTION"]);
+            var eColWeight = resolveCol(allEdgeHeaders, ["WEIGHTS_VALUESPECIFIED"]);
+            var edgeCols = [eColN1, eColN2, eColLabel, eColDir, eColWeight].filter(Boolean);
+
+            // Select only needed columns for nodes
+            var nColName = resolveCol(allNodeHeaders, ["NODE_NAME"]);
+            var nColLabel = resolveCol(allNodeHeaders, ["NODE_LABEL"]);
+            var nodeCols = [nColName, nColLabel].filter(Boolean);
+
+            // Helper: fetch all via /get/records/bycolumn in batches, returns columnar data converted to rows
+            async function fetchColumnar(tableName, columns, totalRecords, onProgress) {
+                var allRows = [];
+                var offset = 0;
+                var hasMore = true;
+                while (hasMore && offset < totalRecords) {
+                    var batchLimit = Math.min(BATCH, totalRecords - offset);
+                    var result = await api.request(credentials.url + "/get/records/bycolumn", {
+                        table_name: tableName,
+                        column_names: columns,
+                        offset: offset,
+                        limit: batchLimit,
+                        encoding: "json",
+                        options: {}
+                    }, credentials);
+                    if (result._cancelled) return null;
+                    var outer = safeParse(result.data_str) || result;
+                    var decoded = outer.json_encoded_response ? safeParse(outer.json_encoded_response) : outer;
+                    var data = decoded || outer;
+                    hasMore = outer.has_more_records || false;
+                    var colHeaders = data.column_headers || columns;
+                    var numRecords = 0;
+                    var colArrays = [];
+                    for (var ci = 0; ci < colHeaders.length; ci++) {
+                        var key = "column_" + (ci + 1);
+                        var arr = data[key] || data[colHeaders[ci]] || [];
+                        colArrays.push(arr);
+                        if (arr.length > numRecords) numRecords = arr.length;
+                    }
+                    for (var ri = 0; ri < numRecords; ri++) {
+                        var row = {};
+                        for (var cj = 0; cj < colHeaders.length; cj++) {
+                            row[colHeaders[cj]] = colArrays[cj][ri];
+                        }
+                        allRows.push(row);
+                    }
+                    offset += numRecords;
+                    if (onProgress) onProgress(allRows.length, totalRecords);
+                    if (numRecords === 0) break;
+                }
+                return allRows;
+            }
+
+            // Fetch edges (columnar)
+            var edgeRecords = await fetchColumnar(edgeTable, edgeCols, edgeTotal, function(done, total) {
+                setFetchProgress(function(p) { return Object.assign({}, p, { edgesDone: done, edgesTotal: total }); });
+            });
+            if (!edgeRecords) return;
+
+            // Fetch nodes (columnar)
+            var nodeRecords = await fetchColumnar(nodeTable, nodeCols, nodeTotal, function(done, total) {
+                setFetchProgress(function(p) { return Object.assign({}, p, { nodesDone: done, nodesTotal: total }); });
+            });
+            if (!nodeRecords) return;
+
+            setGraphTableData({
+                edges: { records: edgeRecords, headers: edgeCols, total: edgeTotal },
+                nodes: { records: nodeRecords, headers: nodeCols, total: nodeTotal },
+                edgeTable: edgeTable,
+                nodeTable: nodeTable
+            });
+            setFetchProgress(null);
+        } catch(err) {
+            setGraphTableError(err.message);
+            setFetchProgress(null);
+        }
+    }, [graphTable, credentials, api]);
+
+    /* Bidirectional picking: ontology SVG click → highlight table rows */
+    var handleOntologyPick = useCallback(function(text) {
+        if (!pickingEnabled || !text) return;
+        var target = text.toLowerCase().replace(/\s+/g, '');
+        document.querySelectorAll('tr[data-label]').forEach(function(row) {
+            row.style.outline = ''; row.style.fontWeight = '';
+            var rl = row.getAttribute('data-label').toLowerCase().replace(/\s+/g, '');
+            if (target.includes(rl) || rl.includes(target)) {
+                row.style.outline = '3px solid #0984e3';
+                row.style.fontWeight = '700';
+                row.scrollIntoView({ behavior:'smooth', block:'center' });
+            }
+        });
+    }, [pickingEnabled]);
+
+    /* Bidirectional picking: chart/table hover → highlight ontology SVG nodes/edges */
+    var handleChartHoverLabels = useCallback(function(labels) {
+        if (ontologyApiRef.current && ontologyApiRef.current.highlightOnGraph) {
+            if (!pickingEnabled) {
+                ontologyApiRef.current.highlightOnGraph(null);
+            } else {
+                ontologyApiRef.current.highlightOnGraph(labels);
+            }
+        }
+    }, [pickingEnabled]);
+
+    /* ResizeObserver: refit ontology on window resize */
+    useEffect(function() {
+        if (!mainContentRef.current) return;
+        var ro = new ResizeObserver(function() {
+            if (ontologyApiRef.current && ontologyApiRef.current.resetView) {
+                ontologyApiRef.current.resetView(false);
+            }
+        });
+        ro.observe(mainContentRef.current);
+        return function() { ro.disconnect(); };
+    }, []);
+
+    /* Auto-refresh timer: label counts only */
+    var autoRefreshTimerRef = useRef(null);
+    var loadGraphDetailsRef = useRef(loadGraphDetails);
+    var apiLoadingRef = useRef(api.loading);
+    useEffect(function() { loadGraphDetailsRef.current = loadGraphDetails; }, [loadGraphDetails]);
+    useEffect(function() { apiLoadingRef.current = api.loading; }, [api.loading]);
+    useEffect(function() {
+        if (autoRefreshTimerRef.current) clearInterval(autoRefreshTimerRef.current);
+        autoRefreshTimerRef.current = null;
+        if (!autoRefresh || !activeGraph || !credentials.url) return;
+        autoRefreshTimerRef.current = setInterval(function() {
+            if (!apiLoadingRef.current) loadGraphDetailsRef.current(activeGraph);
+        }, autoInterval * 1000);
+        return function() { if (autoRefreshTimerRef.current) clearInterval(autoRefreshTimerRef.current); };
+    }, [autoRefresh, autoInterval, activeGraph, credentials.url]);
+
+    /* ─── Session save/load ─── */
+    var buildSession = function() {
+        return {
+            version: 1,
+            savedAt: new Date().toISOString(),
+            connection: { url: credentials.url, user: credentials.user },
+            graph: {
+                name: activeGraph || null,
+                selectedNodeLabels: selectedNodeLabels,
+                selectedEdgeLabels: selectedEdgeLabels,
+                ontologyDot: showOntology && dotString ? dotString : null,
+                dataFetched: !!graphTableData,
+                showForceGraph: showForceGraph,
+            },
+            queries: queryPanels.map(function(panel) {
+                var s = panel.stateRef && panel.stateRef.current;
+                return { sql: s ? s.sql : panel.initialSql, activeTab: s ? s.activeTab : panel.initialTab };
+            }).filter(function(q) { return q.sql && q.sql.trim(); }),
+        };
+    };
+
+    var saveSession = function() {
+        var session = buildSession();
+        var blob = new Blob([JSON.stringify(session, null, 2)], { type: 'application/json' });
+        var a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = (activeGraph || 'session').replace(/\./g, '_') + '_session.json';
+        a.click();
+        URL.revokeObjectURL(a.href);
+    };
+
+    var loadSession = function(file) {
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            try {
+                var session = JSON.parse(e.target.result);
+                if (!session || session.version !== 1) { alert('Invalid session file.'); return; }
+                // Restore connection
+                if (session.connection && session.connection.url) {
+                    var creds = { url: session.connection.url, user: session.connection.user || '', pass: credentials.pass || '' };
+                    handleConnect(creds).then(function() {
+                        // Restore graph selection
+                        if (session.graph && session.graph.name) {
+                            loadGraphDetails(session.graph.name).then(function(gt) {
+                                // Restore label selections
+                                if (session.graph.selectedNodeLabels) setSelectedNodeLabels(session.graph.selectedNodeLabels);
+                                if (session.graph.selectedEdgeLabels) setSelectedEdgeLabels(session.graph.selectedEdgeLabels);
+                                // Restore ontology
+                                if (session.graph.ontologyDot) { setDotString(session.graph.ontologyDot); setShowOntology(true); }
+                                // Restore data fetch + visualization using returned table name directly
+                                if (session.graph.dataFetched && gt) {
+                                    fetchGraphTableData(gt).then(function() {
+                                        if (session.graph.showForceGraph) setShowForceGraph(true);
+                                    });
+                                }
+                                // Restore query panels
+                                if (session.queries && session.queries.length > 0) {
+                                    var panels = session.queries.map(function(q, i) {
+                                        queryIdCounter.current++;
+                                        return { id: queryIdCounter.current, initialSql: q.sql || '', initialTab: q.activeTab || null, stateRef: { current: null }, autoRun: autoRunQueries };
+                                    });
+                                    setQueryPanels(panels);
+                                }
+                            });
+                        }
+                    });
+                }
+            } catch(err) { alert('Error loading session: ' + err.message); }
+        };
+        reader.readAsText(file);
+    };
+
+    var hasDashboard = !!labelData;
+
+    return (
+        <div style={{ display:'flex', height:'100vh', overflow:'hidden' }}>
+            <Sidebar onConnect={handleConnect} onClearGraphs={clearGraphs} graphs={graphs} activeGraph={activeGraph} onSelectGraph={loadGraphDetails} loading={api.loading} />
+
+            <div ref={mainContentRef} style={{ flexGrow:1, overflow:'hidden', padding:16, display:'flex', flexDirection:'column', height:'100vh' }}>
+
+                {!hasDashboard && <WelcomeScreen />}
+
+                {hasDashboard && (
+                    <div style={{ animation:'fadeIn 0.4s ease-out', display:'flex', flexDirection:'column', flex:1, minHeight:0 }}>
+                        <DashboardHeader
+                            graphName={activeGraph} server={credentials.url} lastRefresh={lastRefresh}
+                            pickingEnabled={pickingEnabled} onTogglePicking={function(){ setPicking(function(p){ return !p; }); }}
+                            onRefresh={function(){ loadGraphDetails(activeGraph); }} onOntology={loadOntology} onQuery={function(){ queryIdCounter.current++; setQueryPanels(function(prev){ return prev.concat([{ id: queryIdCounter.current, initialSql: '', initialTab: null, stateRef: { current: null } }]); }); }}
+                            onSave={saveSession} onLoad={loadSession} autoRunQueries={autoRunQueries} onToggleAutoRun={function(){ setAutoRunQueries(function(p){ return !p; }); }} loading={api.loading}
+                            autoRefresh={autoRefresh} autoInterval={autoInterval}
+                            onToggleAutoRefresh={function(){ setAutoRefresh(function(p){ return !p; }); }}
+                            onChangeInterval={function(val){ setAutoInterval(val); }}
+                        />
+
+                        <div style={{ position:"relative", flex:1, minHeight:0, display:'flex', flexDirection:'column' }}>
+                        <SplitPane direction="horizontal" split={hSplit} onSplitChange={setHSplit} minA={300} minB={250}>
+                            {/* LEFT: Graph controls + ontology + visualization */}
+                            <div style={{ display:'flex', flexDirection:'column', gap:8, height:'100%', overflow:'auto', paddingRight:4 }}>
+                                <GraphTablePreview graphTable={graphTable} data={graphTableData} error={graphTableError} onFetch={fetchGraphTableData} loading={api.loading || !!fetchProgress} fetchProgress={fetchProgress} onVisualize={function(){ setShowForceGraph(function(p){ return !p; }); }} showingGraph={showForceGraph} />
+
+                                {(showOntology && dotString) || (showForceGraph && graphTableData) ? (
+                                    <SplitPane direction="vertical" split={vSplit} onSplitChange={setVSplit} minA={showOntology && dotString ? 80 : 0} minB={showForceGraph && graphTableData ? 150 : 0}>
+                                        {showOntology && dotString ? (
+                                            <OntologyViewer dotString={dotString} pickingEnabled={pickingEnabled} onPickLabel={handleOntologyPick} apiRef={ontologyApiRef} />
+                                        ) : <div />}
+                                        {showForceGraph && graphTableData ? (
+                                            <CanvasGraph data={graphTableData} graphName={activeGraph} selectedNodeLabels={selectedNodeLabels} selectedEdgeLabels={selectedEdgeLabels} />
+                                        ) : <div />}
+                                    </SplitPane>
+                                ) : null}
+                            </div>
+
+                            {/* RIGHT: Label charts */}
+                            <div style={{ display:'flex', flexDirection:'column', gap:8, height:'100%', overflow:'hidden', paddingLeft:4 }}>
+                                <div style={{ flexShrink:0 }}><SummaryCards data={labelData} server={credentials.url} /></div>
+                                <SplitPane direction="vertical" split={rightVSplit} onSplitChange={setRightVSplit} minA={150} minB={150}>
+                                    <LabelChart title="Node Labels" items={labelData.node_labels} total={labelData.total_labeled_nodes||0} pickingEnabled={pickingEnabled} onHoverLabels={handleChartHoverLabels} selectedLabels={selectedNodeLabels} onToggleLabel={function(label){ setSelectedNodeLabels(function(prev){ return prev.indexOf(label) !== -1 ? prev.filter(function(l){ return l !== label; }) : prev.concat([label]); }); }} />
+                                    <LabelChart title="Edge Labels" items={labelData.edge_labels} total={labelData.total_labeled_edges||0} pickingEnabled={pickingEnabled} onHoverLabels={handleChartHoverLabels} selectedLabels={selectedEdgeLabels} onToggleLabel={function(label){ setSelectedEdgeLabels(function(prev){ return prev.indexOf(label) !== -1 ? prev.filter(function(l){ return l !== label; }) : prev.concat([label]); }); }} />
+                                </SplitPane>
+                            </div>
+                        </SplitPane>
+                        <CornerHandle hSplit={hSplit} vSplit={vSplit} onDrag={function(dx, dy) {
+                            setHSplit(function(prev) {
+                                var w = mainContentRef.current ? mainContentRef.current.clientWidth - 32 : 800;
+                                return Math.max(0.2, Math.min(0.85, prev + dx / w));
+                            });
+                            setVSplit(function(prev) {
+                                var total = mainContentRef.current ? mainContentRef.current.clientHeight - 100 : 600;
+                                return Math.max(0.1, Math.min(0.9, prev + dy / total));
+                            });
+                        }} />
+                        </div>
+                    </div>
+                )}
+            </div>
+            {queryPanels.map(function(panel, idx) {
+                return <QueryPanel key={panel.id} panelIndex={idx} credentials={credentials} labelData={labelData} initialSql={panel.initialSql} initialTab={panel.initialTab} stateRef={panel.stateRef} autoRun={panel.autoRun} onClose={function(){ setQueryPanels(function(prev){ return prev.filter(function(p){ return p.id !== panel.id; }); }); }} />;
+            })}
+        </div>
+    );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "savedAt": "2026-03-20T03:43:42.806Z",
+  "connection": {
+    "url": "http://127.0.0.1:9191",
+    "user": "admin"
+  },
+  "graph": {
+    "name": "expero.banking_graph",
+    "selectedNodeLabels": [
+      "street_address"
+    ],
+    "selectedEdgeLabels": [],
+    "ontologyDot": "digraph G { concentrate=true; \n\"session (22.82 %)\" -> \"ip_address (9.131 %)\" [label=\" login_from:\n\n16.78%\"];\n\"wire_message (9.131 %)\" -> \"banking_transaction (17.12 %)\" [label=\" is_for_transaction:\n\n8.394%\"];\n\"bank (0.342 %)\" -> \"wire_message (9.131 %)\" [label=\" performed:\n\n13.43%\"];\n\"session (22.82 %)\" -> \"device_cookie (4.565 %)\" [label=\" used:\n\n16.78%\"];\n\"bank (0.342 %)\" -> \"external_account (3.424 %)\" [label=\" includes:\n\n2.518%\"];\n\"bank (0.342 %)\" -> \"internal_account (1.712 %)\" [label=\" includes:\n\n1.259%\"];\n\"exp_comment (0.339 %)\" -> \"street_address (11.41 %)\" [label=\" exp_has_comment:\n\n0.016%\"];\n\"exp_comment (0.339 %)\" -> \"wire_message (9.131 %)\" [label=\" exp_has_comment:\n\n0.014%\"];\n\"exp_comment (0.339 %)\" -> \"address (11.41 %)\" [label=\" exp_has_comment:\n\n0.017%\"];\n\"exp_comment (0.339 %)\" -> \"internal_account (1.712 %)\" [label=\" exp_has_comment:\n\n0.015%\"];\n\"exp_comment (0.339 %)\" -> \"party (3.424 %)\" [label=\" exp_has_comment:\n\n0.029%\"];\n\"exp_comment (0.339 %)\" -> \"device_cookie (4.565 %)\" [label=\" exp_has_comment:\n\n0.015%\"];\n\"exp_comment (0.339 %)\" -> \"banking_transaction (17.12 %)\" [label=\" exp_has_comment:\n\n0.015%\"];\n\"exp_comment (0.339 %)\" -> \"tin (1.141 %)\" [label=\" exp_has_comment:\n\n0.014%\"];\n\"exp_comment (0.339 %)\" -> \"email (1.712 %)\" [label=\" exp_has_comment:\n\n0.018%\"];\n\"exp_comment (0.339 %)\" -> \"ip_address (9.131 %)\" [label=\" exp_has_comment:\n\n0.014%\"];\n\"exp_comment (0.339 %)\" -> \"bank (0.342 %)\" [label=\" exp_has_comment:\n\n0.018%\"];\n\"exp_comment (0.339 %)\" -> \"phone (2.282 %)\" [label=\" exp_has_comment:\n\n0.016%\"];\n\"exp_comment (0.339 %)\" -> \"session (22.82 %)\" [label=\" exp_has_comment:\n\n0.015%\"];\n\"exp_comment (0.339 %)\" -> \"external_account (3.424 %)\" [label=\" exp_has_comment:\n\n0.012%\"];\n\"party (3.424 %)\" -> \"external_account (3.424 %)\" [label=\" manages:\n\n4.197%\"];\n\"banking_transaction (17.12 %)\" -> \"external_account (3.424 %)\" [label=\" involved:\n\n6.296%\"];\n\"internal_account (1.712 %)\" -> \"address (11.41 %)\" [label=\" registered_at:\n\n2.518%\"];\n\"internal_account (1.712 %)\" -> \"email (1.712 %)\" [label=\" associated_with:\n\n2.518%\"];\n\"internal_account (1.712 %)\" -> \"phone (2.282 %)\" [label=\" associated_with:\n\n2.518%\"];\n\"internal_account (1.712 %)\" -> \"street_address (11.41 %)\" [label=\" registered_at:\n\n2.518%\"];\n\"internal_account (1.712 %)\" -> \"tin (1.141 %)\" [label=\" represented_by:\n\n2.098%\"];\n\"banking_transaction (17.12 %)\" -> \"internal_account (1.712 %)\" [label=\" involved:\n\n8.394%\"];\n\"party (3.424 %)\" -> \"address (11.41 %)\" [label=\" located_at:\n\n1.678%\"];\n\"party (3.424 %)\" -> \"email (1.712 %)\" [label=\" associated_with:\n\n1.678%\"];\n\"party (3.424 %)\" -> \"internal_account (1.712 %)\" [label=\" manages:\n\n0.335%\"];\n\"party (3.424 %)\" -> \"party (3.424 %)\" [label=\" manages:\n\n0.251%\"];\n\"party (3.424 %)\" -> \"party (3.424 %)\" [label=\" part_of:\n\n0.251%\"];\n\"party (3.424 %)\" -> \"phone (2.282 %)\" [label=\" associated_with:\n\n1.511%\"];\n\"party (3.424 %)\" -> \"internal_account (1.712 %)\" [label=\" is_primary:\n\n1.259%\"];\n\"party (3.424 %)\" -> \"street_address (11.41 %)\" [label=\" located_at:\n\n1.678%\"];\n\"party (3.424 %)\" -> \"tin (1.141 %)\" [label=\" represented_by:\n\n0.847%\"];\n\"sar (0.011 %)\" -> \"tin (1.141 %)\" [label=\" created_for:\n\n0.008%\"];\n\"exp_comment (0.339 %)\" -> \"sar (0.011 %)\" [label=\" exp_has_comment:\n\n0.014%\"];\n}",
+    "dataFetched": true,
+    "showForceGraph": true
+  },
+  "queries": [
+    {
+      "sql": "-- Find among all transactions via wires whose risk score is greater than 20, list the people who have internal accounts to the same bank and also list the individual's risk scores with the transaction amount\nGRAPH expero.banking_graph\n  MATCH  (a:bank WHERE (a.NODE ='d8d3cb99-0e3b-45b4-8221-79e8425065f3')) -[ab:performed]-> (b:wire_message WHERE b.wire_message_risk_score > 20) - [bc:is_for_transaction] -> (c:banking_transaction) - [d:involved] -> (e:internal_account)\n<- [f:manages] - (g:party) \n RETURN   g.party_name as person, g.party_risk_score as risk_score, c.banking_transaction_amount",
+      "activeTab": "graph"
+    },
+    {
+      "sql": "-- Find all the transactions at banks that has names closer to 'ernser' via wire message transfers and list the risk scores of each transaction\nGRAPH expero.banking_graph\n  MATCH  (a:bank WHERE (LOWER(a.bank_name) LIKE '%ernser%')) -[ab:performed]-> (b:wire_message) - [bc:is_for_transaction] -> (c:banking_transaction)\n  RETURN a.bank_name as bank, b.NODE as wire, ab.LABEL as ablabel, c.NODE as transaction,  \n         c.banking_transaction_amount, b.wire_message_risk_score",
+      "activeTab": "graph"
+    }
+  ]
+}

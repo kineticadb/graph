@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Kinetica Graph Explorer session format — captures the full state needed to restore a user's exploration session.",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Schema version for forward compatibility."
+    },
+    "savedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when the session was saved."
+    },
+    "connection": {
+      "type": "object",
+      "description": "Server connection details (password excluded for security).",
+      "properties": {
+        "url":  { "type": "string" },
+        "user": { "type": "string" }
+      },
+      "required": ["url"]
+    },
+    "graph": {
+      "type": "object",
+      "description": "The active graph and its state.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Fully qualified graph name (e.g., 'expero.banking_graph')."
+        },
+        "selectedNodeLabels": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Currently selected node labels for filtering."
+        },
+        "selectedEdgeLabels": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Currently selected edge labels for filtering."
+        },
+        "ontologyDot": {
+          "type": ["string", "null"],
+          "description": "Graphviz DOT string for the graph ontology (null if not loaded)."
+        }
+      },
+      "required": ["name"]
+    },
+    "queries": {
+      "type": "array",
+      "description": "Open query panels with their SQL text and results.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sql": {
+            "type": "string",
+            "description": "The SQL/GQL query text."
+          },
+          "activeTab": {
+            "type": ["string", "null"],
+            "enum": [null, "results", "graph"],
+            "description": "Which tab was active (null = collapsed)."
+          }
+        },
+        "required": ["sql"]
+      }
+    }
+  },
+  "required": ["version", "savedAt", "connection", "graph"]
+}
