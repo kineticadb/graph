@@ -168,7 +168,7 @@ tests/
 
 ### Reference Data
 
-- **Server**: `http://127.0.0.1:9191` (user: `admin`, password: `***REMOVED***`)
+- **Server**: `http://127.0.0.1:9191` (user: `admin`, password: `admin`)
 - **Graph**: `expero.banking_graph`
 - **Query**: 2-hop GQL traversal — `bank` → `wire_message` → `banking_transaction`
 - **Expected**: 65 records, 3 node labels, 2 edge labels, path continuity across hops

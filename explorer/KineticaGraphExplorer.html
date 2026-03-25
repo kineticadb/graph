@@ -1165,7 +1165,7 @@ function GraphTablePreview(props) {
 
     // Check if visualization is possible (case-insensitive)
     var eH = (data && data.edges && data.edges.headers) || [];
-    var canVisualize = eH.length > 0 && resolveCol(eH, ["NODE1_NAME","EDGE_NODE1_NAME"]) !== null && resolveCol(eH, ["NODE2_NAME","EDGE_NODE2_NAME"]) !== null && resolveCol(eH, ["EDGE_WKTLINE","WKTLINE"]) === null;
+    var canVisualize = eH.length > 0 && resolveCol(eH, ["NODE1_NAME","EDGE_NODE1_NAME","NODE1_ID","EDGE_NODE1_ID"]) !== null && resolveCol(eH, ["NODE2_NAME","EDGE_NODE2_NAME","NODE2_ID","EDGE_NODE2_ID"]) !== null && resolveCol(eH, ["EDGE_WKTLINE","WKTLINE"]) === null;
     // end canVisualize
 
 
@@ -1223,12 +1223,12 @@ function CanvasGraph(props) {
 
     var edgeHeaders = graphTableData.edges.headers;
     var nodeHeaders = graphTableData.nodes.headers;
-    var colN1 = resolveCol(edgeHeaders, ["NODE1_NAME", "EDGE_NODE1_NAME"]);
-    var colN2 = resolveCol(edgeHeaders, ["NODE2_NAME", "EDGE_NODE2_NAME"]);
+    var colN1 = resolveCol(edgeHeaders, ["NODE1_NAME", "EDGE_NODE1_NAME", "NODE1_ID", "EDGE_NODE1_ID"]);
+    var colN2 = resolveCol(edgeHeaders, ["NODE2_NAME", "EDGE_NODE2_NAME", "NODE2_ID", "EDGE_NODE2_ID"]);
     var colEdgeLabel = resolveCol(edgeHeaders, ["EDGE_LABEL"]);
     var colDir = resolveCol(edgeHeaders, ["EDGE_DIRECTION"]);
     var colWeight = resolveCol(edgeHeaders, ["WEIGHTS_VALUESPECIFIED"]);
-    var colNodeName = resolveCol(nodeHeaders, ["NODE_NAME"]);
+    var colNodeName = resolveCol(nodeHeaders, ["NODE_NAME", "NODE_ID"]);
     var colNodeLabel = resolveCol(nodeHeaders, ["NODE_LABEL"]);
     var hasWkt = resolveCol(edgeHeaders, ["EDGE_WKTLINE", "WKTLINE"]) !== null;
 
@@ -1349,8 +1349,8 @@ function CanvasGraph(props) {
             var elStr = edgeLabels.join(", ");
             if (elStr && !edgeLabelColors[elStr]) edgeLabelColors[elStr] = getLabelColor(elStr);
             return {
-                source: rec[colN1],
-                target: rec[colN2],
+                source: String(rec[colN1]),
+                target: String(rec[colN2]),
                 edgeLabel: elStr,
                 edgeColor: edgeLabelColors[elStr] || "rgba(255,255,255,0.15)",
                 weight: colWeight ? rec[colWeight] : null
@@ -1371,10 +1371,10 @@ function CanvasGraph(props) {
         // Compute filtered edge count (same logic as useMemo filter)
         var edgeHeaders = graphTableData.edges.headers;
         var nodeHeaders = graphTableData.nodes.headers;
-        var _colN1 = resolveCol(edgeHeaders, ["NODE1_NAME", "EDGE_NODE1_NAME"]);
-        var _colN2 = resolveCol(edgeHeaders, ["NODE2_NAME", "EDGE_NODE2_NAME"]);
+        var _colN1 = resolveCol(edgeHeaders, ["NODE1_NAME", "EDGE_NODE1_NAME", "NODE1_ID", "EDGE_NODE1_ID"]);
+        var _colN2 = resolveCol(edgeHeaders, ["NODE2_NAME", "EDGE_NODE2_NAME", "NODE2_ID", "EDGE_NODE2_ID"]);
         var _colEdgeLabel = resolveCol(edgeHeaders, ["EDGE_LABEL"]);
-        var _colNodeName = resolveCol(nodeHeaders, ["NODE_NAME"]);
+        var _colNodeName = resolveCol(nodeHeaders, ["NODE_NAME", "NODE_ID"]);
         var _colNodeLabel = resolveCol(nodeHeaders, ["NODE_LABEL"]);
         var _nodeLabelMap = {};
         if (_colNodeName && _colNodeLabel) {
@@ -1758,15 +1758,15 @@ function App() {
             setFetchProgress({ edgesDone: 0, edgesTotal: edgeTotal, nodesDone: 0, nodesTotal: nodeTotal });
 
             // Select only needed columns for edges
-            var eColN1 = resolveCol(allEdgeHeaders, ["NODE1_NAME", "EDGE_NODE1_NAME"]);
-            var eColN2 = resolveCol(allEdgeHeaders, ["NODE2_NAME", "EDGE_NODE2_NAME"]);
+            var eColN1 = resolveCol(allEdgeHeaders, ["NODE1_NAME", "EDGE_NODE1_NAME", "NODE1_ID", "EDGE_NODE1_ID"]);
+            var eColN2 = resolveCol(allEdgeHeaders, ["NODE2_NAME", "EDGE_NODE2_NAME", "NODE2_ID", "EDGE_NODE2_ID"]);
             var eColLabel = resolveCol(allEdgeHeaders, ["EDGE_LABEL"]);
             var eColDir = resolveCol(allEdgeHeaders, ["EDGE_DIRECTION"]);
             var eColWeight = resolveCol(allEdgeHeaders, ["WEIGHTS_VALUESPECIFIED"]);
             var edgeCols = [eColN1, eColN2, eColLabel, eColDir, eColWeight].filter(Boolean);
 
             // Select only needed columns for nodes
-            var nColName = resolveCol(allNodeHeaders, ["NODE_NAME"]);
+            var nColName = resolveCol(allNodeHeaders, ["NODE_NAME", "NODE_ID"]);
             var nColLabel = resolveCol(allNodeHeaders, ["NODE_LABEL"]);
             var nodeCols = [nColName, nColLabel].filter(Boolean);
 
