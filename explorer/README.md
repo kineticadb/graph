@@ -11,14 +11,23 @@ A zero-install, browser-based tool for exploring graph data structures in a [Kin
 
 No build step, no dependencies to install, no server to run.
 
+## Screenshots
+
+![Graph Explorer — ontology, query visualization, and label charts](screenshots/KineticaGraphExplorer1.png)
+*Full explorer view: ontology structure, GQL query path visualization, force-graph canvas, and label distribution charts.*
+
+![Graph Explorer — ontology picking and highlighting](screenshots/KineticaGraphExplorer11.png)
+*Ontology picking mode: clicking nodes/edges highlights matching labels across views.*
+
 ## Features
 
 ### Graph Overview
 - **Label Distribution** — Interactive doughnut charts and sortable tables for node and edge labels, with counts and percentages.
-- **Summary Cards** — At-a-glance counts of labeled/unlabeled nodes and edges.
+- **Summary Cards** — At-a-glance counts of labeled/unlabeled nodes and edges, with number of distinct labels shown.
 
 ### Ontology Visualization
 - Click **Ontology** to render the graph's structural schema as a Graphviz DOT diagram.
+- **NKey / EKey** toggles (default OFF) — control whether the ontology shows actual label names (`mentions`, `document`) or schema-grouped types (`RelationType`, `EntityType`). Re-click Ontology after toggling.
 - Pan, zoom, and click on nodes/edges in the ontology to highlight matching labels in the charts.
 
 ### Graph Table Data
@@ -34,9 +43,10 @@ No build step, no dependencies to install, no server to run.
   - **Visualization** — Expands an interactive force-directed path visualization (for hop-based graph query results) with label-consistent colors, legend, directed arrows, and animated particles. The graph responsively scales and re-centers on panel resize.
 
 ### Session Save / Load
-- Click **Save** to download the current session as a JSON file — captures the server connection, active graph, selected labels, ontology DOT, data fetch/visualization state, and all open query panels with their SQL text.
-- Click **Load** to restore a previously saved session. The explorer reconnects, selects the graph, restores label selections, ontology, re-fetches table data and visualization if they were active, and reopens query panels with their SQL pre-filled.
-- **Auto-run** toggle (on by default, next to Save/Load) — when on, restored queries execute automatically on session load, producing results and visualizations without manual intervention.
+Session controls are in the **Sidebar** (lower left, visible when connected):
+- **Load Session** — Restore from a JSON file. Uses the active server connection (warns if session was saved from a different server). Warns if the graph is not found. Re-fetches table data and visualization if they were active.
+- **Save Session** — Download current state as JSON (connection, graph, labels, ontology, data/viz state, queries). Confirms with filename on save.
+- **Auto-run Queries** toggle (on by default) — when on, restored queries execute automatically on session load.
 
 ### Cross-View Picking
 - Toggle **Pick** mode to enable bidirectional highlighting: clicking ontology elements highlights the label chart, and hovering chart rows highlights ontology nodes/edges.
@@ -45,7 +55,7 @@ No build step, no dependencies to install, no server to run.
 - **Auto-refresh** — Polling toggle (5s–5m intervals) for live label count monitoring.
 - **Resizable split panes** — Drag dividers or the corner handle to resize panels.
 - **Floating query panels** — Multiple independent panels, each draggable and resizable with SQL editor, results table, and graph visualization.
-- **Session persistence** — Save/Load buttons to export and restore full exploration state as JSON.
+- **Tooltips** — All buttons and toggles have hover tooltips describing their function.
 
 ## Architecture
 
@@ -64,8 +74,8 @@ The application is a single HTML file containing inline CSS and JSX (transpiled 
 | Component | Role |
 |---|---|
 | `App` | Root state management (graphs, credentials, labels, ontology, queries) |
-| `Sidebar` | Server connection, profile switching, graph list |
-| `DashboardHeader` | Graph title, action buttons (Ontology, Query, Save, Load, Auto-run, Refresh, Pick, Auto) |
+| `Sidebar` | Server connection, profile switching, graph list, session Load/Save, Auto-run toggle |
+| `DashboardHeader` | Single-line: graph info, Pick, Ontology, NKey/EKey, Query (left) — Refresh, Auto, timestamp (right) |
 | `LabelChart` | Doughnut chart + interactive label table |
 | `OntologyViewer` | Graphviz WASM rendering with D3 zoom/pan |
 | `CanvasGraph` | Force-directed visualization of graph table data |

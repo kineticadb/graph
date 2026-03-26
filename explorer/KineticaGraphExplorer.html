@@ -301,7 +301,7 @@ function Label(props) {
 
 /* ═══════════════════ Sidebar ═════════════════════════════ */
 function Sidebar(props) {
-    var onConnect = props.onConnect, onClearGraphs = props.onClearGraphs, graphs = props.graphs, activeGraph = props.activeGraph, onSelectGraph = props.onSelectGraph, loading = props.loading;
+    var onConnect = props.onConnect, onClearGraphs = props.onClearGraphs, graphs = props.graphs, activeGraph = props.activeGraph, onSelectGraph = props.onSelectGraph, loading = props.loading, onLoad = props.onLoad, onSave = props.onSave, autoRunQueries = props.autoRunQueries, onToggleAutoRun = props.onToggleAutoRun;
     const [profileIdx, setProfileIdx] = useState(0);
     const [url,  setUrl]  = useState(DEFAULT_PROFILES[0].url);
     const [user, setUser] = useState(DEFAULT_PROFILES[0].user);
@@ -387,6 +387,37 @@ function Sidebar(props) {
                     })
                 }
             </div>
+            {graphs.length > 0 && (
+                <div style={{ marginTop:10, display:'flex', flexDirection:'column', gap:6, flexShrink:0 }}>
+                    {onLoad && (
+                        <label title="Load a previously saved session from a JSON file" style={{
+                            display:'block', padding:'10px 0', border:'none', borderRadius:6,
+                            cursor:'pointer', fontWeight:700, color:'#fff', background:'#636e72',
+                            fontSize:12, fontFamily:'inherit', textAlign:'center',
+                        }}>
+                            Load Session<input type="file" accept=".json" style={{ display:'none' }} onChange={function(e){ if (e.target.files[0]) { onLoad(e.target.files[0]); e.target.value = ''; } }} />
+                        </label>
+                    )}
+                    {onSave && (
+                        <button onClick={onSave} title="Save current session (graph, labels, queries) to a JSON file" style={{
+                            padding:'10px 0', border:'none', borderRadius:6,
+                            cursor:'pointer', fontWeight:700, color:'#fff', background:'#636e72',
+                            fontSize:12, fontFamily:'inherit', textAlign:'center', width:'100%',
+                        }}>Save Session</button>
+                    )}
+                    {onToggleAutoRun && (
+                        <div onClick={onToggleAutoRun} title="Auto-run queries on session load: when ON, restored queries execute automatically and show visualizations" style={{
+                            display:'flex', alignItems:'center', justifyContent:'center', gap:6,
+                            padding:'6px 0', background:'#f1f2f6', borderRadius:6, cursor:'pointer', userSelect:'none',
+                        }}>
+                            <span style={{ fontSize:11, fontWeight:700, color: autoRunQueries ? '#6c5ce7':'#636e72' }}>Auto-run Queries</span>
+                            <div style={{ width:28, height:14, borderRadius:20, position:'relative', background: autoRunQueries ? '#6c5ce7':'#ccc', transition:'0.2s' }}>
+                                <div style={{ width:10, height:10, borderRadius:'50%', background:'#fff', position:'absolute', top:2, left: autoRunQueries ? 16:2, transition:'0.2s' }}/>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            )}
         </div>
     );
 }
@@ -394,10 +425,12 @@ function Sidebar(props) {
 /* ═══════════════════ SummaryCards ═════════════════════════ */
 function SummaryCards(props) {
     var data = props.data, server = props.server;
+    var numNodeLabels = (data.node_labels || []).length;
+    var numEdgeLabels = (data.edge_labels || []).length;
     var items = [
-        { label:'LABELED NODES',   value: data.total_labeled_nodes },
+        { label:'LABELED NODES',   value: data.total_labeled_nodes, sub: numNodeLabels + ' label' + (numNodeLabels !== 1 ? 's' : '') },
         { label:'UNLABELED NODES', value: data.total_unlabeled_nodes },
-        { label:'LABELED EDGES',   value: data.total_labeled_edges },
+        { label:'LABELED EDGES',   value: data.total_labeled_edges, sub: numEdgeLabels + ' label' + (numEdgeLabels !== 1 ? 's' : '') },
         { label:'UNLABELED EDGES', value: data.total_unlabeled_edges },
     ];
     return (
@@ -407,6 +440,7 @@ function SummaryCards(props) {
                     <div key={item.label}>
                         <p style={{ margin:0, fontSize:10, color:'#636e72', fontWeight:600, letterSpacing:0.5 }}>{item.label}</p>
                         <h3 style={{ margin:'3px 0 0', fontSize:14, fontWeight:800, color:'#2d3436' }}>{(item.value||0).toLocaleString()}</h3>
+                        {item.sub && <p style={{ margin:'2px 0 0', fontSize:9, color:'#0984e3', fontWeight:600 }}>{item.sub}</p>}
                     </div>
                 );
             })}
@@ -636,7 +670,9 @@ function OntologyViewer(props) {
 /* ═══════════════════ DashboardHeader ═════════════════════ */
 function DashboardHeader(props) {
     var graphName = props.graphName, server = props.server, lastRefresh = props.lastRefresh, pickingEnabled = props.pickingEnabled;
-    var onTogglePicking = props.onTogglePicking, onRefresh = props.onRefresh, onOntology = props.onOntology, onQuery = props.onQuery, onSave = props.onSave, onLoad = props.onLoad, autoRunQueries = props.autoRunQueries, onToggleAutoRun = props.onToggleAutoRun, loading = props.loading;
+    var onTogglePicking = props.onTogglePicking, onRefresh = props.onRefresh, onOntology = props.onOntology, onQuery = props.onQuery, loading = props.loading;
+    var schemaNodeLabelkeys = props.schemaNodeLabelkeys, onToggleSchemaNodeLabelkeys = props.onToggleSchemaNodeLabelkeys;
+    var schemaEdgeLabelkeys = props.schemaEdgeLabelkeys, onToggleSchemaEdgeLabelkeys = props.onToggleSchemaEdgeLabelkeys;
     var autoRefresh = props.autoRefresh, autoInterval = props.autoInterval, onToggleAutoRefresh = props.onToggleAutoRefresh, onChangeInterval = props.onChangeInterval;
     const [elapsed, setElapsed] = useState('');
 
@@ -646,11 +682,11 @@ function DashboardHeader(props) {
         return function() { clearInterval(id); };
     }, [lastRefresh]);
 
-    var smallBtn = function(label, color, onClick) {
+    var smallBtn = function(label, color, onClick, tooltip) {
         return (
-            <button onClick={onClick} disabled={loading} style={{
-                padding:'4px 10px', border:'none', borderRadius:4, cursor: loading ? 'not-allowed':'pointer',
-                fontWeight:700, color:'#fff', background:color, fontSize:10, whiteSpace:'nowrap',
+            <button onClick={onClick} disabled={loading} title={tooltip || ''} style={{
+                padding:'8px 16px', border:'none', borderRadius:6, cursor: loading ? 'not-allowed':'pointer',
+                fontWeight:700, color:'#fff', background:color, fontSize:12, whiteSpace:'nowrap',
                 opacity: loading ? 0.5:1, transition:'0.2s', fontFamily:'inherit',
             }}>{label}</button>
         );
@@ -658,50 +694,54 @@ function DashboardHeader(props) {
 
     return (
         <div style={{ marginBottom:8, borderBottom:'1px solid #eee', paddingBottom:6 }}>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:6 }}>
+            <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap' }}>
+                {/* Info */}
                 <div style={{ fontSize:11, color:'#636e72', lineHeight:1.4 }}>
                     <span style={{ fontWeight:800, fontSize:13, color:'#2d3436' }}>{graphName}</span>
                     <span style={{ margin:'0 6px', color:'#ddd' }}>|</span>
                     <span>{server}</span>
-                    {lastRefresh && <span style={{ margin:'0 6px', color:'#ddd' }}>|</span>}
-                    {lastRefresh && <span>Updated: {new Date(lastRefresh).toLocaleTimeString()} <span style={{ color:'#0984e3' }}>({elapsed})</span></span>}
+                    {loading && <span style={{ marginLeft:6, fontSize:10, color:'#0984e3', fontWeight:700 }}>{'\u23F3'}</span>}
                 </div>
-                <div style={{ display:'flex', gap:4, alignItems:'center', flexWrap:'wrap' }}>
-                    <div onClick={onTogglePicking} style={{ display:'inline-flex', alignItems:'center', gap:4, background:'#f1f2f6', padding:'3px 8px', borderRadius:4, cursor:'pointer', userSelect:'none', fontSize:10, fontWeight:700, color: pickingEnabled ? '#00b894':'#636e72' }}>
-                        Pick
-                        <div style={{ width:24, height:12, borderRadius:20, position:'relative', background: pickingEnabled ? '#00b894':'#ccc', transition:'0.2s' }}>
-                            <div style={{ width:8, height:8, borderRadius:'50%', background:'#fff', position:'absolute', top:2, left: pickingEnabled ? 14:2, transition:'0.2s' }}/>
-                        </div>
+                {/* Action buttons */}
+                <div onClick={onTogglePicking} title="Enable cross-view picking: click ontology nodes/edges to highlight matching labels" style={{ display:'inline-flex', alignItems:'center', gap:4, background:'#f1f2f6', padding:'3px 8px', borderRadius:6, cursor:'pointer', userSelect:'none', fontSize:10, fontWeight:700, color: pickingEnabled ? '#00b894':'#636e72' }}>
+                    Pick
+                    <div style={{ width:24, height:12, borderRadius:20, position:'relative', background: pickingEnabled ? '#00b894':'#ccc', transition:'0.2s' }}>
+                        <div style={{ width:8, height:8, borderRadius:'50%', background:'#fff', position:'absolute', top:2, left: pickingEnabled ? 14:2, transition:'0.2s' }}/>
                     </div>
-                    {smallBtn('Ontology', '#fd9644', onOntology)}
-                    {smallBtn('Query', '#6c5ce7', onQuery)}
-                    {smallBtn('Refresh', '#00b894', onRefresh)}
-                    {smallBtn('Save', '#636e72', onSave)}
-                    <label style={{ padding:'4px 10px', border:'none', borderRadius:4, cursor:'pointer', fontWeight:700, color:'#fff', background:'#636e72', fontSize:10, whiteSpace:'nowrap', transition:'0.2s', fontFamily:'inherit', display:'inline-block' }}>
-                        Load<input type="file" accept=".json" style={{ display:'none' }} onChange={function(e){ if (e.target.files[0] && onLoad) { onLoad(e.target.files[0]); e.target.value = ''; } }} />
-                    </label>
-                    <div onClick={onToggleAutoRun} style={{ display:'inline-flex', alignItems:'center', gap:3, background:'#f1f2f6', padding:'3px 6px', borderRadius:4, cursor:'pointer', userSelect:'none' }}>
-                        <span style={{ fontSize:9, fontWeight:700, color: autoRunQueries ? '#6c5ce7':'#636e72' }}>Auto-run</span>
-                        <div style={{ width:24, height:12, borderRadius:20, position:'relative', background: autoRunQueries ? '#6c5ce7':'#ccc', transition:'0.2s' }}>
-                            <div style={{ width:8, height:8, borderRadius:'50%', background:'#fff', position:'absolute', top:2, left: autoRunQueries ? 14:2, transition:'0.2s' }}/>
-                        </div>
-                    </div>
-                    <div style={{ display:'inline-flex', alignItems:'center', gap:4, background: autoRefresh ? '#e8f8f5':'#f1f2f6', padding:'3px 6px', borderRadius:4 }}>
-                        <div onClick={onToggleAutoRefresh} style={{ display:'inline-flex', alignItems:'center', gap:3, cursor:'pointer', userSelect:'none' }}>
-                            <span style={{ fontSize:10, fontWeight:700, color: autoRefresh ? '#00b894':'#636e72' }}>Auto</span>
-                            <div style={{ width:24, height:12, borderRadius:20, position:'relative', background: autoRefresh ? '#00b894':'#ccc', transition:'0.2s' }}>
-                                <div style={{ width:8, height:8, borderRadius:'50%', background:'#fff', position:'absolute', top:2, left: autoRefresh ? 14:2, transition:'0.2s' }}/>
-                            </div>
-                        </div>
-                        {autoRefresh && (
-                            <select value={autoInterval} onChange={function(e){ onChangeInterval(parseInt(e.target.value)); }} style={{ fontSize:10, border:'1px solid #ddd', borderRadius:3, padding:'1px 2px', fontFamily:'inherit' }}>
-                                <option value={5}>5s</option><option value={10}>10s</option><option value={15}>15s</option>
-                                <option value={30}>30s</option><option value={60}>60s</option><option value={300}>5m</option>
-                            </select>
-                        )}
-                    </div>
-                    {loading && <span style={{ fontSize:10, color:'#0984e3', fontWeight:700 }}>\u23F3</span>}
                 </div>
+                {smallBtn('Ontology', '#fd9644', onOntology, 'Load and display the graph ontology structure')}
+                <div style={{ display:'inline-flex', alignItems:'center', gap:3, background:'#f1f2f6', padding:'3px 6px', borderRadius:6 }}>
+                    <div onClick={onToggleSchemaNodeLabelkeys} title="Node schema label keys: ON = group by schema type, OFF = show actual node labels (re-click Ontology to apply)" style={{ display:'inline-flex', alignItems:'center', gap:2, cursor:'pointer', userSelect:'none' }}>
+                        <span style={{ fontSize:8, fontWeight:700, color: schemaNodeLabelkeys ? '#fd9644':'#636e72' }}>NKey</span>
+                        <div style={{ width:20, height:10, borderRadius:20, position:'relative', background: schemaNodeLabelkeys ? '#fd9644':'#ccc', transition:'0.2s' }}>
+                            <div style={{ width:6, height:6, borderRadius:'50%', background:'#fff', position:'absolute', top:2, left: schemaNodeLabelkeys ? 12:2, transition:'0.2s' }}/>
+                        </div>
+                    </div>
+                    <div onClick={onToggleSchemaEdgeLabelkeys} title="Edge schema label keys: ON = group by schema type, OFF = show actual edge labels (re-click Ontology to apply)" style={{ display:'inline-flex', alignItems:'center', gap:2, cursor:'pointer', userSelect:'none' }}>
+                        <span style={{ fontSize:8, fontWeight:700, color: schemaEdgeLabelkeys ? '#fd9644':'#636e72' }}>EKey</span>
+                        <div style={{ width:20, height:10, borderRadius:20, position:'relative', background: schemaEdgeLabelkeys ? '#fd9644':'#ccc', transition:'0.2s' }}>
+                            <div style={{ width:6, height:6, borderRadius:'50%', background:'#fff', position:'absolute', top:2, left: schemaEdgeLabelkeys ? 12:2, transition:'0.2s' }}/>
+                        </div>
+                    </div>
+                </div>
+                {smallBtn('Query', '#6c5ce7', onQuery, 'Open a new SQL/GQL query panel')}
+                <span style={{ flex:1 }}/>
+                {smallBtn('Refresh', '#00b894', onRefresh, 'Refresh label counts')}
+                <div style={{ display:'inline-flex', alignItems:'center', gap:4, background: autoRefresh ? '#e8f8f5':'#f1f2f6', padding:'3px 6px', borderRadius:6 }}>
+                    <div onClick={onToggleAutoRefresh} title="Auto-refresh label counts at the selected interval" style={{ display:'inline-flex', alignItems:'center', gap:3, cursor:'pointer', userSelect:'none' }}>
+                        <span style={{ fontSize:10, fontWeight:700, color: autoRefresh ? '#00b894':'#636e72' }}>Auto</span>
+                        <div style={{ width:24, height:12, borderRadius:20, position:'relative', background: autoRefresh ? '#00b894':'#ccc', transition:'0.2s' }}>
+                            <div style={{ width:8, height:8, borderRadius:'50%', background:'#fff', position:'absolute', top:2, left: autoRefresh ? 14:2, transition:'0.2s' }}/>
+                        </div>
+                    </div>
+                    {autoRefresh && (
+                        <select value={autoInterval} onChange={function(e){ onChangeInterval(parseInt(e.target.value)); }} style={{ fontSize:10, border:'1px solid #ddd', borderRadius:3, padding:'1px 2px', fontFamily:'inherit' }}>
+                            <option value={5}>5s</option><option value={10}>10s</option><option value={15}>15s</option>
+                            <option value={30}>30s</option><option value={60}>60s</option><option value={300}>5m</option>
+                        </select>
+                    )}
+                </div>
+                {lastRefresh && <span style={{ fontSize:10, color:'#636e72', whiteSpace:'nowrap' }}>{new Date(lastRefresh).toLocaleTimeString()} <span style={{ color:'#0984e3' }}>({elapsed})</span></span>}
             </div>
         </div>
     );
@@ -1646,6 +1686,8 @@ function App() {
     const [labelData, setLabelData]       = useState(null);
     const [dotString, setDotString]       = useState(null);
     const [showOntology, setShowOntology] = useState(false);
+    const [schemaNodeLabelkeys, setSchemaNodeLabelkeys] = useState(false);
+    const [schemaEdgeLabelkeys, setSchemaEdgeLabelkeys] = useState(false);
     const [pickingEnabled, setPicking]    = useState(true);
     const [lastRefresh, setLastRefresh]   = useState(null);
     const [autoRefresh, setAutoRefresh]   = useState(false);
@@ -1717,11 +1759,14 @@ function App() {
     /* Load ontology (expensive call) */
     var loadOntology = useCallback(async function() {
         if (!activeGraph || !credentials.url) return;
-        var result = await api.request(credentials.url + '/modify/graph', { graph_name: activeGraph, options:{} }, credentials);
+        var opts = {};
+        if (!schemaNodeLabelkeys) opts.schema_node_labelkeys = 'false';
+        if (!schemaEdgeLabelkeys) opts.schema_edge_labelkeys = 'false';
+        var result = await api.request(credentials.url + '/modify/graph', { graph_name: activeGraph, options: opts }, credentials);
         if (result._cancelled) return;
         var outer = safeParse(result.data_str);
         if (outer && outer.info && outer.info.dot) { setDotString(outer.info.dot); setShowOntology(true); }
-    }, [activeGraph, credentials, api]);
+    }, [activeGraph, credentials, api, schemaNodeLabelkeys, schemaEdgeLabelkeys]);
 
 
     /* Fetch graph table data (edges + nodes) using columnar /get/records/bycolumn for speed */
@@ -1921,6 +1966,7 @@ function App() {
         a.download = (activeGraph || 'session').replace(/\./g, '_') + '_session.json';
         a.click();
         URL.revokeObjectURL(a.href);
+        alert('Session saved: ' + a.download);
     };
 
     var loadSession = function(file) {
@@ -1929,35 +1975,61 @@ function App() {
             try {
                 var session = JSON.parse(e.target.result);
                 if (!session || session.version !== 1) { alert('Invalid session file.'); return; }
-                // Restore connection
-                if (session.connection && session.connection.url) {
-                    var creds = { url: session.connection.url, user: session.connection.user || '', pass: credentials.pass || '' };
-                    handleConnect(creds).then(function() {
-                        // Restore graph selection
-                        if (session.graph && session.graph.name) {
-                            loadGraphDetails(session.graph.name).then(function(gt) {
-                                // Restore label selections
-                                if (session.graph.selectedNodeLabels) setSelectedNodeLabels(session.graph.selectedNodeLabels);
-                                if (session.graph.selectedEdgeLabels) setSelectedEdgeLabels(session.graph.selectedEdgeLabels);
-                                // Restore ontology
-                                if (session.graph.ontologyDot) { setDotString(session.graph.ontologyDot); setShowOntology(true); }
-                                // Restore data fetch + visualization using returned table name directly
-                                if (session.graph.dataFetched && gt) {
-                                    fetchGraphTableData(gt).then(function() {
-                                        if (session.graph.showForceGraph) setShowForceGraph(true);
-                                    });
-                                }
-                                // Restore query panels
-                                if (session.queries && session.queries.length > 0) {
-                                    var panels = session.queries.map(function(q, i) {
-                                        queryIdCounter.current++;
-                                        return { id: queryIdCounter.current, initialSql: q.sql || '', initialTab: q.activeTab || null, stateRef: { current: null }, autoRun: autoRunQueries };
-                                    });
-                                    setQueryPanels(panels);
-                                }
+
+                // Warn if session was saved from a different server
+                var sessionServer = session.connection && session.connection.url;
+                if (sessionServer && credentials.url && sessionServer !== credentials.url) {
+                    alert('Note: This session was saved from server "' + sessionServer + '"\nbut you are connected to "' + credentials.url + '".\n\nWill attempt to load the graph on the current server.');
+                }
+
+                // Use the active connection (don't reconnect to session's server)
+                var restoreGraph = function() {
+                    if (!session.graph || !session.graph.name) return;
+                    var graphName = session.graph.name;
+
+                    // Check if graph exists on current server
+                    if (graphs.indexOf(graphName) === -1) {
+                        alert('Graph "' + graphName + '" was not found on the current server.\n\nAvailable graphs: ' + (graphs.length > 0 ? graphs.join(', ') : 'none'));
+                        // Still restore query panels (SQL text may be useful)
+                        if (session.queries && session.queries.length > 0) {
+                            var panels = session.queries.map(function(q) {
+                                queryIdCounter.current++;
+                                return { id: queryIdCounter.current, initialSql: q.sql || '', initialTab: null, stateRef: { current: null }, autoRun: false };
+                            });
+                            setQueryPanels(panels);
+                        }
+                        return;
+                    }
+
+                    loadGraphDetails(graphName).then(function(gt) {
+                        // Restore label selections
+                        if (session.graph.selectedNodeLabels) setSelectedNodeLabels(session.graph.selectedNodeLabels);
+                        if (session.graph.selectedEdgeLabels) setSelectedEdgeLabels(session.graph.selectedEdgeLabels);
+                        // Restore ontology
+                        if (session.graph.ontologyDot) { setDotString(session.graph.ontologyDot); setShowOntology(true); }
+                        // Restore data fetch + visualization
+                        if (session.graph.dataFetched && gt) {
+                            fetchGraphTableData(gt).then(function() {
+                                if (session.graph.showForceGraph) setShowForceGraph(true);
                             });
                         }
+                        // Restore query panels
+                        if (session.queries && session.queries.length > 0) {
+                            var panels = session.queries.map(function(q) {
+                                queryIdCounter.current++;
+                                return { id: queryIdCounter.current, initialSql: q.sql || '', initialTab: q.activeTab || null, stateRef: { current: null }, autoRun: autoRunQueries };
+                            });
+                            setQueryPanels(panels);
+                        }
                     });
+                };
+
+                // If not connected yet, connect first then restore
+                if (!credentials.url && sessionServer) {
+                    var creds = { url: sessionServer, user: (session.connection && session.connection.user) || '', pass: '' };
+                    handleConnect(creds).then(restoreGraph);
+                } else {
+                    restoreGraph();
                 }
             } catch(err) { alert('Error loading session: ' + err.message); }
         };
@@ -1968,7 +2040,7 @@ function App() {
 
     return (
         <div style={{ display:'flex', height:'100vh', overflow:'hidden' }}>
-            <Sidebar onConnect={handleConnect} onClearGraphs={clearGraphs} graphs={graphs} activeGraph={activeGraph} onSelectGraph={loadGraphDetails} loading={api.loading} />
+            <Sidebar onConnect={handleConnect} onClearGraphs={clearGraphs} graphs={graphs} activeGraph={activeGraph} onSelectGraph={loadGraphDetails} loading={api.loading} onLoad={loadSession} onSave={saveSession} autoRunQueries={autoRunQueries} onToggleAutoRun={function(){ setAutoRunQueries(function(p){ return !p; }); }} />
 
             <div ref={mainContentRef} style={{ flexGrow:1, overflow:'hidden', padding:16, display:'flex', flexDirection:'column', height:'100vh' }}>
 
@@ -1980,7 +2052,9 @@ function App() {
                             graphName={activeGraph} server={credentials.url} lastRefresh={lastRefresh}
                             pickingEnabled={pickingEnabled} onTogglePicking={function(){ setPicking(function(p){ return !p; }); }}
                             onRefresh={function(){ loadGraphDetails(activeGraph); }} onOntology={loadOntology} onQuery={function(){ queryIdCounter.current++; setQueryPanels(function(prev){ return prev.concat([{ id: queryIdCounter.current, initialSql: '', initialTab: null, stateRef: { current: null } }]); }); }}
-                            onSave={saveSession} onLoad={loadSession} autoRunQueries={autoRunQueries} onToggleAutoRun={function(){ setAutoRunQueries(function(p){ return !p; }); }} loading={api.loading}
+                            schemaNodeLabelkeys={schemaNodeLabelkeys} onToggleSchemaNodeLabelkeys={function(){ setSchemaNodeLabelkeys(function(p){ return !p; }); }}
+                            schemaEdgeLabelkeys={schemaEdgeLabelkeys} onToggleSchemaEdgeLabelkeys={function(){ setSchemaEdgeLabelkeys(function(p){ return !p; }); }}
+                            loading={api.loading}
                             autoRefresh={autoRefresh} autoInterval={autoInterval}
                             onToggleAutoRefresh={function(){ setAutoRefresh(function(p){ return !p; }); }}
                             onChangeInterval={function(val){ setAutoInterval(val); }}

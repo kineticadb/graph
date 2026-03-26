@@ -20,8 +20,8 @@ Edit `KineticaGraphExplorer.html` and open/refresh in a browser. No build or ins
 
 `App` (root, ~300 lines) manages all top-level state: graphs, credentials, labels, ontology, picking mode, and split-pane layout. Child components:
 
-- `Sidebar` — Server connection (URL, credentials, profile switching via `DEFAULT_PROFILES`), graph list
-- `DashboardHeader` — Graph title, refresh status, action buttons (Ontology, Query, Save, Load, Auto-run, Refresh, Pick, Auto)
+- `Sidebar` — Server connection (URL, credentials, profile switching via `DEFAULT_PROFILES`), graph list, session Load/Save buttons, Auto-run toggle
+- `DashboardHeader` — Single-line layout: graph info on left, action buttons (Pick, Ontology, NKey/EKey, Query) in middle, Refresh/Auto + timestamp on right. All buttons match Fetch button sizing
 - `SummaryCards` — Node/edge count statistics
 - `LabelChart` — Doughnut chart (Chart.js) + interactive table for label distribution
 - `OntologyViewer` — Graphviz WASM rendering of graph ontology DOT with D3 zoom/pan and node/edge picking
@@ -40,7 +40,7 @@ Edit `KineticaGraphExplorer.html` and open/refresh in a browser. No build or ins
 ### Kinetica API Endpoints Used
 
 - `POST /show/graph` — List graphs (empty name) or get graph label details (specific name)
-- `POST /modify/graph` — Retrieve graph ontology in DOT format
+- `POST /modify/graph` — Retrieve graph ontology in DOT format. Supports `schema_node_labelkeys` and `schema_edge_labelkeys` options (`'false'` to show actual labels instead of schema types)
 - `POST /get/records` — Fetch backing table rows for `GraphTablePreview`
 - `POST /execute/sql` — Run SQL/GQL queries via `QueryPanel`
 
@@ -78,13 +78,16 @@ Sessions are saved as JSON files (schema version 1). The session object captures
 - `graph.dataFetched` — Whether table data was loaded; `graph.showForceGraph` — Whether visualization was active
 - `queries[]` — Array of open query panels with `sql` text and `activeTab` state
 
-On load: reconnects to the server, selects the graph, restores label selections, ontology, re-fetches table data + visualization if previously active, and reopens query panels. If **Auto-run** toggle is on (default), restored queries execute automatically and show their visualizations. Schema defined in `tests/session_schema.json`.
+On load: uses the active server connection (warns if session server differs), checks graph exists (warns if not found), restores label selections, ontology, re-fetches table data + visualization if previously active, and reopens query panels. If **Auto-run** toggle is on (default), restored queries execute automatically. Session Load/Save/Auto-run controls are in the Sidebar (visible when connected). Schema defined in `tests/session_schema.json`.
 
 **Implementation notes:**
 - `loadGraphDetails` returns the extracted `graphTable` value, which `loadSession` passes directly to `fetchGraphTableData(gt)` to avoid stale closure issues
 - `fetchGraphTableData(overrideTable)` accepts an optional string parameter; non-string arguments (e.g., React click events from `onClick={onFetch}`) are ignored via `typeof` check
 - Query panels are cleared when switching graphs or disconnecting
 - Label refresh does not redraw query visualizations — `labelColorMap` is built once from initial `labelData` via a ref
+- Column resolution (`resolveCol`) supports both NAME and ID variants (e.g., `NODE1_NAME`/`EDGE_NODE1_NAME`/`NODE1_ID`/`EDGE_NODE1_ID`); link source/target are stringified for force-graph compatibility
+- **NKey/EKey toggles** (default OFF) control `schema_node_labelkeys`/`schema_edge_labelkeys` options sent to `/modify/graph`. OFF shows actual label names; ON groups by schema type. Re-click Ontology after toggling
+- All UI buttons have hover tooltips describing their function
 
 ### `/show/graph` Response Format
 
