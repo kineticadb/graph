@@ -458,7 +458,27 @@ function LabelChart(props) {
     const canvasRef = useRef(null);
     const chartRef  = useRef(null);
     const [highlightIdx, setHighlightIdx] = useState(null);
+    const [sortMode, setSortMode] = useState('count'); // 'count' | 'alpha'
     const sorted = useMemo(function() { return [].concat(items||[]).sort(function(a,b){ return b.count - a.count; }); }, [items]);
+    // Build a color index map: label string → palette index (based on count sort, matching the chart)
+    var colorIdxMap = useMemo(function() {
+        var map = {};
+        sorted.forEach(function(item, idx) {
+            var labelStr = item.labels && item.labels.length ? item.labels.join(', ') : 'None';
+            map[labelStr] = idx;
+        });
+        return map;
+    }, [sorted]);
+    var tableSorted = useMemo(function() {
+        if (sortMode === 'alpha') {
+            return [].concat(sorted).sort(function(a, b) {
+                var la = a.labels && a.labels.length ? a.labels.join(', ') : 'None';
+                var lb = b.labels && b.labels.length ? b.labels.join(', ') : 'None';
+                return la.localeCompare(lb);
+            });
+        }
+        return sorted;
+    }, [sorted, sortMode]);
 
     useEffect(function() {
         if (!canvasRef.current) return;
@@ -520,29 +540,32 @@ function LabelChart(props) {
             <div style={{ flex:'1 1 0', minHeight:60, overflowY:'auto', border:'1px solid #eee', borderRadius:8, marginTop:14 }}>
                 <table style={{ width:'100%', borderCollapse:'collapse' }}>
                     <thead><tr>
-                        {['Labels','Count','%'].map(function(h){ return <th key={h} style={{ position:'sticky', top:0, background:'#f1f2f6', padding:10, textAlign:'left', fontSize:10, fontWeight:700, color:'#636e72', zIndex:1 }}>{h}</th>; })}
+                        <th onClick={function(){ setSortMode('alpha'); }} style={{ position:'sticky', top:0, background:'#f1f2f6', padding:10, textAlign:'left', fontSize:10, fontWeight:700, color: sortMode === 'alpha' ? '#0984e3' : '#636e72', zIndex:1, cursor:'pointer', userSelect:'none' }}>Labels {sortMode === 'alpha' ? '\u25B2' : ''}</th>
+                        <th onClick={function(){ setSortMode('count'); }} style={{ position:'sticky', top:0, background:'#f1f2f6', padding:10, textAlign:'left', fontSize:10, fontWeight:700, color: sortMode === 'count' ? '#0984e3' : '#636e72', zIndex:1, cursor:'pointer', userSelect:'none' }}>Count {sortMode === 'count' ? '\u25BC' : ''}</th>
+                        <th style={{ position:'sticky', top:0, background:'#f1f2f6', padding:10, textAlign:'left', fontSize:10, fontWeight:700, color:'#636e72', zIndex:1 }}>%</th>
                     </tr></thead>
                     <tbody>
-                        {sorted.map(function(item, idx) {
+                        {tableSorted.map(function(item, rowIdx) {
                             var labelStr = item.labels && item.labels.length ? item.labels.join(', ') : 'None';
+                            var cidx = colorIdxMap[labelStr] !== undefined ? colorIdxMap[labelStr] : rowIdx;
                             var pct = total > 0 ? (((item.count||0)/total)*100).toFixed(1) : '0.0';
                             var isSelected = selectedLabels.length > 0 && item.labels && item.labels.some(function(lb){ return selectedLabels.indexOf(lb) !== -1; });
-                            var hl = highlightIdx === idx;
+                            var hl = highlightIdx === cidx;
                             return (
-                                <tr key={idx} data-label={labelStr}
-                                    onMouseEnter={function(){ handleRowEnter(idx); }}
+                                <tr key={labelStr} data-label={labelStr}
+                                    onMouseEnter={function(){ handleRowEnter(cidx); }}
                                     onClick={function(){ if (onToggleLabel && item.labels && item.labels.length) { item.labels.forEach(function(lb) { onToggleLabel(lb); }); } }}
                                     onMouseLeave={handleRowLeave}
                                     style={{
-                                        background: isSelected ? PALETTE[idx % PALETTE.length].solid + '22' : PALETTE[idx % PALETTE.length].light,
-                                        borderLeft: '5px solid ' + PALETTE[idx % PALETTE.length].solid,
+                                        background: isSelected ? PALETTE[cidx % PALETTE.length].solid + '22' : PALETTE[cidx % PALETTE.length].light,
+                                        borderLeft: '5px solid ' + PALETTE[cidx % PALETTE.length].solid,
                                         cursor: pickingEnabled ? 'pointer':'default', transition:'0.15s',
                                         transform: hl ? 'scale(1.01)':'none',
                                         boxShadow: hl ? '0 4px 12px rgba(0,0,0,0.1)':'none',
                                         fontWeight: hl ? 700:400,
-                                        outline: isSelected ? '3px solid ' + PALETTE[idx % PALETTE.length].solid : (hl ? '3px solid #0984e3':'none'),
+                                        outline: isSelected ? '3px solid ' + PALETTE[cidx % PALETTE.length].solid : (hl ? '3px solid #0984e3':'none'),
                                     }}>
-                                    <td style={{ padding:10, fontSize:12 }}><strong>{labelStr}</strong>{isSelected && <span style={{ marginLeft:6, background:PALETTE[idx % PALETTE.length].solid, color:"#fff", fontSize:9, fontWeight:700, padding:"1px 6px", borderRadius:10 }}>SELECTED</span>}</td>
+                                    <td style={{ padding:10, fontSize:12 }}><strong>{labelStr}</strong>{isSelected && <span style={{ marginLeft:6, background:PALETTE[cidx % PALETTE.length].solid, color:"#fff", fontSize:9, fontWeight:700, padding:"1px 6px", borderRadius:10 }}>SELECTED</span>}</td>
                                     <td style={{ padding:10, fontSize:12 }}>{(item.count||0).toLocaleString()}</td>
                                     <td style={{ padding:10, fontSize:12 }}>{pct}%</td>
                                 </tr>
@@ -751,6 +774,7 @@ function DashboardHeader(props) {
 function QueryPanel(props) {
     var onClose = props.onClose, credentials = props.credentials, labelData = props.labelData, panelIndex = props.panelIndex || 0;
     var initialSql = props.initialSql || '', initialTab = props.initialTab || null, stateRef = props.stateRef, autoRun = props.autoRun;
+    var dotString = props.dotString, activeGraph = props.activeGraph;
     const [sql, setSql] = useState(initialSql);
     const [result, setResult] = useState(null);
     const [error, setError] = useState(null);
@@ -758,8 +782,172 @@ function QueryPanel(props) {
     const [pos, setPos] = useState({ x: 120 + panelIndex * 30, y: 60 + panelIndex * 30 });
     const [size, setSize] = useState({ w: 600, h: 460 });
     const [activeTab, setActiveTab] = useState(initialTab); // null | 'results' | 'graph'
+    const [showHelper, setShowHelper] = useState(false);
+    const [srcLabel, setSrcLabel] = useState('');
+    const [srcEntity, setSrcEntity] = useState('');
+    const [numHops, setNumHops] = useState(1);
+    const [tgtLabel, setTgtLabel] = useState('');
+    const [tgtEntity, setTgtEntity] = useState('');
+    const [helperStatus, setHelperStatus] = useState('');
     var graphContainerRef = useRef(null);
     var graphRef = useRef(null);
+
+    // Derive unique node label names from labelData
+    var nodeLabels = useMemo(function() {
+        if (!labelData || !labelData.node_labels) return [];
+        var all = [];
+        labelData.node_labels.forEach(function(item) {
+            (item.labels || []).forEach(function(l) { if (all.indexOf(l) === -1) all.push(l); });
+        });
+        return all.sort();
+    }, [labelData]);
+
+    // Parse ontology DOT into adjacency map: { nodeLabel: [{ edge, target }] }
+    var ontologyAdj = useMemo(function() {
+        if (!dotString) return null;
+        var adj = {};
+        // Match: "source (pct%)" -> "target (pct%)" [label=" edgeLabel:\n\npct%"]
+        var re = /"([^"]+)"\s*->\s*"([^"]+)"\s*\[.*?label\s*=\s*"([^"]+)"/g;
+        var m;
+        while ((m = re.exec(dotString)) !== null) {
+            // Extract clean label names (strip percentages)
+            var src = m[1].replace(/\s*\([^)]*\)\s*$/, '').trim();
+            var tgt = m[2].replace(/\s*\([^)]*\)\s*$/, '').trim();
+            var edgeRaw = m[3].replace(/[\s:]+$/g, '').replace(/^\s+/, '').split(/[\n:]/)[0].trim();
+            if (!adj[src]) adj[src] = [];
+            // Avoid duplicates
+            if (!adj[src].some(function(e) { return e.edge === edgeRaw && e.target === tgt; })) {
+                adj[src].push({ edge: edgeRaw, target: tgt });
+            }
+        }
+        return adj;
+    }, [dotString]);
+
+    // Build reverse adjacency for bidirectional BFS
+    var ontologyRevAdj = useMemo(function() {
+        if (!ontologyAdj) return null;
+        var rev = {};
+        Object.keys(ontologyAdj).forEach(function(src) {
+            ontologyAdj[src].forEach(function(e) {
+                if (!rev[e.target]) rev[e.target] = [];
+                if (!rev[e.target].some(function(r) { return r.edge === e.edge && r.source === src; })) {
+                    rev[e.target].push({ edge: e.edge, source: src });
+                }
+            });
+        });
+        return rev;
+    }, [ontologyAdj]);
+
+    // BFS to find shortest path between two node labels (follows edges in both directions)
+    var findPath = function(from, to, maxHops) {
+        if (!ontologyAdj || !from || !to) return null;
+        if (from === to && maxHops >= 1) {
+            var selfEdges = ontologyAdj[from] || [];
+            var selfEdge = selfEdges.find(function(e) { return e.target === from; });
+            if (selfEdge) return [{ src: from, edge: selfEdge.edge, tgt: from, dir: 'fwd' }];
+            return null;
+        }
+        var queue = [{ node: from, path: [] }];
+        var visited = {};
+        visited[from] = true;
+        while (queue.length > 0) {
+            var cur = queue.shift();
+            if (cur.path.length >= maxHops) continue;
+            // Forward edges (src -> tgt)
+            var fwd = ontologyAdj[cur.node] || [];
+            for (var i = 0; i < fwd.length; i++) {
+                var nb = fwd[i];
+                var newPath = cur.path.concat([{ src: cur.node, edge: nb.edge, tgt: nb.target, dir: 'fwd' }]);
+                if (nb.target === to) return newPath;
+                if (!visited[nb.target]) { visited[nb.target] = true; queue.push({ node: nb.target, path: newPath }); }
+            }
+            // Reverse edges (tgt <- src, traverse backwards)
+            var rev = ontologyRevAdj ? (ontologyRevAdj[cur.node] || []) : [];
+            for (var j = 0; j < rev.length; j++) {
+                var rb = rev[j];
+                var revPath = cur.path.concat([{ src: rb.source, edge: rb.edge, tgt: cur.node, dir: 'rev' }]);
+                if (rb.source === to) return revPath;
+                if (!visited[rb.source]) { visited[rb.source] = true; queue.push({ node: rb.source, path: revPath }); }
+            }
+        }
+        return null;
+    };
+
+    // Generate GQL query
+    var generateQuery = function() {
+        if (!activeGraph) { setHelperStatus('No graph selected.'); return; }
+        if (!srcLabel) { setHelperStatus('Select a source label.'); return; }
+
+        var letters = 'abcdefghijklmnopqrstuvwxyz'.split('');
+        var path = null;
+
+        if (tgtLabel && tgtLabel !== srcLabel) {
+            path = findPath(srcLabel, tgtLabel, numHops);
+        } else if (tgtLabel && tgtLabel === srcLabel) {
+            path = findPath(srcLabel, tgtLabel, numHops);
+        }
+
+        var matchParts = [];
+        var returnParts = [];
+        var varIdx = 0;
+
+        if (path && path.length > 0) {
+            // Build from ontology path with direction awareness
+            setHelperStatus('Path found: ' + path.map(function(p) {
+                return p.dir === 'fwd' ? p.src + ' -[' + p.edge + ']-> ' + p.tgt : p.tgt + ' <-[' + p.edge + ']- ' + p.src;
+            }).join(' '));
+
+            // First node in the chain is always srcLabel
+            var srcVar = letters[varIdx++];
+            var whereClause = srcEntity ? ' WHERE (' + srcVar + '.NODE =\'' + srcEntity + '\')' : '';
+            var firstNodeLabel = path[0].dir === 'fwd' ? path[0].src : path[0].tgt;
+            matchParts.push('(' + srcVar + ':' + firstNodeLabel + whereClause + ')');
+            returnParts.push(srcVar + '.NODE as ' + srcVar + '_node');
+
+            for (var i = 0; i < path.length; i++) {
+                var edgeVar = letters[varIdx > 0 ? varIdx - 1 : 0] + letters[varIdx];
+                var nextVar = letters[varIdx++];
+                var nextNodeLabel = path[i].dir === 'fwd' ? path[i].tgt : path[i].src;
+                var tgtWhere = '';
+                if (i === path.length - 1 && tgtEntity) {
+                    tgtWhere = ' WHERE (' + nextVar + '.NODE =\'' + tgtEntity + '\')';
+                }
+                if (path[i].dir === 'fwd') {
+                    matchParts.push('-[' + edgeVar + ':' + path[i].edge + ']->');
+                } else {
+                    matchParts.push('<-[' + edgeVar + ':' + path[i].edge + ']-');
+                }
+                matchParts.push('(' + nextVar + ':' + nextNodeLabel + tgtWhere + ')');
+                returnParts.push(nextVar + '.NODE as ' + nextVar + '_node');
+                returnParts.push(edgeVar + '.LABEL as ' + edgeVar + '_label');
+            }
+        } else {
+            // Generic pattern (no ontology or no path found)
+            if (ontologyAdj && tgtLabel) setHelperStatus('No path found via ontology — using generic pattern.');
+            else if (!ontologyAdj) setHelperStatus('Ontology not loaded — using generic pattern. Load ontology for smarter generation.');
+            else setHelperStatus('');
+
+            var srcVar2 = letters[varIdx++];
+            var whereClause2 = srcEntity ? ' WHERE (' + srcVar2 + '.NODE =\'' + srcEntity + '\')' : '';
+            matchParts.push('(' + srcVar2 + ':' + srcLabel + whereClause2 + ')');
+            returnParts.push(srcVar2 + '.NODE as ' + srcVar2 + '_node');
+
+            for (var h = 0; h < numHops; h++) {
+                var edgeVar2 = letters[varIdx > 0 ? varIdx - 1 : 0] + letters[varIdx];
+                var nextVar2 = letters[varIdx++];
+                var isLast = h === numHops - 1;
+                var nextLabel = isLast && tgtLabel ? ':' + tgtLabel : '';
+                var tgtWhere2 = isLast && tgtEntity ? ' WHERE (' + nextVar2 + '.NODE =\'' + tgtEntity + '\')' : '';
+                matchParts.push('-[' + edgeVar2 + ']->');
+                matchParts.push('(' + nextVar2 + nextLabel + tgtWhere2 + ')');
+                returnParts.push(nextVar2 + '.NODE as ' + nextVar2 + '_node');
+                returnParts.push(edgeVar2 + '.LABEL as ' + edgeVar2 + '_label');
+            }
+        }
+
+        var gql = 'GRAPH ' + activeGraph + '\n  MATCH ' + matchParts.join(' ') + '\n  RETURN ' + returnParts.join(', ');
+        setSql(gql);
+    };
 
     // Auto-run query on mount if autoRun is set
     var didAutoRun = useRef(false);
@@ -983,7 +1171,20 @@ function QueryPanel(props) {
             .linkDirectionalParticles(1).linkDirectionalParticleWidth(2)
             .linkDirectionalParticleColor(function(l) { return l.color || '#fff'; })
             .d3Force('charge', d3.forceManyBody().strength(-200))
-            .d3Force('link', d3.forceLink().id(function(n) { return n.id; }).distance(80));
+            .d3Force('link', d3.forceLink().id(function(n) { return n.id; }).distance(80))
+            .onNodeClick(function(node) {
+                if (navigator.clipboard) {
+                    navigator.clipboard.writeText(String(node.id)).then(function() {
+                        graph.nodeLabel(function(n) {
+                            return n.id === node.id
+                                ? '\u2705 Copied: ' + n.id + (n.label ? ' [' + n.label + ']' : '')
+                                : n.id + (n.label ? ' [' + n.label + ']' : '');
+                        });
+                    });
+                }
+                graph.centerAt(node.x, node.y, 500);
+                graph.zoom(3, 500);
+            });
 
         graphRef.current = graph;
         return function() { if (graphRef.current) { graphRef.current._destructor && graphRef.current._destructor(); graphRef.current = null; } };
@@ -1048,17 +1249,69 @@ function QueryPanel(props) {
                 }}>{'\u2715'}</button>
             </div>
 
-            {/* SQL input area */}
-            <div style={{ display:'flex', flexDirection:'column', padding:10, gap:8, flexShrink:0, maxHeight: activeTab ? 240 : undefined, minHeight:120 }}>
+            {/* Query Helper + SQL input area */}
+            <div style={{ display:'flex', flexDirection:'column', padding:'10px 10px 0 10px', gap:8, flexShrink:0 }}>
+                {/* Query Helper */}
+                <div>
+                    <div onClick={function(){ setShowHelper(function(p){ return !p; }); }} title="Query Helper: generate GQL queries from label selections" style={{ display:'flex', alignItems:'center', gap:6, cursor:'pointer', userSelect:'none', padding:'2px 0' }}>
+                        <span style={{ fontSize:13, fontWeight:800, color: showHelper ? '#6c5ce7' : '#2d3436', transition:'0.15s' }}>{showHelper ? '\u25BC' : '\u25B6'} Query Helper</span>
+                        {!showHelper && <span style={{ fontSize:10, color:'#b2bec3' }}>— build a GQL query from labels</span>}
+                    </div>
+                    {showHelper && (
+                        <div style={{ border:'1px solid #dfe6e9', borderRadius:6, padding:8, background:'#f8f7ff', marginBottom:4 }}>
+                            <div style={{ display:'flex', gap:6, marginBottom:6, flexWrap:'wrap' }}>
+                                <div style={{ flex:1, minWidth:100 }}>
+                                    <div style={{ fontSize:9, fontWeight:700, color:'#636e72', marginBottom:2 }}>Source Label</div>
+                                    <select value={srcLabel} onChange={function(e){ setSrcLabel(e.target.value); }} style={{ width:'100%', padding:'4px 6px', fontSize:11, border:'1px solid #dfe6e9', borderRadius:4, fontFamily:'inherit' }}>
+                                        <option value="">— select —</option>
+                                        {nodeLabels.map(function(l) { return <option key={l} value={l}>{l}</option>; })}
+                                    </select>
+                                </div>
+                                <div style={{ flex:1, minWidth:100 }}>
+                                    <div style={{ fontSize:9, fontWeight:700, color:'#636e72', marginBottom:2 }}>Source Entity <span style={{ fontWeight:400, color:'#b2bec3' }}>(optional)</span></div>
+                                    <input value={srcEntity} onChange={function(e){ setSrcEntity(e.target.value); }} placeholder="entity ID" style={{ width:'100%', padding:'4px 6px', fontSize:11, border:'1px solid #dfe6e9', borderRadius:4, fontFamily:'inherit', boxSizing:'border-box' }} />
+                                </div>
+                            </div>
+                            <div style={{ display:'flex', gap:6, marginBottom:6, flexWrap:'wrap' }}>
+                                <div style={{ width:60 }}>
+                                    <div style={{ fontSize:9, fontWeight:700, color:'#636e72', marginBottom:2 }}>Hops</div>
+                                    <select value={numHops} onChange={function(e){ setNumHops(parseInt(e.target.value)); }} style={{ width:'100%', padding:'4px 6px', fontSize:11, border:'1px solid #dfe6e9', borderRadius:4, fontFamily:'inherit' }}>
+                                        {[1,2,3,4,5].map(function(n) { return <option key={n} value={n}>{n}</option>; })}
+                                    </select>
+                                </div>
+                                <div style={{ flex:1, minWidth:100 }}>
+                                    <div style={{ fontSize:9, fontWeight:700, color:'#636e72', marginBottom:2 }}>Target Label</div>
+                                    <select value={tgtLabel} onChange={function(e){ setTgtLabel(e.target.value); }} style={{ width:'100%', padding:'4px 6px', fontSize:11, border:'1px solid #dfe6e9', borderRadius:4, fontFamily:'inherit' }}>
+                                        <option value="">— select —</option>
+                                        {nodeLabels.map(function(l) { return <option key={l} value={l}>{l}</option>; })}
+                                    </select>
+                                </div>
+                                <div style={{ flex:1, minWidth:100 }}>
+                                    <div style={{ fontSize:9, fontWeight:700, color:'#636e72', marginBottom:2 }}>Target Entity <span style={{ fontWeight:400, color:'#b2bec3' }}>(optional)</span></div>
+                                    <input value={tgtEntity} onChange={function(e){ setTgtEntity(e.target.value); }} placeholder="entity ID" style={{ width:'100%', padding:'4px 6px', fontSize:11, border:'1px solid #dfe6e9', borderRadius:4, fontFamily:'inherit', boxSizing:'border-box' }} />
+                                </div>
+                            </div>
+                            <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                                <button onClick={generateQuery} disabled={!srcLabel} style={{
+                                    padding:'5px 14px', border:'none', borderRadius:4, cursor: srcLabel ? 'pointer':'not-allowed',
+                                    fontWeight:700, color:'#fff', background: srcLabel ? '#6c5ce7':'#b2bec3',
+                                    fontSize:11, fontFamily:'inherit', transition:'0.2s',
+                                }}>Generate Query</button>
+                                {helperStatus && <span style={{ fontSize:9, color:'#636e72', flex:1 }}>{helperStatus}</span>}
+                                {!ontologyAdj && <span style={{ fontSize:9, color:'#fd9644' }}>Load ontology for path-aware generation</span>}
+                            </div>
+                        </div>
+                    )}
+                </div>
                 <textarea
                     value={sql} onChange={function(e){ setSql(e.target.value); }}
                     onKeyDown={handleKeyDown}
                     placeholder="Enter SQL query... (Ctrl+Enter to run)"
                     spellCheck="false"
                     style={{
-                        flex:1, resize:'none', border:'1px solid #dfe6e9', borderRadius:6,
+                        resize:'none', border:'1px solid #dfe6e9', borderRadius:6,
                         padding:10, fontFamily:'monospace', fontSize:12, outline:'none',
-                        minHeight: activeTab ? 120 : 160, background:'#fafafa',
+                        minHeight: activeTab ? 80 : 120, maxHeight: activeTab ? 120 : 200, background:'#fafafa',
                     }}
                 />
                 <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
@@ -1072,7 +1325,7 @@ function QueryPanel(props) {
                 {error && <div style={{ fontSize:11, color:'#d63031', fontWeight:600, padding:6, background:'#ffeaea', borderRadius:6, maxHeight:40, overflow:'auto' }}>{error}</div>}
             </div>
 
-            {/* Action buttons — only shown after results */}
+            {/* Action buttons — only shown after results, below the input area */}
             {result && hasResults && (
                 <div style={{ display:'flex', gap:6, padding:'6px 10px', flexShrink:0, borderTop:'1px solid #eee' }}>
                     {tableData.rows.length > 0 && tabBtn('results', 'View Results (' + tableData.rows.length + ')')}
@@ -1253,7 +1506,7 @@ function GraphTablePreview(props) {
 
 /* ═══════════════════ CanvasGraph (force-graph Canvas) ═════ */
 function CanvasGraph(props) {
-    var graphTableData = props.data, graphName = props.graphName, selectedNodeLabels = props.selectedNodeLabels || [], selectedEdgeLabels = props.selectedEdgeLabels || [];
+    var graphTableData = props.data, graphName = props.graphName, selectedNodeLabels = props.selectedNodeLabels || [], selectedEdgeLabels = props.selectedEdgeLabels || [], labelData = props.labelData;
     var containerRef = useRef(null);
     var graphRef = useRef(null);
     const [nodeLimit, setNodeLimit] = useState(500);
@@ -1271,26 +1524,27 @@ function CanvasGraph(props) {
     var colNodeName = resolveCol(nodeHeaders, ["NODE_NAME", "NODE_ID"]);
     var colNodeLabel = resolveCol(nodeHeaders, ["NODE_LABEL"]);
     var hasWkt = resolveCol(edgeHeaders, ["EDGE_WKTLINE", "WKTLINE"]) !== null;
+    var canRender = colN1 && colN2 && !hasWkt;
 
-    if (hasWkt) return <div style={{ background:"#fff", borderRadius:12, padding:20, marginBottom:20, borderLeft:"6px solid #fd9644" }}><p style={{ color:"#636e72", fontSize:13 }}>This graph has EDGE_WKTLINE geometry. Use a geospatial viewer.</p></div>;
-    if (!colN1 || !colN2) return <div style={{ background:"#fff", borderRadius:12, padding:20, marginBottom:20, borderLeft:"6px solid #fd9644" }}><p style={{ color:"#636e72", fontSize:13 }}>Missing NODE1_NAME / NODE2_NAME columns.</p></div>;
-
-    // Build color map
-    var labelColorMap = useRef({});
-    var labelColorIdx = useRef(0);
+    // Build color map matching LabelChart's PALETTE assignment (sorted by count desc)
+    var labelColorMap = useMemo(function() {
+        var map = {};
+        if (labelData) {
+            var nl = [].concat(labelData.node_labels || []).sort(function(a, b) { return b.count - a.count; });
+            nl.forEach(function(item, idx) { (item.labels || []).forEach(function(l) { map[l] = PALETTE[idx % PALETTE.length].solid; }); });
+            var el = [].concat(labelData.edge_labels || []).sort(function(a, b) { return b.count - a.count; });
+            el.forEach(function(item, idx) { (item.labels || []).forEach(function(l) { if (!map[l]) map[l] = PALETTE[(nl.length + idx) % PALETTE.length].solid; }); });
+        }
+        return map;
+    }, [labelData]);
     var getLabelColor = function(label) {
         if (!label) return "#b2bec3";
-        if (!labelColorMap.current[label]) {
-            labelColorMap.current[label] = PALETTE[labelColorIdx.current % PALETTE.length].solid;
-            labelColorIdx.current++;
-        }
-        return labelColorMap.current[label];
+        return labelColorMap[label] || "#b2bec3";
     };
 
     // Build graph data from records, filtered by selected labels
     var graphData = useMemo(function() {
-        labelColorMap.current = {};
-        labelColorIdx.current = 0;
+        if (!canRender) return { nodes: [], links: [], maxDegree: 1, totalAvailableEdges: 0, totalAvailableNodes: 0 };
 
         // Node label map
         var nodeLabelMap = {};
@@ -1548,6 +1802,16 @@ function CanvasGraph(props) {
                 setFocusNode(function(prev) { return prev === node.id ? null : node.id; });
                 graph.centerAt(node.x, node.y, 500);
                 graph.zoom(3, 500);
+                // Copy node ID to clipboard
+                if (navigator.clipboard) {
+                    navigator.clipboard.writeText(String(node.id)).then(function() {
+                        graph.nodeLabel(function(n) {
+                            return n.id === node.id
+                                ? '\u2705 Copied: ' + n.id + (n.label ? ' [' + n.label + ']' : '')
+                                : n.id + (n.label ? ' [' + n.label + ']' : '') + ' (' + (n.degree || 0) + ' connections)';
+                        });
+                    });
+                }
             })
             .onNodeHover(function(node) {
                 setHoverNode(node ? node.id : null);
@@ -1634,9 +1898,13 @@ function CanvasGraph(props) {
     }, [graphData]);
 
     // Legend
-    var legendItems = Object.keys(labelColorMap.current).map(function(l) { return { label: l, color: labelColorMap.current[l] }; });
+    var legendItems = Object.keys(labelColorMap).map(function(l) { return { label: l, color: labelColorMap[l] }; });
     var sliderStyle = { width: 90, accentColor: "#0984e3", cursor: "pointer" };
     var ctrlStyle = { fontSize: 11, fontWeight: 600, color: "#636e72", marginRight: 4 };
+
+    // Early returns (after all hooks)
+    if (hasWkt) return <div style={{ background:"#fff", borderRadius:12, padding:20, marginBottom:20, borderLeft:"6px solid #fd9644" }}><p style={{ color:"#636e72", fontSize:13 }}>This graph has EDGE_WKTLINE geometry. Use a geospatial viewer.</p></div>;
+    if (!colN1 || !colN2) return <div style={{ background:"#fff", borderRadius:12, padding:20, marginBottom:20, borderLeft:"6px solid #fd9644" }}><p style={{ color:"#636e72", fontSize:13 }}>Missing NODE1_NAME / NODE2_NAME columns.</p></div>;
 
     return (
         <div style={{ background:"#fff", borderRadius:12, boxShadow:"0 2px 8px rgba(0,0,0,0.04)", padding:16, borderLeft:"6px solid #00cec9", display:"flex", flexDirection:"column", flex:1, minHeight:0, overflow:"hidden" }}>
@@ -2072,7 +2340,7 @@ function App() {
                                             <OntologyViewer dotString={dotString} pickingEnabled={pickingEnabled} onPickLabel={handleOntologyPick} apiRef={ontologyApiRef} />
                                         ) : <div />}
                                         {showForceGraph && graphTableData ? (
-                                            <CanvasGraph data={graphTableData} graphName={activeGraph} selectedNodeLabels={selectedNodeLabels} selectedEdgeLabels={selectedEdgeLabels} />
+                                            <CanvasGraph data={graphTableData} graphName={activeGraph} selectedNodeLabels={selectedNodeLabels} selectedEdgeLabels={selectedEdgeLabels} labelData={labelData} />
                                         ) : <div />}
                                     </SplitPane>
                                 ) : null}
@@ -2102,7 +2370,7 @@ function App() {
                 )}
             </div>
             {queryPanels.map(function(panel, idx) {
-                return <QueryPanel key={panel.id} panelIndex={idx} credentials={credentials} labelData={labelData} initialSql={panel.initialSql} initialTab={panel.initialTab} stateRef={panel.stateRef} autoRun={panel.autoRun} onClose={function(){ setQueryPanels(function(prev){ return prev.filter(function(p){ return p.id !== panel.id; }); }); }} />;
+                return <QueryPanel key={panel.id} panelIndex={idx} credentials={credentials} labelData={labelData} dotString={dotString} activeGraph={activeGraph} initialSql={panel.initialSql} initialTab={panel.initialTab} stateRef={panel.stateRef} autoRun={panel.autoRun} onClose={function(){ setQueryPanels(function(prev){ return prev.filter(function(p){ return p.id !== panel.id; }); }); }} />;
             })}
         </div>
     );

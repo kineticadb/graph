@@ -22,12 +22,12 @@ Edit `KineticaGraphExplorer.html` and open/refresh in a browser. No build or ins
 
 - `Sidebar` — Server connection (URL, credentials, profile switching via `DEFAULT_PROFILES`), graph list, session Load/Save buttons, Auto-run toggle
 - `DashboardHeader` — Single-line layout: graph info on left, action buttons (Pick, Ontology, NKey/EKey, Query) in middle, Refresh/Auto + timestamp on right. All buttons match Fetch button sizing
-- `SummaryCards` — Node/edge count statistics
-- `LabelChart` — Doughnut chart (Chart.js) + interactive table for label distribution
+- `SummaryCards` — Node/edge count statistics with distinct label counts
+- `LabelChart` — Doughnut chart (Chart.js) + interactive table for label distribution. Table supports clickable column headers to sort by label name (alphabetical) or count (default). Row colors always match the chart via `colorIdxMap` lookup
 - `OntologyViewer` — Graphviz WASM rendering of graph ontology DOT with D3 zoom/pan and node/edge picking
-- `CanvasGraph` — force-graph (force-graph library) 2D visualization of graph topology with node coloring by label
+- `CanvasGraph` — force-graph (force-graph library) 2D visualization of graph topology. Colors match LabelChart via `labelData`-derived color map. Click-to-copy node ID to clipboard. Supports both NAME and ID column schemas. All hooks run before early returns (React Rules of Hooks compliance)
 - `GraphTablePreview` — Tabular preview of a graph's backing table data fetched via `/get/records`
-- `QueryPanel` — Self-contained floating SQL window (multiple instances supported). SQL editor on top, "View Results" and "Visualization" toggle buttons below. Each panel manages its own query execution, results, and state. Exposes state via `stateRef` for session save. Result parsing is memoized; force-graph uses ResizeObserver for responsive scaling with zoomToFit on resize
+- `QueryPanel` — Self-contained floating SQL window (multiple instances supported). Contains: collapsible **Query Helper** (top, generates GQL from label/entity selections using ontology BFS pathfinding with direction-aware arrows), SQL editor, "View Results" and "Visualization" toggle buttons. Each panel manages its own query execution, results, and state. Exposes state via `stateRef` for session save. Result parsing is memoized; force-graph uses ResizeObserver for responsive scaling with zoomToFit on resize. Click-to-copy node ID from visualization
 - `SplitPane` — Resizable split layout (horizontal/vertical) with draggable divider and double-click reset
 - `CornerHandle` — Draggable corner resize handle for floating panels
 - `LoaderOverlay` — Loading spinner with abort capability
@@ -57,6 +57,14 @@ Clicking nodes/edges in the `OntologyViewer` highlights matching labels in the `
 - `extractGraphTable(originalRequest, graphName)` — Parses the graph creation statement to find the backing table name
 - `resolveCol(headers, candidates)` — Fuzzy column name resolution for table preview
 - `safeParse(str, fallback)` — Safe JSON.parse wrapper
+
+### Query Helper
+
+Collapsible panel inside each QueryPanel that generates GQL queries from form inputs:
+- **Inputs**: Source Label (dropdown from `labelData.node_labels`), Source Entity (optional), Hops (1-5), Target Label, Target Entity
+- **Ontology pathfinding**: Parses `dotString` into adjacency map via regex, builds reverse adjacency for bidirectional BFS. Finds shortest path between source and target labels, respecting edge direction (`dir: 'fwd'` → `->`, `dir: 'rev'` → `<-`)
+- **Generated GQL**: Uses `as` aliases in RETURN (e.g., `a.NODE as a_node, ab.LABEL as ab_label`). Falls back to generic untyped pattern when ontology not loaded or no path found
+- **Props needed**: `dotString` and `activeGraph` passed from App to QueryPanel
 
 ### Kinetica `/execute/sql` Response Format
 

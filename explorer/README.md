@@ -22,7 +22,7 @@ No build step, no dependencies to install, no server to run.
 ## Features
 
 ### Graph Overview
-- **Label Distribution** — Interactive doughnut charts and sortable tables for node and edge labels, with counts and percentages.
+- **Label Distribution** — Interactive doughnut charts and sortable tables for node and edge labels, with counts and percentages. Click column headers to sort by label name (alphabetical) or count (default).
 - **Summary Cards** — At-a-glance counts of labeled/unlabeled nodes and edges, with number of distinct labels shown.
 
 ### Ontology Visualization
@@ -31,16 +31,22 @@ No build step, no dependencies to install, no server to run.
 - Pan, zoom, and click on nodes/edges in the ontology to highlight matching labels in the charts.
 
 ### Graph Table Data
-- **Fetch All Data** loads the graph's backing edge and node tables.
-- **Visualize** renders a force-directed graph (for non-geospatial graphs).
+- **Fetch All Data** loads the graph's backing edge and node tables. Supports both NAME-based and ID-based column schemas.
+- **Visualize** renders a force-directed graph (for non-geospatial graphs) with colors consistent with the label charts.
+- Click a node in the visualization to **copy its entity ID** to clipboard (for use in Query Helper or queries).
 - Label selection in the charts filters the visualization to matching subgraphs.
 
 ### SQL / GQL Query
 - Click **Query** to open a floating, draggable, resizable SQL editor panel. Each click opens a **new independent panel** — multiple queries can be open simultaneously.
-- Write any SQL or GQL `GRAPH ... MATCH ... RETURN` query and press **Ctrl+Enter** (or click **Run**).
+- **Query Helper** (collapsible, above the editor) — generates GQL queries from form inputs:
+  - Select **Source Label**, optional **Source Entity**, **Number of Hops** (1-5), **Target Label**, optional **Target Entity**
+  - Click **Generate Query** — finds the shortest path between labels using the ontology graph (BFS) and generates a direction-aware GQL MATCH pattern with proper `->` and `<-` arrows
+  - If ontology is not loaded, falls back to a generic untyped pattern
+  - Entity IDs can be pasted from click-to-copy on any graph visualization node
+- Write or edit any SQL or GQL `GRAPH ... MATCH ... RETURN` query and press **Ctrl+Enter** (or click **Run**).
 - After a successful query, two toggle buttons appear below the editor:
   - **View Results** — Expands a scrollable data table showing the RETURN statement columns.
-  - **Visualization** — Expands an interactive force-directed path visualization (for hop-based graph query results) with label-consistent colors, legend, directed arrows, and animated particles. The graph responsively scales and re-centers on panel resize.
+  - **Visualization** — Expands an interactive force-directed path visualization (for hop-based graph query results) with label-consistent colors, legend, directed arrows, and animated particles. Click nodes to copy their IDs. The graph responsively scales and re-centers on panel resize.
 
 ### Session Save / Load
 Session controls are in the **Sidebar** (lower left, visible when connected):
@@ -178,7 +184,7 @@ tests/
 
 ### Reference Data
 
-- **Server**: `http://127.0.0.1:9191` (user: `admin`, password: `admin`)
+- **Server**: `http://127.0.0.1:9191` (user: `admin`, password: `***REMOVED***`)
 - **Graph**: `expero.banking_graph`
 - **Query**: 2-hop GQL traversal — `bank` → `wire_message` → `banking_transaction`
 - **Expected**: 65 records, 3 node labels, 2 edge labels, path continuity across hops
