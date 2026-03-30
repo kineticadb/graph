@@ -49,7 +49,8 @@ No build step, no dependencies to install, no server to run.
 - Write or edit any SQL or GQL `GRAPH ... MATCH ... RETURN` query and press **Ctrl+Enter** (or click **Run**).
 - After a successful query with hop data, the **Visualization** tab activates automatically. Two toggle buttons appear below the editor:
   - **View Results** — Expands a scrollable data table showing the RETURN statement columns.
-  - **Visualization** — Expands an interactive force-directed path visualization with label-consistent colors, legend, directed arrows, and animated particles. Click nodes to copy their IDs. Cleared automatically when a query returns no results. The graph responsively scales and re-centers on panel resize.
+  - **Visualization** — Expands an interactive force-directed path visualization with label-consistent colors, legend, directed arrows, and animated particles. Cleared automatically when a query returns no results. The graph responsively scales and re-centers on panel resize.
+  - **Node Detail Lookup** — Click any node in the visualization to copy its ID and fetch its full record from the original node source table (e.g., `expero.vertexes`, not the internal graph table). The record is displayed as a horizontal table strip below the graph with all columns at natural width. Shows a brief "Copied" tooltip on the node. The visualization stays stable — no re-centering on click.
 
 ### Session Save / Load
 Session controls are in the **Sidebar** (lower left, visible when connected):

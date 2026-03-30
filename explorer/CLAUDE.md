@@ -68,7 +68,17 @@ Collapsible panel inside each QueryPanel that generates GQL queries from form in
 - **Ontology pathfinding**: Parses `dotString` into adjacency map via regex (normalizes multi-label DOT names like `"FEMALE:\ndance (20%)"` to keys `"FEMALE|dance"`). Builds reverse adjacency for bidirectional BFS. Chains through waypoints finding sub-paths. Respects edge direction (`dir: 'fwd'` → `->`, `dir: 'rev'` → `<-`). Edge label constraints filter direct edges first, fallback to BFS
 - **GQL generation**: Uses only user-selected labels (not full ontology keys) in MATCH patterns. Uses `as` aliases in RETURN (e.g., `a.NODE as a_node`). Labels with spaces are double-quoted (e.g., `(c:"news company")`). Falls back to generic untyped pattern when ontology not loaded or no path found
 - **Auto-visualization**: Query results with hop data automatically switch to the Visualization tab. No-result queries clear the previous visualization
-- **Props needed**: `dotString`, `activeGraph`, `labelData` passed from App to QueryPanel
+- **Node Detail Lookup**: Clicking a node in the query visualization fetches its full record from the original node source table (not the internal `_nodes` table). Displayed as a horizontal table strip below the graph. Cleared on Generate Query or Run
+- **Props needed**: `dotString`, `activeGraph`, `labelData`, `nodeSourceTable` passed from App to QueryPanel
+
+### Node Source Table Extraction
+
+`extractNodeSourceTable(originalRequest, graphName)` parses the graph creation statement's `NODES => INPUT_TABLES(...)` section:
+- Finds all `FROM <table>` references and uses the last real table (handles multi sub-select cases like wiki_graph with constants + real table)
+- Extracts the original ID column aliased as `NODE` or `NODE_ID`
+- If no alias found, probes the table at fetch time for common ID columns (`node`, `id`, `NODE_NAME`, `NODE_ID`, `name`)
+- App stores result as `nodeSourceTable: { table, idCol }` state, passed to QueryPanel
+- Node click uses `/get/records` with `expression` filter on the source table's original ID column (tries string then numeric match)
 
 ### Kinetica `/execute/sql` Response Format
 
@@ -100,6 +110,7 @@ On load: uses the active server connection (warns if session server differs), ch
 - Column resolution (`resolveCol`) supports both NAME and ID variants (e.g., `NODE1_NAME`/`EDGE_NODE1_NAME`/`NODE1_ID`/`EDGE_NODE1_ID`); link source/target are stringified for force-graph compatibility
 - **NKey/EKey toggles** (default OFF) control `schema_node_labelkeys`/`schema_edge_labelkeys` options sent to `/modify/graph`. OFF shows actual label names; ON groups by schema type. Re-click Ontology after toggling
 - All UI buttons have hover tooltips describing their function
+- QueryPanel's ResizeObserver only calls `zoomToFit` on significant size changes (>120px) to prevent re-centering when the node detail strip toggles
 
 ### `/show/graph` Response Format
 

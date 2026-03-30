@@ -82,6 +82,50 @@ function extractGraphTable(originalRequest, graphName) {
     return tableName;
 }
 
+// Extract the node source table and original ID column from the graph creation statement
+// Parses NODES => INPUT_TABLES(...) looking for FROM <source_table> and <col> as NODE[_ID]
+// Handles multiple sub-selects (constants + real table) by finding all FROM clauses
+function extractNodeSourceTable(originalRequest, graphName) {
+    if (!originalRequest || !originalRequest.length) return null;
+    var entry = originalRequest[0];
+    if (typeof entry === "string") entry = safeParse(entry);
+    if (!entry) return null;
+    var statement = entry.statement || "";
+    // Find NODES => INPUT_TABLES(...) section — greedy to capture all sub-selects
+    var nodesMatch = statement.match(/NODES\s*=>\s*INPUT_TABLES\s*\(([\s\S]*?)\)\s*\)\s*[,)]/i);
+    if (!nodesMatch) return null;
+    var inner = nodesMatch[1];
+    // Find all FROM <table> references — pick ones that look like real table names (word.word or word)
+    var fromRe = /FROM\s+([\w.]+)/gi;
+    var m, tables = [];
+    while ((m = fromRe.exec(inner)) !== null) {
+        var t = m[1].replace(/\).*$/, '');
+        if (t && t.toLowerCase() !== 'dual') tables.push(t);
+    }
+    if (tables.length === 0) return null;
+    // Use the last real table found (earlier ones may be constants sub-selects)
+    var tableName = tables[tables.length - 1];
+    // Prepend schema if needed
+    if (tableName.indexOf('.') === -1 && graphName && graphName.indexOf('.') !== -1) {
+        var schema = graphName.substring(0, graphName.indexOf('.'));
+        tableName = schema + '.' + tableName;
+    }
+    // Find original column aliased as NODE or NODE_ID in the sub-select containing that table
+    var idCol = null;
+    // Look for the SELECT that contains this table's FROM
+    var subSelects = inner.split(/\(\s*select\b/i);
+    for (var i = 0; i < subSelects.length; i++) {
+        if (subSelects[i].match(new RegExp('FROM\\s+' + tables[tables.length - 1].replace('.', '\\.'), 'i'))) {
+            var idMatch = subSelects[i].match(/(\w+)\s+as\s+NODE_ID\b/i) || subSelects[i].match(/(\w+)\s+as\s+NODE\b/i);
+            if (idMatch) idCol = idMatch[1];
+            break;
+        }
+    }
+    // Fallback: probe the table for common ID column names
+    if (!idCol) idCol = null; // will be resolved at fetch time
+    return { table: tableName, idCol: idCol };
+}
+
 // Resolve column name from headers, trying multiple variants (e.g. NODE1_NAME or EDGE_NODE1_NAME)
 function resolveCol(headers, candidates) {
     for (var i = 0; i < candidates.length; i++) {
@@ -774,7 +818,7 @@ function DashboardHeader(props) {
 function QueryPanel(props) {
     var onClose = props.onClose, credentials = props.credentials, labelData = props.labelData, panelIndex = props.panelIndex || 0;
     var initialSql = props.initialSql || '', initialTab = props.initialTab || null, stateRef = props.stateRef, autoRun = props.autoRun;
-    var dotString = props.dotString, activeGraph = props.activeGraph, initialHelper = props.initialHelper;
+    var dotString = props.dotString, activeGraph = props.activeGraph, nodeSourceTable = props.nodeSourceTable, initialHelper = props.initialHelper;
     const [sql, setSql] = useState(initialSql);
     const [result, setResult] = useState(null);
     const [error, setError] = useState(null);
@@ -793,6 +837,61 @@ function QueryPanel(props) {
     const [helperStatus, setHelperStatus] = useState('');
     var graphContainerRef = useRef(null);
     var graphRef = useRef(null);
+    const [nodeDetail, setNodeDetail] = useState(null); // { record, nodeId, pos }
+    const [nodeDetailLoading, setNodeDetailLoading] = useState(false);
+
+    // Fetch node detail from the original node source table (e.g., expero.vertexes)
+    var fetchNodeDetail = async function(nodeId) {
+        if (!nodeSourceTable || !credentials || !credentials.url) return;
+        setNodeDetailLoading(true);
+        setNodeDetail(null);
+        try {
+            var tableName = nodeSourceTable.table;
+            var hdrs = { 'Content-Type': 'application/json' };
+            if (credentials.user || credentials.pass) {
+                hdrs['Authorization'] = 'Basic ' + btoa(credentials.user + ':' + credentials.pass);
+            }
+            // Determine the ID column — use parsed idCol, or probe the table
+            var idCol = nodeSourceTable.idCol;
+            if (!idCol) {
+                var probe = await fetch(credentials.url + '/get/records', {
+                    method: 'POST', headers: hdrs,
+                    body: JSON.stringify({ table_name: tableName, offset: 0, limit: 1, encoding: 'json', options: {} }),
+                });
+                if (probe.ok) {
+                    var probeData = await probe.json();
+                    var probeInner = safeParse(probeData.data_str) || probeData;
+                    var probeRecs = (probeInner.records_json || []).map(function(r) { return safeParse(r, r); });
+                    if (probeRecs.length > 0) {
+                        var cols = Object.keys(probeRecs[0]);
+                        idCol = resolveCol(cols, ['node', 'id', 'NODE', 'NODE_NAME', 'NODE_ID', 'name']);
+                    }
+                }
+                if (!idCol) idCol = 'id';
+            }
+            var escapedId = String(nodeId).replace(/'/g, "''");
+            // Try string match first, then numeric
+            var tryExprs = [idCol + " = '" + escapedId + "'"];
+            if (!isNaN(nodeId)) tryExprs.push(idCol + ' = ' + nodeId);
+            var recs = [];
+            for (var t = 0; t < tryExprs.length && recs.length === 0; t++) {
+                var res = await fetch(credentials.url + '/get/records', {
+                    method: 'POST', headers: hdrs,
+                    body: JSON.stringify({ table_name: tableName, offset: 0, limit: 1, encoding: 'json', options: { expression: tryExprs[t] } }),
+                });
+                if (res.ok) {
+                    var data = await res.json();
+                    var inner = safeParse(data.data_str) || data;
+                    recs = (inner.records_json || []).map(function(r) { return safeParse(r, r); });
+                }
+            }
+            setNodeDetail({ record: recs[0] || null, nodeId: nodeId, table: tableName });
+        } catch(err) {
+            setNodeDetail({ record: null, nodeId: nodeId, error: err.message });
+        } finally {
+            setNodeDetailLoading(false);
+        }
+    };
 
     // Derive unique node and edge label names from labelData
     var nodeLabels = useMemo(function() {
@@ -1092,6 +1191,7 @@ function QueryPanel(props) {
         var gql = 'GRAPH ' + activeGraph + '\n  MATCH ' + matchParts.join(' ') + '\n  RETURN ' + returnParts.join(', ');
         setSql(gql);
         setShowHelper(false);
+        setNodeDetail(null);
     };
 
     // Auto-run query on mount if autoRun is set
@@ -1111,7 +1211,7 @@ function QueryPanel(props) {
     // Execute query
     var executeQuery = async function(statement) {
         if (!credentials || !credentials.url) return;
-        setError(null); setResult(null); setLoading(true);
+        setError(null); setResult(null); setLoading(true); setNodeDetail(null);
         try {
             var hdrs = { "Content-Type": "application/json" };
             if (credentials.user || credentials.pass) {
@@ -1333,23 +1433,26 @@ function QueryPanel(props) {
             .d3Force('link', d3.forceLink().id(function(n) { return n.id; }).distance(80))
             .onNodeClick(function(node) {
                 if (navigator.clipboard) {
-                    navigator.clipboard.writeText(String(node.id)).then(function() {
-                        graph.nodeLabel(function(n) {
-                            return n.id === node.id
-                                ? '\u2705 Copied: ' + n.id + (n.label ? ' [' + n.label + ']' : '')
-                                : n.id + (n.label ? ' [' + n.label + ']' : '');
-                        });
-                    });
+                    navigator.clipboard.writeText(String(node.id));
                 }
-                graph.centerAt(node.x, node.y, 500);
-                graph.zoom(3, 500);
-            });
+                // Brief "Copied" flash on the node without redrawing the graph
+                var origLabel = graph.nodeLabel();
+                graph.nodeLabel(function(n) {
+                    return n.id === node.id ? '\u2705 Copied: ' + n.id : origLabel(n);
+                });
+                setTimeout(function() { graph.nodeLabel(origLabel); }, 1500);
+                // Fetch node detail without centerAt/zoom to avoid visual disruption
+                fetchNodeDetail(node.id);
+            })
+            .onBackgroundClick(function() { setNodeDetail(null); });
 
         graphRef.current = graph;
         return function() { if (graphRef.current) { graphRef.current._destructor && graphRef.current._destructor(); graphRef.current = null; } };
     }, [activeTab, graphData]);
 
     // Resize force-graph when container resizes (via ResizeObserver)
+    // Only zoomToFit on significant size changes (panel resize), not small ones (detail strip toggle)
+    var lastGraphSize = useRef({ w: 0, h: 0 });
     useEffect(function() {
         if (activeTab !== 'graph' || !graphContainerRef.current) return;
         var debounce = null;
@@ -1359,7 +1462,12 @@ function QueryPanel(props) {
                 if (!graphRef.current || !graphContainerRef.current) return;
                 var w = graphContainerRef.current.clientWidth || 600;
                 var h = graphContainerRef.current.clientHeight || 400;
-                graphRef.current.width(w).height(h).zoomToFit(300, 40);
+                var dw = Math.abs(w - lastGraphSize.current.w);
+                var dh = Math.abs(h - lastGraphSize.current.h);
+                lastGraphSize.current = { w: w, h: h };
+                graphRef.current.width(w).height(h);
+                // Only zoomToFit on significant changes (>120px), not detail strip toggle
+                if (dw > 120 || dh > 120) graphRef.current.zoomToFit(300, 40);
             }, 50);
         });
         ro.observe(graphContainerRef.current);
@@ -1590,6 +1698,28 @@ function QueryPanel(props) {
                         </div>
                     )}
                     <div ref={graphContainerRef} style={{ flex:1, minHeight:0 }}/>
+                    {/* Node detail table strip */}
+                    {(nodeDetail || nodeDetailLoading) && (
+                        <div style={{ flexShrink:0, maxHeight:100, overflowY:'auto', overflowX:'auto', borderTop:'2px solid #6c5ce7', background:'#fff' }}>
+                            {nodeDetailLoading && <div style={{ padding:6, fontSize:10, color:'#b2bec3' }}>Loading...</div>}
+                            {nodeDetail && nodeDetail.error && <div style={{ padding:6, fontSize:10, color:'#d63031' }}>Error: {nodeDetail.error}</div>}
+                            {nodeDetail && !nodeDetail.record && !nodeDetail.error && <div style={{ padding:6, fontSize:10, color:'#b2bec3' }}>No record found for {nodeDetail.nodeId}</div>}
+                            {nodeDetail && nodeDetail.record && (
+                                <table style={{ borderCollapse:'collapse', fontSize:10, whiteSpace:'nowrap' }}>
+                                    <thead><tr>
+                                        {Object.keys(nodeDetail.record).map(function(key) {
+                                            return <th key={key} style={{ position:'sticky', top:0, background:'#f1f2f6', padding:'3px 8px', textAlign:'left', fontWeight:700, fontSize:9, color:'#636e72', borderBottom:'1px solid #dfe6e9' }}>{key}</th>;
+                                        })}
+                                    </tr></thead>
+                                    <tbody><tr>
+                                        {Object.keys(nodeDetail.record).map(function(key) {
+                                            return <td key={key} style={{ padding:'3px 8px', fontSize:10, color:'#2d3436', borderBottom:'1px solid #f1f2f6' }}>{nodeDetail.record[key] == null ? '' : String(nodeDetail.record[key])}</td>;
+                                        })}
+                                    </tr></tbody>
+                                </table>
+                            )}
+                        </div>
+                    )}
                 </div>
             )}
 
@@ -2167,6 +2297,7 @@ function App() {
     const [autoRefresh, setAutoRefresh]   = useState(false);
     const [autoInterval, setAutoInterval] = useState(15);
     const [graphTable, setGraphTable]     = useState(null);
+    const [nodeSourceTable, setNodeSourceTable] = useState(null); // { table, idCol }
     const [graphTableData, setGraphTableData] = useState(null);
     const [graphTableError, setGraphTableError] = useState(null);
     const [showForceGraph, setShowForceGraph] = useState(false);
@@ -2224,6 +2355,8 @@ function App() {
         var origReq = result.original_request || (outer && outer.original_request);
         var gt = extractGraphTable(origReq, graphName);
         setGraphTable(gt);
+        var nst = extractNodeSourceTable(origReq, graphName);
+        setNodeSourceTable(nst);
         if (graphChanged) setGraphTableData(null);
         if (graphChanged) setGraphTableError(null);
         if (graphChanged) setShowForceGraph(false);
@@ -2577,7 +2710,7 @@ function App() {
                 )}
             </div>
             {queryPanels.map(function(panel, idx) {
-                return <QueryPanel key={panel.id} panelIndex={idx} credentials={credentials} labelData={labelData} dotString={dotString} activeGraph={activeGraph} initialSql={panel.initialSql} initialTab={panel.initialTab} initialHelper={panel.initialHelper} stateRef={panel.stateRef} autoRun={panel.autoRun} onClose={function(){ setQueryPanels(function(prev){ return prev.filter(function(p){ return p.id !== panel.id; }); }); }} />;
+                return <QueryPanel key={panel.id} panelIndex={idx} credentials={credentials} labelData={labelData} dotString={dotString} activeGraph={activeGraph} nodeSourceTable={nodeSourceTable} initialSql={panel.initialSql} initialTab={panel.initialTab} initialHelper={panel.initialHelper} stateRef={panel.stateRef} autoRun={panel.autoRun} onClose={function(){ setQueryPanels(function(prev){ return prev.filter(function(p){ return p.id !== panel.id; }); }); }} />;
             })}
         </div>
     );
