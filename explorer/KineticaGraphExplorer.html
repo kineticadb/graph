@@ -774,25 +774,27 @@ function DashboardHeader(props) {
 function QueryPanel(props) {
     var onClose = props.onClose, credentials = props.credentials, labelData = props.labelData, panelIndex = props.panelIndex || 0;
     var initialSql = props.initialSql || '', initialTab = props.initialTab || null, stateRef = props.stateRef, autoRun = props.autoRun;
-    var dotString = props.dotString, activeGraph = props.activeGraph;
+    var dotString = props.dotString, activeGraph = props.activeGraph, initialHelper = props.initialHelper;
     const [sql, setSql] = useState(initialSql);
     const [result, setResult] = useState(null);
     const [error, setError] = useState(null);
     const [loading, setLoading] = useState(false);
     const [pos, setPos] = useState({ x: 120 + panelIndex * 30, y: 60 + panelIndex * 30 });
-    const [size, setSize] = useState({ w: 600, h: 460 });
+    const [size, setSize] = useState({ w: 640, h: 620 });
+    const [maximized, setMaximized] = useState(false);
+    var savedLayout = useRef(null);
     const [activeTab, setActiveTab] = useState(initialTab); // null | 'results' | 'graph'
-    const [showHelper, setShowHelper] = useState(false);
-    const [srcLabel, setSrcLabel] = useState('');
-    const [srcEntity, setSrcEntity] = useState('');
-    const [numHops, setNumHops] = useState(1);
-    const [tgtLabel, setTgtLabel] = useState('');
-    const [tgtEntity, setTgtEntity] = useState('');
+    const [showHelper, setShowHelper] = useState(initialHelper ? (initialHelper.showHelper !== false) : true);
+    const [srcLabels, setSrcLabels] = useState(initialHelper ? (initialHelper.srcLabels || []) : []);
+    const [srcEntity, setSrcEntity] = useState(initialHelper ? (initialHelper.srcEntity || '') : '');
+    const [tgtLabels, setTgtLabels] = useState(initialHelper ? (initialHelper.tgtLabels || []) : []);
+    const [tgtEntity, setTgtEntity] = useState(initialHelper ? (initialHelper.tgtEntity || '') : '');
+    const [waypoints, setWaypoints] = useState(initialHelper && initialHelper.waypoints ? initialHelper.waypoints : []);
     const [helperStatus, setHelperStatus] = useState('');
     var graphContainerRef = useRef(null);
     var graphRef = useRef(null);
 
-    // Derive unique node label names from labelData
+    // Derive unique node and edge label names from labelData
     var nodeLabels = useMemo(function() {
         if (!labelData || !labelData.node_labels) return [];
         var all = [];
@@ -801,21 +803,38 @@ function QueryPanel(props) {
         });
         return all.sort();
     }, [labelData]);
+    var edgeLabels = useMemo(function() {
+        if (!labelData || !labelData.edge_labels) return [];
+        var all = [];
+        labelData.edge_labels.forEach(function(item) {
+            (item.labels || []).forEach(function(l) { if (all.indexOf(l) === -1) all.push(l); });
+        });
+        return all.sort();
+    }, [labelData]);
 
-    // Parse ontology DOT into adjacency map: { nodeLabel: [{ edge, target }] }
+    // Also derive node label combinations (for multi-label nodes like ["FEMALE","dance"])
+    var nodeLabelCombos = useMemo(function() {
+        if (!labelData || !labelData.node_labels) return [];
+        return labelData.node_labels.map(function(item) { return (item.labels || []).slice().sort(); });
+    }, [labelData]);
+
+    // Parse ontology DOT into adjacency map: { nodeKey: [{ edge, target }] }
+    // nodeKey is the cleaned DOT node name (e.g., "FEMALE:\ndance") normalized to sorted "FEMALE|dance"
+    // Normalize DOT node name to canonical key: "FEMALE:\ndance (20%)" → "FEMALE|dance"
+    var normNodeKey = function(raw) {
+        return raw.replace(/\s*\([^)]*\)\s*$/, '').trim().split(/[:\n]+/).map(function(s){ return s.trim(); }).filter(Boolean).sort().join('|');
+    };
+
     var ontologyAdj = useMemo(function() {
         if (!dotString) return null;
         var adj = {};
-        // Match: "source (pct%)" -> "target (pct%)" [label=" edgeLabel:\n\npct%"]
         var re = /"([^"]+)"\s*->\s*"([^"]+)"\s*\[.*?label\s*=\s*"([^"]+)"/g;
         var m;
         while ((m = re.exec(dotString)) !== null) {
-            // Extract clean label names (strip percentages)
-            var src = m[1].replace(/\s*\([^)]*\)\s*$/, '').trim();
-            var tgt = m[2].replace(/\s*\([^)]*\)\s*$/, '').trim();
+            var src = normNodeKey(m[1]);
+            var tgt = normNodeKey(m[2]);
             var edgeRaw = m[3].replace(/[\s:]+$/g, '').replace(/^\s+/, '').split(/[\n:]/)[0].trim();
             if (!adj[src]) adj[src] = [];
-            // Avoid duplicates
             if (!adj[src].some(function(e) { return e.edge === edgeRaw && e.target === tgt; })) {
                 adj[src].push({ edge: edgeRaw, target: tgt });
             }
@@ -838,10 +857,26 @@ function QueryPanel(props) {
         return rev;
     }, [ontologyAdj]);
 
-    // BFS to find shortest path between two node labels (follows edges in both directions)
-    var findPath = function(from, to, maxHops) {
+    // Convert label array to nodeKey, or find matching ontology nodes containing all labels
+    var labelsToKeys = function(labels) {
+        if (!labels || labels.length === 0) return [];
+        if (!ontologyAdj) return labels.map(function(l) { return l; });
+        // Find all ontology node keys that contain ANY of the selected labels (OR logic)
+        return Object.keys(ontologyAdj).concat(
+            ontologyRevAdj ? Object.keys(ontologyRevAdj) : []
+        ).filter(function(key, i, arr) {
+            return arr.indexOf(key) === i; // unique
+        }).filter(function(key) {
+            var parts = key.split('|');
+            return labels.some(function(l) { return parts.indexOf(l) !== -1; });
+        });
+    };
+
+    // BFS to find shortest path between two node labels (follows edges in both directions, max 10 hops)
+    var findPath = function(from, to) {
         if (!ontologyAdj || !from || !to) return null;
-        if (from === to && maxHops >= 1) {
+        var MAX = 10;
+        if (from === to) {
             var selfEdges = ontologyAdj[from] || [];
             var selfEdge = selfEdges.find(function(e) { return e.target === from; });
             if (selfEdge) return [{ src: from, edge: selfEdge.edge, tgt: from, dir: 'fwd' }];
@@ -852,8 +887,7 @@ function QueryPanel(props) {
         visited[from] = true;
         while (queue.length > 0) {
             var cur = queue.shift();
-            if (cur.path.length >= maxHops) continue;
-            // Forward edges (src -> tgt)
+            if (cur.path.length >= MAX) continue;
             var fwd = ontologyAdj[cur.node] || [];
             for (var i = 0; i < fwd.length; i++) {
                 var nb = fwd[i];
@@ -861,7 +895,6 @@ function QueryPanel(props) {
                 if (nb.target === to) return newPath;
                 if (!visited[nb.target]) { visited[nb.target] = true; queue.push({ node: nb.target, path: newPath }); }
             }
-            // Reverse edges (tgt <- src, traverse backwards)
             var rev = ontologyRevAdj ? (ontologyRevAdj[cur.node] || []) : [];
             for (var j = 0; j < rev.length; j++) {
                 var rb = rev[j];
@@ -873,18 +906,93 @@ function QueryPanel(props) {
         return null;
     };
 
+    // Chain BFS through waypoints using label arrays
+    // fromLabels/toLabels are arrays of label strings; wps[].nodeLabels are arrays
+    var findChainedPath = function(fromLabels, toLabels, wps) {
+        // Resolve label arrays to ontology node keys
+        var srcKeys = labelsToKeys(fromLabels);
+        var wpKeysList = wps.map(function(w) { return (w.nodeLabels && w.nodeLabels.length) ? labelsToKeys(w.nodeLabels) : null; });
+        var tgtKeys = toLabels && toLabels.length ? labelsToKeys(toLabels) : null;
+
+        // Build list of stop key-sets: [[srcKey1,...], [wp1Key1,...], ..., [tgtKey1,...]]
+        var stopSets = [srcKeys];
+        for (var w = 0; w < wps.length; w++) {
+            if (wpKeysList[w]) stopSets.push(wpKeysList[w]);
+        }
+        if (tgtKeys) stopSets.push(tgtKeys);
+        if (stopSets.length < 2) return null;
+
+        // Edge constraints from waypoints
+        var edgeConstraints = [];
+        for (var s = 0; s < stopSets.length - 1; s++) {
+            edgeConstraints.push(s < wps.length && wps[s].edgeLabel ? wps[s].edgeLabel : null);
+        }
+
+        // Try all combinations of keys between consecutive stops, return first successful full path
+        var trySegments = function(segIdx, accumulated) {
+            if (segIdx >= stopSets.length - 1) return accumulated.length > 0 ? accumulated : null;
+            var fromSet = segIdx === 0 ? stopSets[0] : [accumulated[accumulated.length - 1].dir === 'fwd' ? accumulated[accumulated.length - 1].tgt : accumulated[accumulated.length - 1].src];
+            var toSet = stopSets[segIdx + 1];
+            var ec = edgeConstraints[segIdx];
+            for (var fi = 0; fi < fromSet.length; fi++) {
+                for (var ti = 0; ti < toSet.length; ti++) {
+                    var segment = null;
+                    if (ec) {
+                        // Try direct constrained edge first
+                        var fwdEdges = ontologyAdj[fromSet[fi]] || [];
+                        for (var f = 0; f < fwdEdges.length; f++) {
+                            if (fwdEdges[f].edge === ec && fwdEdges[f].target === toSet[ti]) {
+                                segment = [{ src: fromSet[fi], edge: ec, tgt: toSet[ti], dir: 'fwd' }]; break;
+                            }
+                        }
+                        if (!segment && ontologyRevAdj) {
+                            var revEdges = ontologyRevAdj[fromSet[fi]] || [];
+                            for (var r = 0; r < revEdges.length; r++) {
+                                if (revEdges[r].edge === ec && revEdges[r].source === toSet[ti]) {
+                                    segment = [{ src: toSet[ti], edge: ec, tgt: fromSet[fi], dir: 'rev' }]; break;
+                                }
+                            }
+                        }
+                    }
+                    if (!segment) segment = findPath(fromSet[fi], toSet[ti]);
+                    if (segment) {
+                        var result = trySegments(segIdx + 1, accumulated.concat(segment));
+                        if (result) return result;
+                    }
+                }
+            }
+            return null;
+        };
+        return trySegments(0, []);
+    };
+
+    // Quote a label if it contains spaces
+    var quoteLabel = function(l) { return l.indexOf(' ') !== -1 ? '"' + l + '"' : l; };
+
+    // Convert nodeKey "FEMALE|dance" to GQL label syntax ":FEMALE|dance" (with quoting)
+    var keyToGql = function(key) {
+        if (!key) return '';
+        return ':' + key.split('|').map(quoteLabel).join('|');
+    };
+
+    // Convert label array to GQL label syntax
+    var labelsToGql = function(labels) {
+        if (!labels || labels.length === 0) return '';
+        return ':' + labels.map(quoteLabel).join('|');
+    };
+
     // Generate GQL query
     var generateQuery = function() {
         if (!activeGraph) { setHelperStatus('No graph selected.'); return; }
-        if (!srcLabel) { setHelperStatus('Select a source label.'); return; }
+        if (!srcLabels.length) { setHelperStatus('Select a source label.'); return; }
 
         var letters = 'abcdefghijklmnopqrstuvwxyz'.split('');
         var path = null;
 
-        if (tgtLabel && tgtLabel !== srcLabel) {
-            path = findPath(srcLabel, tgtLabel, numHops);
-        } else if (tgtLabel && tgtLabel === srcLabel) {
-            path = findPath(srcLabel, tgtLabel, numHops);
+        // Try ontology pathfinding through waypoints
+        if (ontologyAdj) {
+            var tgt = tgtLabels.length ? tgtLabels : null;
+            path = findChainedPath(srcLabels, tgt, waypoints);
         }
 
         var matchParts = [];
@@ -892,61 +1000,98 @@ function QueryPanel(props) {
         var varIdx = 0;
 
         if (path && path.length > 0) {
-            // Build from ontology path with direction awareness
-            setHelperStatus('Path found: ' + path.map(function(p) {
+            setHelperStatus('Path found (' + path.length + ' hop' + (path.length !== 1 ? 's' : '') + '): ' + path.map(function(p) {
                 return p.dir === 'fwd' ? p.src + ' -[' + p.edge + ']-> ' + p.tgt : p.tgt + ' <-[' + p.edge + ']- ' + p.src;
             }).join(' '));
 
-            // First node in the chain is always srcLabel
+            // Build a map of user-specified labels per stop position:
+            // first node = srcLabels, last node = tgtLabels, waypoint nodes = waypoint.nodeLabels
+            // For intermediate nodes discovered by BFS (not user-specified), use the full ontology key
+            var userStopLabels = [srcLabels];
+            waypoints.forEach(function(wp) { if (wp.nodeLabels && wp.nodeLabels.length) userStopLabels.push(wp.nodeLabels); });
+            if (tgtLabels.length) userStopLabels.push(tgtLabels);
+
+            // Map ontology keys to user labels: for each node in the path, check if it matches a user stop
+            var nodeKeyToUserLabel = function(key, pathIdx) {
+                // First node
+                if (pathIdx === -1) return labelsToGql(srcLabels);
+                // Last node
+                if (pathIdx === path.length - 1 && tgtLabels.length) return labelsToGql(tgtLabels);
+                // Check waypoints: a waypoint node matches if the key contains all its labels
+                var keyParts = key.split('|');
+                for (var w = 0; w < waypoints.length; w++) {
+                    var wpLabels = waypoints[w].nodeLabels || [];
+                    if (wpLabels.length && wpLabels.every(function(l) { return keyParts.indexOf(l) !== -1; })) {
+                        return labelsToGql(wpLabels);
+                    }
+                }
+                // Auto-discovered intermediate: use full key
+                return keyToGql(key);
+            };
+
             var srcVar = letters[varIdx++];
             var whereClause = srcEntity ? ' WHERE (' + srcVar + '.NODE =\'' + srcEntity + '\')' : '';
-            var firstNodeLabel = path[0].dir === 'fwd' ? path[0].src : path[0].tgt;
-            matchParts.push('(' + srcVar + ':' + firstNodeLabel + whereClause + ')');
+            matchParts.push('(' + srcVar + nodeKeyToUserLabel(path[0].dir === 'fwd' ? path[0].src : path[0].tgt, -1) + whereClause + ')');
             returnParts.push(srcVar + '.NODE as ' + srcVar + '_node');
 
             for (var i = 0; i < path.length; i++) {
                 var edgeVar = letters[varIdx > 0 ? varIdx - 1 : 0] + letters[varIdx];
                 var nextVar = letters[varIdx++];
-                var nextNodeLabel = path[i].dir === 'fwd' ? path[i].tgt : path[i].src;
+                var nextKey = path[i].dir === 'fwd' ? path[i].tgt : path[i].src;
                 var tgtWhere = '';
                 if (i === path.length - 1 && tgtEntity) {
                     tgtWhere = ' WHERE (' + nextVar + '.NODE =\'' + tgtEntity + '\')';
                 }
                 if (path[i].dir === 'fwd') {
-                    matchParts.push('-[' + edgeVar + ':' + path[i].edge + ']->');
+                    matchParts.push('-[' + edgeVar + ':' + quoteLabel(path[i].edge) + ']->');
                 } else {
-                    matchParts.push('<-[' + edgeVar + ':' + path[i].edge + ']-');
+                    matchParts.push('<-[' + edgeVar + ':' + quoteLabel(path[i].edge) + ']-');
                 }
-                matchParts.push('(' + nextVar + ':' + nextNodeLabel + tgtWhere + ')');
+                matchParts.push('(' + nextVar + nodeKeyToUserLabel(nextKey, i) + tgtWhere + ')');
                 returnParts.push(nextVar + '.NODE as ' + nextVar + '_node');
                 returnParts.push(edgeVar + '.LABEL as ' + edgeVar + '_label');
             }
         } else {
-            // Generic pattern (no ontology or no path found)
-            if (ontologyAdj && tgtLabel) setHelperStatus('No path found via ontology — using generic pattern.');
+            if (ontologyAdj && tgtLabels.length) setHelperStatus('No path found via ontology — using generic pattern.');
             else if (!ontologyAdj) setHelperStatus('Ontology not loaded — using generic pattern. Load ontology for smarter generation.');
             else setHelperStatus('');
 
+            // Build stops from label arrays
+            var stops = [{ labels: srcLabels, entity: srcEntity, edgeLabel: '' }];
+            waypoints.forEach(function(wp) { stops.push({ labels: wp.nodeLabels || [], entity: '', edgeLabel: wp.edgeLabel || '' }); });
+            if (tgtLabels.length) stops.push({ labels: tgtLabels, entity: tgtEntity, edgeLabel: '' });
+
             var srcVar2 = letters[varIdx++];
-            var whereClause2 = srcEntity ? ' WHERE (' + srcVar2 + '.NODE =\'' + srcEntity + '\')' : '';
-            matchParts.push('(' + srcVar2 + ':' + srcLabel + whereClause2 + ')');
+            var whereClause2 = stops[0].entity ? ' WHERE (' + srcVar2 + '.NODE =\'' + stops[0].entity + '\')' : '';
+            matchParts.push('(' + srcVar2 + labelsToGql(stops[0].labels) + whereClause2 + ')');
             returnParts.push(srcVar2 + '.NODE as ' + srcVar2 + '_node');
 
-            for (var h = 0; h < numHops; h++) {
+            for (var h = 1; h < stops.length; h++) {
                 var edgeVar2 = letters[varIdx > 0 ? varIdx - 1 : 0] + letters[varIdx];
                 var nextVar2 = letters[varIdx++];
-                var isLast = h === numHops - 1;
-                var nextLabel = isLast && tgtLabel ? ':' + tgtLabel : '';
-                var tgtWhere2 = isLast && tgtEntity ? ' WHERE (' + nextVar2 + '.NODE =\'' + tgtEntity + '\')' : '';
-                matchParts.push('-[' + edgeVar2 + ']->');
-                matchParts.push('(' + nextVar2 + nextLabel + tgtWhere2 + ')');
+                var stopWhere = stops[h].entity ? ' WHERE (' + nextVar2 + '.NODE =\'' + stops[h].entity + '\')' : '';
+                var edgeLabelPart = stops[h].edgeLabel ? ':' + quoteLabel(stops[h].edgeLabel) : '';
+                var nodeLabelPart = labelsToGql(stops[h].labels);
+                matchParts.push('-[' + edgeVar2 + edgeLabelPart + ']->');
+                matchParts.push('(' + nextVar2 + nodeLabelPart + stopWhere + ')');
                 returnParts.push(nextVar2 + '.NODE as ' + nextVar2 + '_node');
                 returnParts.push(edgeVar2 + '.LABEL as ' + edgeVar2 + '_label');
+            }
+
+            // If only source with no waypoints or target, add one generic hop
+            if (stops.length < 2) {
+                var edgeVar3 = letters[varIdx > 0 ? varIdx - 1 : 0] + letters[varIdx];
+                var nextVar3 = letters[varIdx++];
+                matchParts.push('-[' + edgeVar3 + ']->');
+                matchParts.push('(' + nextVar3 + ')');
+                returnParts.push(nextVar3 + '.NODE as ' + nextVar3 + '_node');
+                returnParts.push(edgeVar3 + '.LABEL as ' + edgeVar3 + '_label');
             }
         }
 
         var gql = 'GRAPH ' + activeGraph + '\n  MATCH ' + matchParts.join(' ') + '\n  RETURN ' + returnParts.join(', ');
         setSql(gql);
+        setShowHelper(false);
     };
 
     // Auto-run query on mount if autoRun is set
@@ -960,7 +1105,7 @@ function QueryPanel(props) {
 
     // Expose current state for session save
     useEffect(function() {
-        if (stateRef) stateRef.current = { sql: sql, activeTab: activeTab };
+        if (stateRef) stateRef.current = { sql: sql, activeTab: activeTab, helper: { srcLabels: srcLabels, srcEntity: srcEntity, tgtLabels: tgtLabels, tgtEntity: tgtEntity, waypoints: waypoints, showHelper: showHelper } };
     }, [sql, activeTab, stateRef]);
 
     // Execute query
@@ -1065,6 +1210,20 @@ function QueryPanel(props) {
 
     var hasHops = graphParsed.headers.some(function(h) { return /^NODE1_HOP_/.test(h); });
     var hasResults = tableData.rows.length > 0 || graphParsed.rows.length > 0;
+
+    // Auto-switch to Visualization tab when query returns hop data, or clear if no results
+    useEffect(function() {
+        if (!result) return;
+        if (hasHops && graphParsed.rows.length > 0) {
+            setActiveTab('graph');
+            if (size.h < 500) setSize(function(s) { return { w: Math.max(s.w, 640), h: 560 }; });
+        } else {
+            // No viz data: clear the graph canvas and collapse tab
+            if (activeTab === 'graph') setActiveTab(null);
+            if (graphRef.current) { graphRef.current._destructor && graphRef.current._destructor(); graphRef.current = null; }
+            if (graphContainerRef.current) graphContainerRef.current.innerHTML = '';
+        }
+    }, [result]);
 
     // ─── Graph visualization data ───
     // Build color map once from initial labelData; ignore subsequent refreshes
@@ -1234,23 +1393,39 @@ function QueryPanel(props) {
             overflow:'hidden', fontFamily:'inherit',
         }}>
             {/* Title bar */}
-            <div onMouseDown={handleDragStart} style={{
+            <div onMouseDown={maximized ? undefined : handleDragStart} style={{
                 display:'flex', justifyContent:'space-between', alignItems:'center',
-                padding:'8px 12px', background:'#6c5ce7', color:'#fff', cursor:'move',
+                padding:'8px 12px', background:'#6c5ce7', color:'#fff', cursor: maximized ? 'default' : 'move',
                 flexShrink:0, userSelect:'none',
             }}>
                 <span style={{ fontWeight:700, fontSize:12 }}>
                     SQL Query{count > 0 ? ' — ' + count + ' record' + (count !== 1 ? 's' : '') : ''}
                 </span>
-                <button onClick={onClose} style={{
-                    border:'none', background:'rgba(255,255,255,0.2)', color:'#fff',
-                    borderRadius:4, cursor:'pointer', fontWeight:700, fontSize:12,
-                    padding:'2px 8px', fontFamily:'inherit',
-                }}>{'\u2715'}</button>
+                <div style={{ display:'flex', gap:4 }}>
+                    <button onClick={function() {
+                        if (maximized) {
+                            if (savedLayout.current) { setPos(savedLayout.current.pos); setSize(savedLayout.current.size); }
+                            setMaximized(false);
+                        } else {
+                            savedLayout.current = { pos: { x: pos.x, y: pos.y }, size: { w: size.w, h: size.h } };
+                            setPos({ x: 0, y: 0 }); setSize({ w: window.innerWidth, h: window.innerHeight });
+                            setMaximized(true);
+                        }
+                    }} title={maximized ? 'Restore window size' : 'Maximize window'} style={{
+                        border:'none', background:'rgba(255,255,255,0.2)', color:'#fff',
+                        borderRadius:4, cursor:'pointer', fontWeight:700, fontSize:12,
+                        padding:'2px 8px', fontFamily:'inherit',
+                    }}>{maximized ? '\u25A3' : '\u25A1'}</button>
+                    <button onClick={onClose} style={{
+                        border:'none', background:'rgba(255,255,255,0.2)', color:'#fff',
+                        borderRadius:4, cursor:'pointer', fontWeight:700, fontSize:12,
+                        padding:'2px 8px', fontFamily:'inherit',
+                    }}>{'\u2715'}</button>
+                </div>
             </div>
 
             {/* Query Helper + SQL input area */}
-            <div style={{ display:'flex', flexDirection:'column', padding:'10px 10px 0 10px', gap:8, flexShrink:0 }}>
+            <div style={{ display:'flex', flexDirection:'column', padding:'10px 10px 0 10px', gap:8, flexShrink:0, maxHeight: activeTab ? (showHelper ? '60%' : '35%') : '100%', overflowY:'auto' }}>
                 {/* Query Helper */}
                 <div>
                     <div onClick={function(){ setShowHelper(function(p){ return !p; }); }} title="Query Helper: generate GQL queries from label selections" style={{ display:'flex', alignItems:'center', gap:6, cursor:'pointer', userSelect:'none', padding:'2px 0' }}>
@@ -1261,10 +1436,13 @@ function QueryPanel(props) {
                         <div style={{ border:'1px solid #dfe6e9', borderRadius:6, padding:8, background:'#f8f7ff', marginBottom:4 }}>
                             <div style={{ display:'flex', gap:6, marginBottom:6, flexWrap:'wrap' }}>
                                 <div style={{ flex:1, minWidth:100 }}>
-                                    <div style={{ fontSize:9, fontWeight:700, color:'#636e72', marginBottom:2 }}>Source Label</div>
-                                    <select value={srcLabel} onChange={function(e){ setSrcLabel(e.target.value); }} style={{ width:'100%', padding:'4px 6px', fontSize:11, border:'1px solid #dfe6e9', borderRadius:4, fontFamily:'inherit' }}>
-                                        <option value="">— select —</option>
-                                        {nodeLabels.map(function(l) { return <option key={l} value={l}>{l}</option>; })}
+                                    <div style={{ fontSize:9, fontWeight:700, color:'#636e72', marginBottom:2 }}>Source Label(s)</div>
+                                    <div style={{ display:'flex', flexWrap:'wrap', gap:3, marginBottom: srcLabels.length ? 3 : 0 }}>
+                                        {srcLabels.map(function(l) { return <span key={l} style={{ display:'inline-flex', alignItems:'center', gap:2, padding:'1px 6px', borderRadius:10, fontSize:10, fontWeight:600, background:'#636e72', color:'#fff' }}>{l} <span onClick={function(){ setSrcLabels(function(p){ return p.filter(function(v){ return v !== l; }); }); }} style={{ cursor:'pointer', fontWeight:700 }}>{'\u00D7'}</span></span>; })}
+                                    </div>
+                                    <select value="" onChange={function(e){ if (e.target.value) { var v = e.target.value; setSrcLabels(function(p){ return p.indexOf(v) === -1 ? p.concat([v]) : p; }); } }} style={{ width:'100%', padding:'4px 6px', fontSize:11, border:'1px solid #dfe6e9', borderRadius:4, fontFamily:'inherit' }}>
+                                        <option value="">— add label —</option>
+                                        {nodeLabels.filter(function(l){ return srcLabels.indexOf(l) === -1; }).map(function(l) { return <option key={l} value={l}>{l}</option>; })}
                                     </select>
                                 </div>
                                 <div style={{ flex:1, minWidth:100 }}>
@@ -1272,18 +1450,46 @@ function QueryPanel(props) {
                                     <input value={srcEntity} onChange={function(e){ setSrcEntity(e.target.value); }} placeholder="entity ID" style={{ width:'100%', padding:'4px 6px', fontSize:11, border:'1px solid #dfe6e9', borderRadius:4, fontFamily:'inherit', boxSizing:'border-box' }} />
                                 </div>
                             </div>
+                            {/* Waypoints: hop index | node labels | → | edge label | ✕ */}
+                            {waypoints.map(function(wp, wpIdx) {
+                                return (
+                                    <div key={wpIdx} style={{ display:'flex', gap:6, marginBottom:4, alignItems:'flex-end' }}>
+                                        <div style={{ fontSize:16, fontWeight:800, color:'#6c5ce7', marginBottom:2, minWidth:18, textAlign:'center' }}>{wpIdx + 1}</div>
+                                        <div style={{ flex:1, minWidth:80 }}>
+                                            <div style={{ fontSize:9, fontWeight:700, color:'#6c5ce7', marginBottom:2 }}>Node Label(s)</div>
+                                            <div style={{ display:'flex', flexWrap:'wrap', gap:3, marginBottom: (wp.nodeLabels || []).length ? 3 : 0 }}>
+                                                {(wp.nodeLabels || []).map(function(l) { return <span key={l} style={{ display:'inline-flex', alignItems:'center', gap:2, padding:'1px 6px', borderRadius:10, fontSize:10, fontWeight:600, background:'#6c5ce7', color:'#fff' }}>{l} <span onClick={function(){ setWaypoints(function(prev){ var n = prev.slice(); n[wpIdx] = Object.assign({}, n[wpIdx], { nodeLabels: (n[wpIdx].nodeLabels || []).filter(function(v){ return v !== l; }) }); return n; }); }} style={{ cursor:'pointer', fontWeight:700 }}>{'\u00D7'}</span></span>; })}
+                                            </div>
+                                            <select value="" onChange={function(e){ if (e.target.value) { var v = e.target.value; setWaypoints(function(prev){ var n = prev.slice(); var cur = (n[wpIdx].nodeLabels || []).slice(); if (cur.indexOf(v) === -1) cur.push(v); n[wpIdx] = Object.assign({}, n[wpIdx], { nodeLabels: cur }); return n; }); } }} style={{ width:'100%', padding:'4px 6px', fontSize:11, border:'1px solid #d0cef5', borderRadius:4, fontFamily:'inherit', background:'#f3f2ff' }}>
+                                                <option value="">— add label —</option>
+                                                {nodeLabels.filter(function(l){ return (wp.nodeLabels || []).indexOf(l) === -1; }).map(function(l) { return <option key={l} value={l}>{l}</option>; })}
+                                            </select>
+                                        </div>
+                                        <div style={{ fontSize:11, color:'#b2bec3', fontWeight:700, marginBottom:4 }}>{'\u2192'}</div>
+                                        <div style={{ flex:1, minWidth:80 }}>
+                                            <div style={{ fontSize:9, fontWeight:700, color:'#0984e3', marginBottom:2 }}>Edge Label</div>
+                                            <select value={wp.edgeLabel || ''} onChange={function(e){ var v = e.target.value; setWaypoints(function(prev){ var n = prev.slice(); n[wpIdx] = Object.assign({}, n[wpIdx], { edgeLabel: v }); return n; }); }} style={{ width:'100%', padding:'4px 6px', fontSize:11, border:'1px solid #bee3f8', borderRadius:4, fontFamily:'inherit', background:'#eef6ff' }}>
+                                                <option value="">— any —</option>
+                                                {edgeLabels.map(function(l) { return <option key={l} value={l}>{l}</option>; })}
+                                            </select>
+                                        </div>
+                                        <button onClick={function(){ setWaypoints(function(prev){ return prev.filter(function(_, i){ return i !== wpIdx; }); }); }} title="Remove this waypoint" style={{ padding:'4px 8px', border:'none', borderRadius:4, cursor:'pointer', fontWeight:700, color:'#fff', background:'#d63031', fontSize:10, fontFamily:'inherit', marginBottom:1 }}>{'\u2715'}</button>
+                                    </div>
+                                );
+                            })}
+                            <div style={{ marginBottom:6 }}>
+                                <button onClick={function(){ setWaypoints(function(prev){ return prev.concat([{ nodeLabels: [], edgeLabel: '' }]); }); }} title="Add an intermediate hop with optional node and edge label constraints" style={{ padding:'3px 10px', border:'1px dashed #6c5ce7', borderRadius:4, cursor:'pointer', fontWeight:600, color:'#6c5ce7', background:'transparent', fontSize:10, fontFamily:'inherit' }}>+ Add Hop</button>
+                            </div>
+                            {/* Target */}
                             <div style={{ display:'flex', gap:6, marginBottom:6, flexWrap:'wrap' }}>
-                                <div style={{ width:60 }}>
-                                    <div style={{ fontSize:9, fontWeight:700, color:'#636e72', marginBottom:2 }}>Hops</div>
-                                    <select value={numHops} onChange={function(e){ setNumHops(parseInt(e.target.value)); }} style={{ width:'100%', padding:'4px 6px', fontSize:11, border:'1px solid #dfe6e9', borderRadius:4, fontFamily:'inherit' }}>
-                                        {[1,2,3,4,5].map(function(n) { return <option key={n} value={n}>{n}</option>; })}
-                                    </select>
-                                </div>
                                 <div style={{ flex:1, minWidth:100 }}>
-                                    <div style={{ fontSize:9, fontWeight:700, color:'#636e72', marginBottom:2 }}>Target Label</div>
-                                    <select value={tgtLabel} onChange={function(e){ setTgtLabel(e.target.value); }} style={{ width:'100%', padding:'4px 6px', fontSize:11, border:'1px solid #dfe6e9', borderRadius:4, fontFamily:'inherit' }}>
-                                        <option value="">— select —</option>
-                                        {nodeLabels.map(function(l) { return <option key={l} value={l}>{l}</option>; })}
+                                    <div style={{ fontSize:9, fontWeight:700, color:'#636e72', marginBottom:2 }}>Target Label(s)</div>
+                                    <div style={{ display:'flex', flexWrap:'wrap', gap:3, marginBottom: tgtLabels.length ? 3 : 0 }}>
+                                        {tgtLabels.map(function(l) { return <span key={l} style={{ display:'inline-flex', alignItems:'center', gap:2, padding:'1px 6px', borderRadius:10, fontSize:10, fontWeight:600, background:'#636e72', color:'#fff' }}>{l} <span onClick={function(){ setTgtLabels(function(p){ return p.filter(function(v){ return v !== l; }); }); }} style={{ cursor:'pointer', fontWeight:700 }}>{'\u00D7'}</span></span>; })}
+                                    </div>
+                                    <select value="" onChange={function(e){ if (e.target.value) { var v = e.target.value; setTgtLabels(function(p){ return p.indexOf(v) === -1 ? p.concat([v]) : p; }); } }} style={{ width:'100%', padding:'4px 6px', fontSize:11, border:'1px solid #dfe6e9', borderRadius:4, fontFamily:'inherit' }}>
+                                        <option value="">— add label —</option>
+                                        {nodeLabels.filter(function(l){ return tgtLabels.indexOf(l) === -1; }).map(function(l) { return <option key={l} value={l}>{l}</option>; })}
                                     </select>
                                 </div>
                                 <div style={{ flex:1, minWidth:100 }}>
@@ -1292,9 +1498,9 @@ function QueryPanel(props) {
                                 </div>
                             </div>
                             <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                                <button onClick={generateQuery} disabled={!srcLabel} style={{
-                                    padding:'5px 14px', border:'none', borderRadius:4, cursor: srcLabel ? 'pointer':'not-allowed',
-                                    fontWeight:700, color:'#fff', background: srcLabel ? '#6c5ce7':'#b2bec3',
+                                <button onClick={generateQuery} disabled={!srcLabels.length} style={{
+                                    padding:'5px 14px', border:'none', borderRadius:4, cursor: srcLabels.length ? 'pointer':'not-allowed',
+                                    fontWeight:700, color:'#fff', background: srcLabels.length ? '#6c5ce7':'#b2bec3',
                                     fontSize:11, fontFamily:'inherit', transition:'0.2s',
                                 }}>Generate Query</button>
                                 {helperStatus && <span style={{ fontSize:9, color:'#636e72', flex:1 }}>{helperStatus}</span>}
@@ -2221,8 +2427,9 @@ function App() {
             },
             queries: queryPanels.map(function(panel) {
                 var s = panel.stateRef && panel.stateRef.current;
-                return { sql: s ? s.sql : panel.initialSql, activeTab: s ? s.activeTab : panel.initialTab };
-            }).filter(function(q) { return q.sql && q.sql.trim(); }),
+                var h = s && s.helper ? s.helper : null;
+                return { sql: s ? s.sql : panel.initialSql, activeTab: s ? s.activeTab : panel.initialTab, helper: h };
+            }).filter(function(q) { return (q.sql && q.sql.trim()) || q.helper; }),
         };
     };
 
@@ -2262,7 +2469,7 @@ function App() {
                         if (session.queries && session.queries.length > 0) {
                             var panels = session.queries.map(function(q) {
                                 queryIdCounter.current++;
-                                return { id: queryIdCounter.current, initialSql: q.sql || '', initialTab: null, stateRef: { current: null }, autoRun: false };
+                                return { id: queryIdCounter.current, initialSql: q.sql || '', initialTab: null, stateRef: { current: null }, autoRun: false, initialHelper: q.helper || null };
                             });
                             setQueryPanels(panels);
                         }
@@ -2285,7 +2492,7 @@ function App() {
                         if (session.queries && session.queries.length > 0) {
                             var panels = session.queries.map(function(q) {
                                 queryIdCounter.current++;
-                                return { id: queryIdCounter.current, initialSql: q.sql || '', initialTab: q.activeTab || null, stateRef: { current: null }, autoRun: autoRunQueries };
+                                return { id: queryIdCounter.current, initialSql: q.sql || '', initialTab: q.activeTab || null, stateRef: { current: null }, autoRun: autoRunQueries, initialHelper: q.helper || null };
                             });
                             setQueryPanels(panels);
                         }
@@ -2370,7 +2577,7 @@ function App() {
                 )}
             </div>
             {queryPanels.map(function(panel, idx) {
-                return <QueryPanel key={panel.id} panelIndex={idx} credentials={credentials} labelData={labelData} dotString={dotString} activeGraph={activeGraph} initialSql={panel.initialSql} initialTab={panel.initialTab} stateRef={panel.stateRef} autoRun={panel.autoRun} onClose={function(){ setQueryPanels(function(prev){ return prev.filter(function(p){ return p.id !== panel.id; }); }); }} />;
+                return <QueryPanel key={panel.id} panelIndex={idx} credentials={credentials} labelData={labelData} dotString={dotString} activeGraph={activeGraph} initialSql={panel.initialSql} initialTab={panel.initialTab} initialHelper={panel.initialHelper} stateRef={panel.stateRef} autoRun={panel.autoRun} onClose={function(){ setQueryPanels(function(prev){ return prev.filter(function(p){ return p.id !== panel.id; }); }); }} />;
             })}
         </div>
     );

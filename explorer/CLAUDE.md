@@ -27,7 +27,7 @@ Edit `KineticaGraphExplorer.html` and open/refresh in a browser. No build or ins
 - `OntologyViewer` — Graphviz WASM rendering of graph ontology DOT with D3 zoom/pan and node/edge picking
 - `CanvasGraph` — force-graph (force-graph library) 2D visualization of graph topology. Colors match LabelChart via `labelData`-derived color map. Click-to-copy node ID to clipboard. Supports both NAME and ID column schemas. All hooks run before early returns (React Rules of Hooks compliance)
 - `GraphTablePreview` — Tabular preview of a graph's backing table data fetched via `/get/records`
-- `QueryPanel` — Self-contained floating SQL window (multiple instances supported). Contains: collapsible **Query Helper** (top, generates GQL from label/entity selections using ontology BFS pathfinding with direction-aware arrows), SQL editor, "View Results" and "Visualization" toggle buttons. Each panel manages its own query execution, results, and state. Exposes state via `stateRef` for session save. Result parsing is memoized; force-graph uses ResizeObserver for responsive scaling with zoomToFit on resize. Click-to-copy node ID from visualization
+- `QueryPanel` — Self-contained floating SQL window (multiple instances supported) with maximize/restore button. Contains: collapsible **Query Helper** (top, generates GQL from multi-label/entity selections using ontology BFS with waypoints and direction-aware arrows), SQL editor, "View Results" and "Visualization" toggle buttons. Helper auto-collapses after query generation; layout dynamically allocates space (60% helper expanded / 35% collapsed when tab active). Each panel manages its own query execution, results, and state. Exposes state via `stateRef` for session save (including helper fields). Result parsing is memoized; force-graph uses ResizeObserver for responsive scaling with zoomToFit on resize. Click-to-copy node ID from visualization
 - `SplitPane` — Resizable split layout (horizontal/vertical) with draggable divider and double-click reset
 - `CornerHandle` — Draggable corner resize handle for floating panels
 - `LoaderOverlay` — Loading spinner with abort capability
@@ -60,11 +60,15 @@ Clicking nodes/edges in the `OntologyViewer` highlights matching labels in the `
 
 ### Query Helper
 
-Collapsible panel inside each QueryPanel that generates GQL queries from form inputs:
-- **Inputs**: Source Label (dropdown from `labelData.node_labels`), Source Entity (optional), Hops (1-5), Target Label, Target Entity
-- **Ontology pathfinding**: Parses `dotString` into adjacency map via regex, builds reverse adjacency for bidirectional BFS. Finds shortest path between source and target labels, respecting edge direction (`dir: 'fwd'` → `->`, `dir: 'rev'` → `<-`)
-- **Generated GQL**: Uses `as` aliases in RETURN (e.g., `a.NODE as a_node, ab.LABEL as ab_label`). Falls back to generic untyped pattern when ontology not loaded or no path found
-- **Props needed**: `dotString` and `activeGraph` passed from App to QueryPanel
+Collapsible panel inside each QueryPanel that generates GQL queries from form inputs. Opens expanded by default; auto-collapses after generating a query to show the SQL and visualization. All state is preserved on collapse/expand and saved in sessions.
+
+- **Inputs**: Source Label(s) (multi-select tag picker), Source Entity (optional), Target Label(s) (multi-select), Target Entity (optional)
+- **Waypoints**: "+ Add Hop" adds intermediate constraints. Each hop row shows: hop index (large) | Node Label(s) (multi-select tags) | → | Edge Label (single select) | ✕ remove. Pathfinding auto-determines hop count — no manual Hops input needed
+- **Multi-label (OR logic)**: Selecting multiple labels (e.g., `street_address` + `email`) means "match nodes with ANY of these labels". GQL syntax: `(a:street_address|email)`. Pathfinding tries routes from all matching ontology nodes
+- **Ontology pathfinding**: Parses `dotString` into adjacency map via regex (normalizes multi-label DOT names like `"FEMALE:\ndance (20%)"` to keys `"FEMALE|dance"`). Builds reverse adjacency for bidirectional BFS. Chains through waypoints finding sub-paths. Respects edge direction (`dir: 'fwd'` → `->`, `dir: 'rev'` → `<-`). Edge label constraints filter direct edges first, fallback to BFS
+- **GQL generation**: Uses only user-selected labels (not full ontology keys) in MATCH patterns. Uses `as` aliases in RETURN (e.g., `a.NODE as a_node`). Labels with spaces are double-quoted (e.g., `(c:"news company")`). Falls back to generic untyped pattern when ontology not loaded or no path found
+- **Auto-visualization**: Query results with hop data automatically switch to the Visualization tab. No-result queries clear the previous visualization
+- **Props needed**: `dotString`, `activeGraph`, `labelData` passed from App to QueryPanel
 
 ### Kinetica `/execute/sql` Response Format
 
@@ -84,7 +88,7 @@ Sessions are saved as JSON files (schema version 1). The session object captures
 - `connection` — Server URL and username (password excluded)
 - `graph.name` — Active graph, `selectedNodeLabels`, `selectedEdgeLabels`, `ontologyDot`
 - `graph.dataFetched` — Whether table data was loaded; `graph.showForceGraph` — Whether visualization was active
-- `queries[]` — Array of open query panels with `sql` text and `activeTab` state
+- `queries[]` — Array of open query panels with `sql` text, `activeTab` state, and `helper` object (srcLabels, srcEntity, tgtLabels, tgtEntity, waypoints, showHelper)
 
 On load: uses the active server connection (warns if session server differs), checks graph exists (warns if not found), restores label selections, ontology, re-fetches table data + visualization if previously active, and reopens query panels. If **Auto-run** toggle is on (default), restored queries execute automatically. Session Load/Save/Auto-run controls are in the Sidebar (visible when connected). Schema defined in `tests/session_schema.json`.
 

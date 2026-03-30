@@ -37,21 +37,24 @@ No build step, no dependencies to install, no server to run.
 - Label selection in the charts filters the visualization to matching subgraphs.
 
 ### SQL / GQL Query
-- Click **Query** to open a floating, draggable, resizable SQL editor panel. Each click opens a **new independent panel** — multiple queries can be open simultaneously.
-- **Query Helper** (collapsible, above the editor) — generates GQL queries from form inputs:
-  - Select **Source Label**, optional **Source Entity**, **Number of Hops** (1-5), **Target Label**, optional **Target Entity**
-  - Click **Generate Query** — finds the shortest path between labels using the ontology graph (BFS) and generates a direction-aware GQL MATCH pattern with proper `->` and `<-` arrows
+- Click **Query** to open a floating, draggable, resizable SQL editor panel with maximize/restore button. Each click opens a **new independent panel** — multiple queries can be open simultaneously.
+- **Query Helper** (collapsible, opens expanded by default, above the editor) — generates GQL queries from form inputs:
+  - Select **Source Label(s)** (multi-select with tags), optional **Source Entity**
+  - **"+ Add Hop"** to add intermediate waypoints, each with: hop index | **Node Label(s)** (multi-select tags) | **Edge Label** (dropdown)
+  - Select **Target Label(s)** (multi-select with tags), optional **Target Entity**
+  - Multiple labels use OR logic (e.g., `street_address` + `email` → `(a:street_address|email)`)
+  - Click **Generate Query** — finds the shortest path between labels using the ontology graph (BFS through waypoints) and generates a direction-aware GQL MATCH pattern with proper `->` and `<-` arrows. Labels with spaces are auto-quoted. Helper auto-collapses after generation to show the query and visualization
   - If ontology is not loaded, falls back to a generic untyped pattern
   - Entity IDs can be pasted from click-to-copy on any graph visualization node
 - Write or edit any SQL or GQL `GRAPH ... MATCH ... RETURN` query and press **Ctrl+Enter** (or click **Run**).
-- After a successful query, two toggle buttons appear below the editor:
+- After a successful query with hop data, the **Visualization** tab activates automatically. Two toggle buttons appear below the editor:
   - **View Results** — Expands a scrollable data table showing the RETURN statement columns.
-  - **Visualization** — Expands an interactive force-directed path visualization (for hop-based graph query results) with label-consistent colors, legend, directed arrows, and animated particles. Click nodes to copy their IDs. The graph responsively scales and re-centers on panel resize.
+  - **Visualization** — Expands an interactive force-directed path visualization with label-consistent colors, legend, directed arrows, and animated particles. Click nodes to copy their IDs. Cleared automatically when a query returns no results. The graph responsively scales and re-centers on panel resize.
 
 ### Session Save / Load
 Session controls are in the **Sidebar** (lower left, visible when connected):
 - **Load Session** — Restore from a JSON file. Uses the active server connection (warns if session was saved from a different server). Warns if the graph is not found. Re-fetches table data and visualization if they were active.
-- **Save Session** — Download current state as JSON (connection, graph, labels, ontology, data/viz state, queries). Confirms with filename on save.
+- **Save Session** — Download current state as JSON (connection, graph, labels, ontology, data/viz state, queries including Query Helper selections). Confirms with filename on save.
 - **Auto-run Queries** toggle (on by default) — when on, restored queries execute automatically on session load.
 
 ### Cross-View Picking
