@@ -1024,7 +1024,8 @@ function QueryPanel(props) {
         // Edge constraints from waypoints
         var edgeConstraints = [];
         for (var s = 0; s < stopSets.length - 1; s++) {
-            edgeConstraints.push(s < wps.length && wps[s].edgeLabel ? wps[s].edgeLabel : null);
+            var ec = s < wps.length && wps[s].edgeLabels && wps[s].edgeLabels.length ? wps[s].edgeLabels : null;
+            edgeConstraints.push(ec);
         }
 
         // Try all combinations of keys between consecutive stops, return first successful full path
@@ -1037,18 +1038,18 @@ function QueryPanel(props) {
                 for (var ti = 0; ti < toSet.length; ti++) {
                     var segment = null;
                     if (ec) {
-                        // Try direct constrained edge first
+                        // Try direct constrained edge first (ec is an array of edge labels — OR logic)
                         var fwdEdges = ontologyAdj[fromSet[fi]] || [];
-                        for (var f = 0; f < fwdEdges.length; f++) {
-                            if (fwdEdges[f].edge === ec && fwdEdges[f].target === toSet[ti]) {
-                                segment = [{ src: fromSet[fi], edge: ec, tgt: toSet[ti], dir: 'fwd' }]; break;
+                        for (var f = 0; f < fwdEdges.length && !segment; f++) {
+                            if (ec.indexOf(fwdEdges[f].edge) !== -1 && fwdEdges[f].target === toSet[ti]) {
+                                segment = [{ src: fromSet[fi], edge: fwdEdges[f].edge, tgt: toSet[ti], dir: 'fwd' }];
                             }
                         }
                         if (!segment && ontologyRevAdj) {
                             var revEdges = ontologyRevAdj[fromSet[fi]] || [];
-                            for (var r = 0; r < revEdges.length; r++) {
-                                if (revEdges[r].edge === ec && revEdges[r].source === toSet[ti]) {
-                                    segment = [{ src: toSet[ti], edge: ec, tgt: fromSet[fi], dir: 'rev' }]; break;
+                            for (var r = 0; r < revEdges.length && !segment; r++) {
+                                if (ec.indexOf(revEdges[r].edge) !== -1 && revEdges[r].source === toSet[ti]) {
+                                    segment = [{ src: toSet[ti], edge: revEdges[r].edge, tgt: fromSet[fi], dir: 'rev' }];
                                 }
                             }
                         }
@@ -1133,6 +1134,19 @@ function QueryPanel(props) {
             matchParts.push('(' + srcVar + nodeKeyToUserLabel(path[0].dir === 'fwd' ? path[0].src : path[0].tgt, -1) + whereClause + ')');
             returnParts.push(srcVar + '.NODE as ' + srcVar + '_node');
 
+            // Build a map of user edge label selections per path hop
+            // Each waypoint's edgeLabels apply to the segment leading OUT of that waypoint
+            var userEdgeLabelsForHop = function(hopIdx) {
+                // Check if any waypoint's edge labels were used for this hop
+                for (var w = 0; w < waypoints.length; w++) {
+                    var wpEdges = waypoints[w].edgeLabels || [];
+                    if (wpEdges.length > 0 && wpEdges.indexOf(path[hopIdx].edge) !== -1) {
+                        return wpEdges;
+                    }
+                }
+                return [path[hopIdx].edge]; // fallback to the single BFS-found edge
+            };
+
             for (var i = 0; i < path.length; i++) {
                 var edgeVar = letters[varIdx > 0 ? varIdx - 1 : 0] + letters[varIdx];
                 var nextVar = letters[varIdx++];
@@ -1141,10 +1155,11 @@ function QueryPanel(props) {
                 if (i === path.length - 1 && tgtEntity) {
                     tgtWhere = ' WHERE (' + nextVar + '.NODE =\'' + tgtEntity + '\')';
                 }
+                var edgeLabelGql = ':' + userEdgeLabelsForHop(i).map(quoteLabel).join('|');
                 if (path[i].dir === 'fwd') {
-                    matchParts.push('-[' + edgeVar + ':' + quoteLabel(path[i].edge) + ']->');
+                    matchParts.push('-[' + edgeVar + edgeLabelGql + ']->');
                 } else {
-                    matchParts.push('<-[' + edgeVar + ':' + quoteLabel(path[i].edge) + ']-');
+                    matchParts.push('<-[' + edgeVar + edgeLabelGql + ']-');
                 }
                 matchParts.push('(' + nextVar + nodeKeyToUserLabel(nextKey, i) + tgtWhere + ')');
                 returnParts.push(nextVar + '.NODE as ' + nextVar + '_node');
@@ -1156,9 +1171,9 @@ function QueryPanel(props) {
             else setHelperStatus('');
 
             // Build stops from label arrays
-            var stops = [{ labels: srcLabels, entity: srcEntity, edgeLabel: '' }];
-            waypoints.forEach(function(wp) { stops.push({ labels: wp.nodeLabels || [], entity: '', edgeLabel: wp.edgeLabel || '' }); });
-            if (tgtLabels.length) stops.push({ labels: tgtLabels, entity: tgtEntity, edgeLabel: '' });
+            var stops = [{ labels: srcLabels, entity: srcEntity, edgeLabels: [] }];
+            waypoints.forEach(function(wp) { stops.push({ labels: wp.nodeLabels || [], entity: '', edgeLabels: wp.edgeLabels || [] }); });
+            if (tgtLabels.length) stops.push({ labels: tgtLabels, entity: tgtEntity, edgeLabels: [] });
 
             var srcVar2 = letters[varIdx++];
             var whereClause2 = stops[0].entity ? ' WHERE (' + srcVar2 + '.NODE =\'' + stops[0].entity + '\')' : '';
@@ -1169,7 +1184,7 @@ function QueryPanel(props) {
                 var edgeVar2 = letters[varIdx > 0 ? varIdx - 1 : 0] + letters[varIdx];
                 var nextVar2 = letters[varIdx++];
                 var stopWhere = stops[h].entity ? ' WHERE (' + nextVar2 + '.NODE =\'' + stops[h].entity + '\')' : '';
-                var edgeLabelPart = stops[h].edgeLabel ? ':' + quoteLabel(stops[h].edgeLabel) : '';
+                var edgeLabelPart = stops[h].edgeLabels && stops[h].edgeLabels.length ? ':' + stops[h].edgeLabels.map(quoteLabel).join('|') : '';
                 var nodeLabelPart = labelsToGql(stops[h].labels);
                 matchParts.push('-[' + edgeVar2 + edgeLabelPart + ']->');
                 matchParts.push('(' + nextVar2 + nodeLabelPart + stopWhere + ')');
@@ -1188,7 +1203,8 @@ function QueryPanel(props) {
             }
         }
 
-        var gql = 'GRAPH ' + activeGraph + '\n  MATCH ' + matchParts.join(' ') + '\n  RETURN ' + returnParts.join(', ');
+        var quotedGraph = activeGraph.split('.').map(function(p) { return '"' + p + '"'; }).join('.');
+        var gql = 'GRAPH ' + quotedGraph + '\n  MATCH ' + matchParts.join(' ') + '\n  RETURN ' + returnParts.join(', ');
         setSql(gql);
         setShowHelper(false);
         setNodeDetail(null);
@@ -1538,7 +1554,8 @@ function QueryPanel(props) {
                 <div>
                     <div onClick={function(){ setShowHelper(function(p){ return !p; }); }} title="Query Helper: generate GQL queries from label selections" style={{ display:'flex', alignItems:'center', gap:6, cursor:'pointer', userSelect:'none', padding:'2px 0' }}>
                         <span style={{ fontSize:13, fontWeight:800, color: showHelper ? '#6c5ce7' : '#2d3436', transition:'0.15s' }}>{showHelper ? '\u25BC' : '\u25B6'} Query Helper</span>
-                        {!showHelper && <span style={{ fontSize:10, color:'#b2bec3' }}>— build a GQL query from labels</span>}
+                        {!showHelper && helperStatus && <span style={{ fontSize:10, color:'#00b894', fontWeight:600 }}>{helperStatus}</span>}
+                        {!showHelper && !helperStatus && <span style={{ fontSize:10, color:'#b2bec3' }}>— build a GQL query from labels</span>}
                     </div>
                     {showHelper && (
                         <div style={{ border:'1px solid #dfe6e9', borderRadius:6, padding:8, background:'#f8f7ff', marginBottom:4 }}>
@@ -1575,10 +1592,13 @@ function QueryPanel(props) {
                                         </div>
                                         <div style={{ fontSize:11, color:'#b2bec3', fontWeight:700, marginBottom:4 }}>{'\u2192'}</div>
                                         <div style={{ flex:1, minWidth:80 }}>
-                                            <div style={{ fontSize:9, fontWeight:700, color:'#0984e3', marginBottom:2 }}>Edge Label</div>
-                                            <select value={wp.edgeLabel || ''} onChange={function(e){ var v = e.target.value; setWaypoints(function(prev){ var n = prev.slice(); n[wpIdx] = Object.assign({}, n[wpIdx], { edgeLabel: v }); return n; }); }} style={{ width:'100%', padding:'4px 6px', fontSize:11, border:'1px solid #bee3f8', borderRadius:4, fontFamily:'inherit', background:'#eef6ff' }}>
-                                                <option value="">— any —</option>
-                                                {edgeLabels.map(function(l) { return <option key={l} value={l}>{l}</option>; })}
+                                            <div style={{ fontSize:9, fontWeight:700, color:'#0984e3', marginBottom:2 }}>Edge Label(s)</div>
+                                            <div style={{ display:'flex', flexWrap:'wrap', gap:3, marginBottom: (wp.edgeLabels || []).length ? 3 : 0 }}>
+                                                {(wp.edgeLabels || []).map(function(l) { return <span key={l} style={{ display:'inline-flex', alignItems:'center', gap:2, padding:'1px 6px', borderRadius:10, fontSize:10, fontWeight:600, background:'#0984e3', color:'#fff' }}>{l} <span onClick={function(){ setWaypoints(function(prev){ var n = prev.slice(); n[wpIdx] = Object.assign({}, n[wpIdx], { edgeLabels: (n[wpIdx].edgeLabels || []).filter(function(v){ return v !== l; }) }); return n; }); }} style={{ cursor:'pointer', fontWeight:700 }}>{'\u00D7'}</span></span>; })}
+                                            </div>
+                                            <select value="" onChange={function(e){ if (e.target.value) { var v = e.target.value; setWaypoints(function(prev){ var n = prev.slice(); var cur = (n[wpIdx].edgeLabels || []).slice(); if (cur.indexOf(v) === -1) cur.push(v); n[wpIdx] = Object.assign({}, n[wpIdx], { edgeLabels: cur }); return n; }); } }} style={{ width:'100%', padding:'4px 6px', fontSize:11, border:'1px solid #bee3f8', borderRadius:4, fontFamily:'inherit', background:'#eef6ff' }}>
+                                                <option value="">— add label —</option>
+                                                {edgeLabels.filter(function(l){ return (wp.edgeLabels || []).indexOf(l) === -1; }).map(function(l) { return <option key={l} value={l}>{l}</option>; })}
                                             </select>
                                         </div>
                                         <button onClick={function(){ setWaypoints(function(prev){ return prev.filter(function(_, i){ return i !== wpIdx; }); }); }} title="Remove this waypoint" style={{ padding:'4px 8px', border:'none', borderRadius:4, cursor:'pointer', fontWeight:700, color:'#fff', background:'#d63031', fontSize:10, fontFamily:'inherit', marginBottom:1 }}>{'\u2715'}</button>
@@ -1586,7 +1606,7 @@ function QueryPanel(props) {
                                 );
                             })}
                             <div style={{ marginBottom:6 }}>
-                                <button onClick={function(){ setWaypoints(function(prev){ return prev.concat([{ nodeLabels: [], edgeLabel: '' }]); }); }} title="Add an intermediate hop with optional node and edge label constraints" style={{ padding:'3px 10px', border:'1px dashed #6c5ce7', borderRadius:4, cursor:'pointer', fontWeight:600, color:'#6c5ce7', background:'transparent', fontSize:10, fontFamily:'inherit' }}>+ Add Hop</button>
+                                <button onClick={function(){ setWaypoints(function(prev){ return prev.concat([{ nodeLabels: [], edgeLabels: [] }]); }); }} title="Add an intermediate hop with optional node and edge label constraints" style={{ padding:'3px 10px', border:'1px dashed #6c5ce7', borderRadius:4, cursor:'pointer', fontWeight:600, color:'#6c5ce7', background:'transparent', fontSize:10, fontFamily:'inherit' }}>+ Add Hop</button>
                             </div>
                             {/* Target */}
                             <div style={{ display:'flex', gap:6, marginBottom:6, flexWrap:'wrap' }}>

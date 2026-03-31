@@ -40,10 +40,10 @@ No build step, no dependencies to install, no server to run.
 - Click **Query** to open a floating, draggable, resizable SQL editor panel with maximize/restore button. Each click opens a **new independent panel** — multiple queries can be open simultaneously.
 - **Query Helper** (collapsible, opens expanded by default, above the editor) — generates GQL queries from form inputs:
   - Select **Source Label(s)** (multi-select with tags), optional **Source Entity**
-  - **"+ Add Hop"** to add intermediate waypoints, each with: hop index | **Node Label(s)** (multi-select tags) | **Edge Label** (dropdown)
+  - **"+ Add Hop"** to add intermediate waypoints, each with: hop index | **Node Label(s)** (multi-select tags) | **Edge Label(s)** (multi-select tags)
   - Select **Target Label(s)** (multi-select with tags), optional **Target Entity**
-  - Multiple labels use OR logic (e.g., `street_address` + `email` → `(a:street_address|email)`)
-  - Click **Generate Query** — finds the shortest path between labels using the ontology graph (BFS through waypoints) and generates a direction-aware GQL MATCH pattern with proper `->` and `<-` arrows. Labels with spaces are auto-quoted. Helper auto-collapses after generation to show the query and visualization
+  - Multiple labels use OR logic for both nodes and edges (e.g., `street_address` + `email` → `(a:street_address|email)`, `manages` + `part_of` → `-[e:manages|part_of]->`)
+  - Click **Generate Query** — finds the shortest path between labels using the ontology graph (BFS through waypoints) and generates a direction-aware GQL MATCH pattern with proper `->` and `<-` arrows. Labels with spaces are auto-quoted. Graph names are double-quoted per part (e.g., `GRAPH "schema"."graph_name"`). Helper auto-collapses after generation, showing the path found info in green next to the header
   - If ontology is not loaded, falls back to a generic untyped pattern
   - Entity IDs can be pasted from click-to-copy on any graph visualization node
 - Write or edit any SQL or GQL `GRAPH ... MATCH ... RETURN` query and press **Ctrl+Enter** (or click **Run**).
