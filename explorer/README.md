@@ -13,11 +13,11 @@ No build step, no dependencies to install, no server to run.
 
 ## Screenshots
 
-![Graph Explorer — ontology, query visualization, and label charts](screenshots/KineticaGraphExplorer1.png)
-*Full explorer view: ontology structure, GQL query path visualization, force-graph canvas, and label distribution charts.*
+![Graph Explorer — query helper and visualization](screenshots/KineticaGraphExplorer1.png)
+*Query helper for automatic cypher queries from dynamic ontology and complex SQL query executions.*
 
-![Graph Explorer — ontology picking and highlighting](screenshots/KineticaGraphExplorer11.png)
-*Ontology picking mode: clicking nodes/edges highlights matching labels across views.*
+![Graph Explorer — ontology and canvas visualization](screenshots/KineticaGraphExplorer11.png)
+*Full explorer view: ontology structure, GQL query path visualization, force-graph canvas, and label distribution charts.*
 
 ## Features
 
