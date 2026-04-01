@@ -553,7 +553,7 @@ function LabelChart(props) {
                     if (elements.length > 0) {
                         var idx = elements[0].index;
                         if (onToggleLabel && sorted[idx].labels && sorted[idx].labels.length) {
-                            sorted[idx].labels.forEach(function(lb) { onToggleLabel(lb); });
+                            onToggleLabel(sorted[idx].labels.slice().sort().join('|'));
                         }
                     }
                 },
@@ -593,12 +593,13 @@ function LabelChart(props) {
                             var labelStr = item.labels && item.labels.length ? item.labels.join(', ') : 'None';
                             var cidx = colorIdxMap[labelStr] !== undefined ? colorIdxMap[labelStr] : rowIdx;
                             var pct = total > 0 ? (((item.count||0)/total)*100).toFixed(1) : '0.0';
-                            var isSelected = selectedLabels.length > 0 && item.labels && item.labels.some(function(lb){ return selectedLabels.indexOf(lb) !== -1; });
+                            var comboKey = item.labels ? item.labels.slice().sort().join('|') : '';
+                            var isSelected = selectedLabels.length > 0 && selectedLabels.indexOf(comboKey) !== -1;
                             var hl = highlightIdx === cidx;
                             return (
                                 <tr key={labelStr} data-label={labelStr}
                                     onMouseEnter={function(){ handleRowEnter(cidx); }}
-                                    onClick={function(){ if (onToggleLabel && item.labels && item.labels.length) { item.labels.forEach(function(lb) { onToggleLabel(lb); }); } }}
+                                    onClick={function(){ if (onToggleLabel && item.labels && item.labels.length) { onToggleLabel(item.labels.slice().sort().join('|')); } }}
                                     onMouseLeave={handleRowLeave}
                                     style={{
                                         background: isSelected ? PALETTE[cidx % PALETTE.length].solid + '22' : PALETTE[cidx % PALETTE.length].light,
@@ -818,7 +819,7 @@ function DashboardHeader(props) {
 function QueryPanel(props) {
     var onClose = props.onClose, credentials = props.credentials, labelData = props.labelData, panelIndex = props.panelIndex || 0;
     var initialSql = props.initialSql || '', initialTab = props.initialTab || null, stateRef = props.stateRef, autoRun = props.autoRun;
-    var dotString = props.dotString, activeGraph = props.activeGraph, nodeSourceTable = props.nodeSourceTable, initialHelper = props.initialHelper;
+    var dotString = props.dotString, activeGraph = props.activeGraph, graphDirected = props.graphDirected, nodeSourceTable = props.nodeSourceTable, initialHelper = props.initialHelper;
     const [sql, setSql] = useState(initialSql);
     const [result, setResult] = useState(null);
     const [error, setError] = useState(null);
@@ -924,10 +925,18 @@ function QueryPanel(props) {
         return raw.replace(/\s*\([^)]*\)\s*$/, '').trim().split(/[:\n]+/).map(function(s){ return s.trim(); }).filter(Boolean).sort().join('|');
     };
 
+    var isUndirectedGraph = useMemo(function() {
+        // Use ontology DOT if available, otherwise fall back to show/graph directed flag
+        if (dotString) return /^\s*graph\s+/im.test(dotString);
+        return graphDirected === false;
+    }, [dotString, graphDirected]);
+
     var ontologyAdj = useMemo(function() {
         if (!dotString) return null;
         var adj = {};
-        var re = /"([^"]+)"\s*->\s*"([^"]+)"\s*\[.*?label\s*=\s*"([^"]+)"/g;
+        var isUndirected = isUndirectedGraph;
+        // Match both directed (->) and undirected (--)
+        var re = /"([^"]+)"\s*(?:->|--)\s*"([^"]+)"\s*\[.*?label\s*=\s*"([^"]+)"/g;
         var m;
         while ((m = re.exec(dotString)) !== null) {
             var src = normNodeKey(m[1]);
@@ -936,6 +945,13 @@ function QueryPanel(props) {
             if (!adj[src]) adj[src] = [];
             if (!adj[src].some(function(e) { return e.edge === edgeRaw && e.target === tgt; })) {
                 adj[src].push({ edge: edgeRaw, target: tgt });
+            }
+            // For undirected graphs, add reverse edge too
+            if (isUndirected) {
+                if (!adj[tgt]) adj[tgt] = [];
+                if (!adj[tgt].some(function(e) { return e.edge === edgeRaw && e.target === src; })) {
+                    adj[tgt].push({ edge: edgeRaw, target: src });
+                }
             }
         }
         return adj;
@@ -961,6 +977,8 @@ function QueryPanel(props) {
         if (!labels || labels.length === 0) return [];
         if (!ontologyAdj) return labels.map(function(l) { return l; });
         // Find all ontology node keys that contain ANY of the selected labels (OR logic)
+        // Sort results: exact matches first (fewer parts), then partial matches
+        var numSelected = labels.length;
         return Object.keys(ontologyAdj).concat(
             ontologyRevAdj ? Object.keys(ontologyRevAdj) : []
         ).filter(function(key, i, arr) {
@@ -968,6 +986,11 @@ function QueryPanel(props) {
         }).filter(function(key) {
             var parts = key.split('|');
             return labels.some(function(l) { return parts.indexOf(l) !== -1; });
+        }).sort(function(a, b) {
+            // Prefer keys whose part count matches the selected label count (exact match)
+            var aParts = a.split('|').length, bParts = b.split('|').length;
+            var aDiff = Math.abs(aParts - numSelected), bDiff = Math.abs(bParts - numSelected);
+            return aDiff - bDiff;
         });
     };
 
@@ -1157,9 +1180,9 @@ function QueryPanel(props) {
                 }
                 var edgeLabelGql = ':' + userEdgeLabelsForHop(i).map(quoteLabel).join('|');
                 if (path[i].dir === 'fwd') {
-                    matchParts.push('-[' + edgeVar + edgeLabelGql + ']->');
+                    matchParts.push(isUndirectedGraph ? '-[' + edgeVar + edgeLabelGql + ']-' : '-[' + edgeVar + edgeLabelGql + ']->');
                 } else {
-                    matchParts.push('<-[' + edgeVar + edgeLabelGql + ']-');
+                    matchParts.push(isUndirectedGraph ? '-[' + edgeVar + edgeLabelGql + ']-' : '<-[' + edgeVar + edgeLabelGql + ']-');
                 }
                 matchParts.push('(' + nextVar + nodeKeyToUserLabel(nextKey, i) + tgtWhere + ')');
                 returnParts.push(nextVar + '.NODE as ' + nextVar + '_node');
@@ -1186,7 +1209,7 @@ function QueryPanel(props) {
                 var stopWhere = stops[h].entity ? ' WHERE (' + nextVar2 + '.NODE =\'' + stops[h].entity + '\')' : '';
                 var edgeLabelPart = stops[h].edgeLabels && stops[h].edgeLabels.length ? ':' + stops[h].edgeLabels.map(quoteLabel).join('|') : '';
                 var nodeLabelPart = labelsToGql(stops[h].labels);
-                matchParts.push('-[' + edgeVar2 + edgeLabelPart + ']->');
+                matchParts.push(isUndirectedGraph ? '-[' + edgeVar2 + edgeLabelPart + ']-' : '-[' + edgeVar2 + edgeLabelPart + ']->');
                 matchParts.push('(' + nextVar2 + nodeLabelPart + stopWhere + ')');
                 returnParts.push(nextVar2 + '.NODE as ' + nextVar2 + '_node');
                 returnParts.push(edgeVar2 + '.LABEL as ' + edgeVar2 + '_label');
@@ -1196,7 +1219,7 @@ function QueryPanel(props) {
             if (stops.length < 2) {
                 var edgeVar3 = letters[varIdx > 0 ? varIdx - 1 : 0] + letters[varIdx];
                 var nextVar3 = letters[varIdx++];
-                matchParts.push('-[' + edgeVar3 + ']->');
+                matchParts.push(isUndirectedGraph ? '-[' + edgeVar3 + ']-' : '-[' + edgeVar3 + ']->');
                 matchParts.push('(' + nextVar3 + ')');
                 returnParts.push(nextVar3 + '.NODE as ' + nextVar3 + '_node');
                 returnParts.push(edgeVar3 + '.LABEL as ' + edgeVar3 + '_label');
@@ -1350,14 +1373,29 @@ function QueryPanel(props) {
         var ld = initialLabelData.current;
         if (ld) {
             var nl = [].concat(ld.node_labels || []).sort(function(a, b) { return b.count - a.count; });
-            nl.forEach(function(item, idx) { (item.labels || []).forEach(function(l) { map[l] = PALETTE[idx % PALETTE.length].solid; }); });
+            nl.forEach(function(item, idx) {
+                var comboKey = (item.labels || []).slice().sort().join('|');
+                map['n:' + comboKey] = PALETTE[idx % PALETTE.length].solid;
+            });
             var el = [].concat(ld.edge_labels || []).sort(function(a, b) { return b.count - a.count; });
-            el.forEach(function(item, idx) { (item.labels || []).forEach(function(l) { if (!map[l]) map[l] = PALETTE[(nl.length + idx) % PALETTE.length].solid; }); });
+            el.forEach(function(item, idx) {
+                var comboKey = (item.labels || []).slice().sort().join('|');
+                map['e:' + comboKey] = PALETTE[idx % PALETTE.length].solid;
+            });
         }
         return map;
     }, [initialLabelData.current]);
 
-    var getColor = function(label) { return labelColorMap[label] || '#b2bec3'; };
+    var getNodeColor = function(rawLabel) {
+        if (!rawLabel) return '#b2bec3';
+        var labels = typeof rawLabel === 'string' && rawLabel.charAt(0) === '[' ? (function(){ try { return JSON.parse(rawLabel); } catch(e) { return [rawLabel]; } })() : [rawLabel];
+        return labelColorMap['n:' + labels.slice().sort().join('|')] || '#b2bec3';
+    };
+    var getEdgeColor = function(rawLabel) {
+        if (!rawLabel) return '#636e72';
+        var labels = typeof rawLabel === 'string' && rawLabel.charAt(0) === '[' ? (function(){ try { return JSON.parse(rawLabel); } catch(e) { return [rawLabel]; } })() : [rawLabel];
+        return labelColorMap['e:' + labels.slice().sort().join('|')] || '#636e72';
+    };
 
     var graphData = useMemo(function() {
         if (!hasHops || graphParsed.rows.length === 0) return { nodes: [], links: [], maxDegree: 1 };
@@ -1376,14 +1414,17 @@ function QueryPanel(props) {
             for (var hop = 1; hop <= maxHop; hop++) {
                 var n1id = row['NODE1_HOP_' + hop], n2id = row['NODE2_HOP_' + hop];
                 if (!n1id || !n2id) continue;
-                var n1label = parseLabel(row['NODE1_LABELS_HOP_' + hop]);
-                var n2label = parseLabel(row['NODE2_LABELS_HOP_' + hop]);
-                var edgeLabel = parseLabel(row['EDGE_LABELS_HOP_' + hop]);
-                if (!nodeMap[n1id]) nodeMap[n1id] = { id: n1id, label: n1label, color: getColor(n1label), degree: 0 };
-                if (!nodeMap[n2id]) nodeMap[n2id] = { id: n2id, label: n2label, color: getColor(n2label), degree: 0 };
+                var n1labelRaw = row['NODE1_LABELS_HOP_' + hop];
+                var n2labelRaw = row['NODE2_LABELS_HOP_' + hop];
+                var edgeLabelRaw = row['EDGE_LABELS_HOP_' + hop];
+                var n1label = parseLabel(n1labelRaw);
+                var n2label = parseLabel(n2labelRaw);
+                var edgeLabel = parseLabel(edgeLabelRaw);
+                if (!nodeMap[n1id]) nodeMap[n1id] = { id: n1id, label: n1label, color: getNodeColor(n1labelRaw), degree: 0 };
+                if (!nodeMap[n2id]) nodeMap[n2id] = { id: n2id, label: n2label, color: getNodeColor(n2labelRaw), degree: 0 };
                 var linkKey = n1id + '\u2192' + n2id + '|' + edgeLabel;
                 if (!linkMap[linkKey]) {
-                    linkMap[linkKey] = { source: n1id, target: n2id, edgeLabel: edgeLabel, color: getColor(edgeLabel) || '#636e72' };
+                    linkMap[linkKey] = { source: n1id, target: n2id, edgeLabel: edgeLabel, color: getEdgeColor(edgeLabelRaw) };
                     nodeMap[n1id].degree++; nodeMap[n2id].degree++;
                 }
             }
@@ -1863,8 +1904,41 @@ function GraphTablePreview(props) {
 /* ═══════════════════ CanvasGraph (force-graph Canvas) ═════ */
 function CanvasGraph(props) {
     var graphTableData = props.data, graphName = props.graphName, selectedNodeLabels = props.selectedNodeLabels || [], selectedEdgeLabels = props.selectedEdgeLabels || [], labelData = props.labelData;
+    var credentials = props.credentials, nodeSourceTable = props.nodeSourceTable;
     var containerRef = useRef(null);
     var graphRef = useRef(null);
+    const [nodeDetail, setNodeDetail] = useState(null);
+    const [nodeDetailLoading, setNodeDetailLoading] = useState(false);
+
+    var fetchNodeDetail = async function(nodeId) {
+        if (!nodeSourceTable || !credentials || !credentials.url) return;
+        setNodeDetailLoading(true); setNodeDetail(null);
+        try {
+            var tableName = nodeSourceTable.table;
+            var hdrs = { 'Content-Type': 'application/json' };
+            if (credentials.user || credentials.pass) hdrs['Authorization'] = 'Basic ' + btoa(credentials.user + ':' + credentials.pass);
+            var idCol = nodeSourceTable.idCol;
+            if (!idCol) {
+                var probe = await fetch(credentials.url + '/get/records', { method: 'POST', headers: hdrs, body: JSON.stringify({ table_name: tableName, offset: 0, limit: 1, encoding: 'json', options: {} }) });
+                if (probe.ok) {
+                    var probeData = await probe.json(); var probeInner = safeParse(probeData.data_str) || probeData;
+                    var probeRecs = (probeInner.records_json || []).map(function(r) { return safeParse(r, r); });
+                    if (probeRecs.length > 0) idCol = resolveCol(Object.keys(probeRecs[0]), ['node', 'id', 'NODE', 'NODE_NAME', 'NODE_ID', 'name']);
+                }
+                if (!idCol) idCol = 'id';
+            }
+            var escapedId = String(nodeId).replace(/'/g, "''");
+            var tryExprs = [idCol + " = '" + escapedId + "'"];
+            if (!isNaN(nodeId)) tryExprs.push(idCol + ' = ' + nodeId);
+            var recs = [];
+            for (var t = 0; t < tryExprs.length && recs.length === 0; t++) {
+                var res = await fetch(credentials.url + '/get/records', { method: 'POST', headers: hdrs, body: JSON.stringify({ table_name: tableName, offset: 0, limit: 1, encoding: 'json', options: { expression: tryExprs[t] } }) });
+                if (res.ok) { var data = await res.json(); var inner = safeParse(data.data_str) || data; recs = (inner.records_json || []).map(function(r) { return safeParse(r, r); }); }
+            }
+            setNodeDetail({ record: recs[0] || null, nodeId: nodeId, table: tableName });
+        } catch(err) { setNodeDetail({ record: null, nodeId: nodeId, error: err.message }); }
+        finally { setNodeDetailLoading(false); }
+    };
     const [nodeLimit, setNodeLimit] = useState(500);
     const [edgeLimit, setEdgeLimit] = useState(2000);
     const [focusNode, setFocusNode] = useState(null);
@@ -1883,19 +1957,35 @@ function CanvasGraph(props) {
     var canRender = colN1 && colN2 && !hasWkt;
 
     // Build color map matching LabelChart's PALETTE assignment (sorted by count desc)
+    // Build color maps matching each LabelChart's own PALETTE assignment (sorted by count desc, index 0-based per chart)
+    // Uses combo keys (sorted pipe-joined) to match exact label combinations
     var labelColorMap = useMemo(function() {
         var map = {};
         if (labelData) {
             var nl = [].concat(labelData.node_labels || []).sort(function(a, b) { return b.count - a.count; });
-            nl.forEach(function(item, idx) { (item.labels || []).forEach(function(l) { map[l] = PALETTE[idx % PALETTE.length].solid; }); });
+            nl.forEach(function(item, idx) {
+                var comboKey = (item.labels || []).slice().sort().join('|');
+                map['n:' + comboKey] = PALETTE[idx % PALETTE.length].solid;
+            });
             var el = [].concat(labelData.edge_labels || []).sort(function(a, b) { return b.count - a.count; });
-            el.forEach(function(item, idx) { (item.labels || []).forEach(function(l) { if (!map[l]) map[l] = PALETTE[(nl.length + idx) % PALETTE.length].solid; }); });
+            el.forEach(function(item, idx) {
+                var comboKey = (item.labels || []).slice().sort().join('|');
+                map['e:' + comboKey] = PALETTE[idx % PALETTE.length].solid;
+            });
         }
         return map;
     }, [labelData]);
-    var getLabelColor = function(label) {
-        if (!label) return "#b2bec3";
-        return labelColorMap[label] || "#b2bec3";
+    var getNodeLabelColor = function(rawLabel) {
+        if (!rawLabel) return "#b2bec3";
+        var labels = typeof rawLabel === 'string' && rawLabel.charAt(0) === '[' ? (function(){ try { return JSON.parse(rawLabel); } catch(e) { return [rawLabel]; } })() : rawLabel.split(', ');
+        var comboKey = labels.slice().sort().join('|');
+        return labelColorMap['n:' + comboKey] || "#b2bec3";
+    };
+    var getEdgeLabelColor = function(rawLabel) {
+        if (!rawLabel) return "#b2bec3";
+        var labels = typeof rawLabel === 'string' && rawLabel.charAt(0) === '[' ? (function(){ try { return JSON.parse(rawLabel); } catch(e) { return [rawLabel]; } })() : rawLabel.split(', ');
+        var comboKey = labels.slice().sort().join('|');
+        return labelColorMap['e:' + comboKey] || "#b2bec3";
     };
 
     // Build graph data from records, filtered by selected labels
@@ -1928,28 +2018,26 @@ function CanvasGraph(props) {
             return [val];
         };
         if (hasNodeFilter || hasEdgeFilter) {
+            // selectedNodeLabels/selectedEdgeLabels are now combo keys like "director|actor"
             var nodeFilterSet = {};
             selectedNodeLabels.forEach(function(l) { nodeFilterSet[l] = true; });
             var edgeFilterSet = {};
             selectedEdgeLabels.forEach(function(l) { edgeFilterSet[l] = true; });
             filteredEdges = filteredEdges.filter(function(rec) {
-                // Check edge label match (parse JSON array if needed)
+                // Check edge label match: node's full sorted label combo must match a selected combo key
                 if (hasEdgeFilter && colEdgeLabel) {
                     var edgeLabels = parseLabels(rec[colEdgeLabel]);
-                    for (var ei = 0; ei < edgeLabels.length; ei++) {
-                        if (edgeFilterSet[edgeLabels[ei]]) return true;
-                    }
+                    var edgeComboKey = edgeLabels.slice().sort().join('|');
+                    if (edgeFilterSet[edgeComboKey]) return true;
                 }
-                // Check node label match via nodeLabelMap (also parse JSON)
+                // Check node label match: node's full sorted label combo must match a selected combo key
                 if (hasNodeFilter) {
                     var srcLabels = parseLabels(nodeLabelMap[rec[colN1]]);
+                    var srcComboKey = srcLabels.slice().sort().join('|');
+                    if (nodeFilterSet[srcComboKey]) return true;
                     var tgtLabels = parseLabels(nodeLabelMap[rec[colN2]]);
-                    for (var ni = 0; ni < srcLabels.length; ni++) {
-                        if (nodeFilterSet[srcLabels[ni]]) return true;
-                    }
-                    for (var nj = 0; nj < tgtLabels.length; nj++) {
-                        if (nodeFilterSet[tgtLabels[nj]]) return true;
-                    }
+                    var tgtComboKey = tgtLabels.slice().sort().join('|');
+                    if (nodeFilterSet[tgtComboKey]) return true;
                 }
                 return false;
             });
@@ -1974,8 +2062,7 @@ function CanvasGraph(props) {
             var rawLabel = nodeLabelMap[name] || "";
             var labels = parseLabels(rawLabel);
             var label = labels.join(", ");
-            getLabelColor(label);
-            return { id: name, label: label, color: getLabelColor(label), degree: 0 };
+            return { id: name, label: label, color: getNodeLabelColor(rawLabel), degree: 0 };
         });
 
         // Compute degree (connection count per node)
@@ -1997,7 +2084,7 @@ function CanvasGraph(props) {
             var rawEdgeLabel = colEdgeLabel ? (rec[colEdgeLabel] || "") : "";
             var edgeLabels = parseLabels(rawEdgeLabel);
             var elStr = edgeLabels.join(", ");
-            if (elStr && !edgeLabelColors[elStr]) edgeLabelColors[elStr] = getLabelColor(elStr);
+            if (elStr && !edgeLabelColors[elStr]) edgeLabelColors[elStr] = getEdgeLabelColor(rawEdgeLabel);
             return {
                 source: String(rec[colN1]),
                 target: String(rec[colN2]),
@@ -2051,13 +2138,18 @@ function CanvasGraph(props) {
             var match = false;
             if (hasEF && _colEdgeLabel) {
                 var els = _parseLabels(rec[_colEdgeLabel]);
-                for (var i = 0; i < els.length; i++) { if (edgeFilterSet[els[i]]) { match = true; break; } }
+                var elCombo = els.slice().sort().join('|');
+                if (edgeFilterSet[elCombo]) match = true;
             }
             if (!match && hasNF) {
                 var sl = _parseLabels(_nodeLabelMap[rec[_colN1]]);
-                var tl = _parseLabels(_nodeLabelMap[rec[_colN2]]);
-                for (var i = 0; i < sl.length; i++) { if (nodeFilterSet[sl[i]]) { match = true; break; } }
-                if (!match) for (var i = 0; i < tl.length; i++) { if (nodeFilterSet[tl[i]]) { match = true; break; } }
+                var slCombo = sl.slice().sort().join('|');
+                if (nodeFilterSet[slCombo]) match = true;
+                if (!match) {
+                    var tl = _parseLabels(_nodeLabelMap[rec[_colN2]]);
+                    var tlCombo = tl.slice().sort().join('|');
+                    if (nodeFilterSet[tlCombo]) match = true;
+                }
             }
             if (match) {
                 filteredCount++;
@@ -2156,19 +2248,19 @@ function CanvasGraph(props) {
             .linkDirectionalArrowRelPos(1)
             .onNodeClick(function(node) {
                 setFocusNode(function(prev) { return prev === node.id ? null : node.id; });
-                graph.centerAt(node.x, node.y, 500);
-                graph.zoom(3, 500);
-                // Copy node ID to clipboard
+                // Copy node ID to clipboard with brief tooltip
                 if (navigator.clipboard) {
-                    navigator.clipboard.writeText(String(node.id)).then(function() {
-                        graph.nodeLabel(function(n) {
-                            return n.id === node.id
-                                ? '\u2705 Copied: ' + n.id + (n.label ? ' [' + n.label + ']' : '')
-                                : n.id + (n.label ? ' [' + n.label + ']' : '') + ' (' + (n.degree || 0) + ' connections)';
-                        });
+                    navigator.clipboard.writeText(String(node.id));
+                    var origLabel = graph.nodeLabel();
+                    graph.nodeLabel(function(n) {
+                        return n.id === node.id ? '\u2705 Copied: ' + n.id : origLabel(n);
                     });
+                    setTimeout(function() { graph.nodeLabel(origLabel); }, 1500);
                 }
+                // Fetch node detail from source table
+                fetchNodeDetail(node.id);
             })
+            .onBackgroundClick(function() { setNodeDetail(null); })
             .onNodeHover(function(node) {
                 setHoverNode(node ? node.id : null);
                 containerRef.current.style.cursor = node ? "pointer" : "grab";
@@ -2227,16 +2319,24 @@ function CanvasGraph(props) {
             }
         }, isHuge ? 500 : 2000);
 
-        // Handle resize
+        // Handle resize — only zoomToFit on significant changes (>120px) to prevent re-center on detail strip toggle
         var resizeTimer = null;
+        var lastCanvasSize = { w: 0, h: 0 };
         var ro = new ResizeObserver(function() {
             if (containerRef.current && graphRef.current) {
-                graphRef.current.width(containerRef.current.clientWidth);
-                graphRef.current.height(containerRef.current.clientHeight);
+                var w = containerRef.current.clientWidth;
+                var h = containerRef.current.clientHeight;
+                graphRef.current.width(w);
+                graphRef.current.height(h);
+                var dw = Math.abs(w - lastCanvasSize.w);
+                var dh = Math.abs(h - lastCanvasSize.h);
+                lastCanvasSize = { w: w, h: h };
                 clearTimeout(resizeTimer);
-                resizeTimer = setTimeout(function() {
-                    if (graphRef.current) graphRef.current.zoomToFit(400, 40);
-                }, 200);
+                if (dw > 120 || dh > 120) {
+                    resizeTimer = setTimeout(function() {
+                        if (graphRef.current) graphRef.current.zoomToFit(400, 40);
+                    }, 200);
+                }
             }
         });
         ro.observe(containerRef.current);
@@ -2254,7 +2354,11 @@ function CanvasGraph(props) {
     }, [graphData]);
 
     // Legend
-    var legendItems = Object.keys(labelColorMap).map(function(l) { return { label: l, color: labelColorMap[l] }; });
+    var legendItems = Object.keys(labelColorMap).map(function(key) {
+        var isNode = key.charAt(0) === 'n';
+        var label = key.substring(2); // strip "n:" or "e:" prefix
+        return { type: isNode ? 'node' : 'edge', label: label.replace(/\|/g, ', '), color: labelColorMap[key] };
+    });
     var sliderStyle = { width: 90, accentColor: "#0984e3", cursor: "pointer" };
     var ctrlStyle = { fontSize: 11, fontWeight: 600, color: "#636e72", marginRight: 4 };
 
@@ -2296,6 +2400,28 @@ function CanvasGraph(props) {
                 </div>
             )}
             <div ref={containerRef} style={{ width:"100%", flex:"1 1 0", minHeight:200, border:"1px solid #1a1a2e", borderRadius:8, overflow:"hidden", cursor:"grab", background:"#0a0a1a" }}/>
+            {/* Node detail table strip */}
+            {(nodeDetail || nodeDetailLoading) && (
+                <div style={{ flexShrink:0, maxHeight:100, overflowY:'auto', overflowX:'auto', borderTop:'2px solid #6c5ce7', background:'#fff', borderRadius:'0 0 8px 8px' }}>
+                    {nodeDetailLoading && <div style={{ padding:6, fontSize:10, color:'#b2bec3' }}>Loading...</div>}
+                    {nodeDetail && nodeDetail.error && <div style={{ padding:6, fontSize:10, color:'#d63031' }}>Error: {nodeDetail.error}</div>}
+                    {nodeDetail && !nodeDetail.record && !nodeDetail.error && <div style={{ padding:6, fontSize:10, color:'#b2bec3' }}>No record found for {nodeDetail.nodeId}</div>}
+                    {nodeDetail && nodeDetail.record && (
+                        <table style={{ borderCollapse:'collapse', fontSize:10, whiteSpace:'nowrap' }}>
+                            <thead><tr>
+                                {Object.keys(nodeDetail.record).map(function(key) {
+                                    return <th key={key} style={{ position:'sticky', top:0, background:'#f1f2f6', padding:'3px 8px', textAlign:'left', fontWeight:700, fontSize:9, color:'#636e72', borderBottom:'1px solid #dfe6e9' }}>{key}</th>;
+                                })}
+                            </tr></thead>
+                            <tbody><tr>
+                                {Object.keys(nodeDetail.record).map(function(key) {
+                                    return <td key={key} style={{ padding:'3px 8px', fontSize:10, color:'#2d3436', borderBottom:'1px solid #f1f2f6' }}>{nodeDetail.record[key] == null ? '' : String(nodeDetail.record[key])}</td>;
+                                })}
+                            </tr></tbody>
+                        </table>
+                    )}
+                </div>
+            )}
         </div>
     );
 }
@@ -2318,6 +2444,7 @@ function App() {
     const [autoInterval, setAutoInterval] = useState(15);
     const [graphTable, setGraphTable]     = useState(null);
     const [nodeSourceTable, setNodeSourceTable] = useState(null); // { table, idCol }
+    const [graphDirected, setGraphDirected] = useState(true);
     const [graphTableData, setGraphTableData] = useState(null);
     const [graphTableError, setGraphTableError] = useState(null);
     const [showForceGraph, setShowForceGraph] = useState(false);
@@ -2377,6 +2504,9 @@ function App() {
         setGraphTable(gt);
         var nst = extractNodeSourceTable(origReq, graphName);
         setNodeSourceTable(nst);
+        // Extract directed flag from show/graph response
+        var dirArr = outer && outer.directed;
+        setGraphDirected(Array.isArray(dirArr) ? dirArr[0] !== false : true);
         if (graphChanged) setGraphTableData(null);
         if (graphChanged) setGraphTableError(null);
         if (graphChanged) setShowForceGraph(false);
@@ -2700,7 +2830,7 @@ function App() {
                                             <OntologyViewer dotString={dotString} pickingEnabled={pickingEnabled} onPickLabel={handleOntologyPick} apiRef={ontologyApiRef} />
                                         ) : <div />}
                                         {showForceGraph && graphTableData ? (
-                                            <CanvasGraph data={graphTableData} graphName={activeGraph} selectedNodeLabels={selectedNodeLabels} selectedEdgeLabels={selectedEdgeLabels} labelData={labelData} />
+                                            <CanvasGraph data={graphTableData} graphName={activeGraph} selectedNodeLabels={selectedNodeLabels} selectedEdgeLabels={selectedEdgeLabels} labelData={labelData} credentials={credentials} nodeSourceTable={nodeSourceTable} />
                                         ) : <div />}
                                     </SplitPane>
                                 ) : null}
@@ -2730,7 +2860,7 @@ function App() {
                 )}
             </div>
             {queryPanels.map(function(panel, idx) {
-                return <QueryPanel key={panel.id} panelIndex={idx} credentials={credentials} labelData={labelData} dotString={dotString} activeGraph={activeGraph} nodeSourceTable={nodeSourceTable} initialSql={panel.initialSql} initialTab={panel.initialTab} initialHelper={panel.initialHelper} stateRef={panel.stateRef} autoRun={panel.autoRun} onClose={function(){ setQueryPanels(function(prev){ return prev.filter(function(p){ return p.id !== panel.id; }); }); }} />;
+                return <QueryPanel key={panel.id} panelIndex={idx} credentials={credentials} labelData={labelData} dotString={dotString} activeGraph={activeGraph} graphDirected={graphDirected} nodeSourceTable={nodeSourceTable} initialSql={panel.initialSql} initialTab={panel.initialTab} initialHelper={panel.initialHelper} stateRef={panel.stateRef} autoRun={panel.autoRun} onClose={function(){ setQueryPanels(function(prev){ return prev.filter(function(p){ return p.id !== panel.id; }); }); }} />;
             })}
         </div>
     );

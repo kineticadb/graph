@@ -32,9 +32,10 @@ No build step, no dependencies to install, no server to run.
 
 ### Graph Table Data
 - **Fetch All Data** loads the graph's backing edge and node tables. Supports both NAME-based and ID-based column schemas.
-- **Visualize** renders a force-directed graph (for non-geospatial graphs) with colors consistent with the label charts.
+- **Visualize** renders a force-directed graph (for non-geospatial graphs) with colors exactly matching the label charts (node and edge colors tracked independently via combo keys). Click a node to fetch its full record from the source table, displayed as a table strip below the graph.
 - Click a node in the visualization to **copy its entity ID** to clipboard (for use in Query Helper or queries).
-- Label selection in the charts filters the visualization to matching subgraphs.
+- Label selection in the charts filters the visualization to matching subgraphs. Multi-label combos (e.g., `["director","actor"]`) are selected as exact combos — won't match single-label nodes.
+- Supports both directed (`digraph`) and undirected (`graph`) ontology topologies — pathfinding works in both, and generated GQL uses `-[]-` (no arrows) for undirected graphs.
 
 ### SQL / GQL Query
 - Click **Query** to open a floating, draggable, resizable SQL editor panel with maximize/restore button. Each click opens a **new independent panel** — multiple queries can be open simultaneously.
@@ -42,7 +43,7 @@ No build step, no dependencies to install, no server to run.
   - Select **Source Label(s)** (multi-select with tags), optional **Source Entity**
   - **"+ Add Hop"** to add intermediate waypoints, each with: hop index | **Node Label(s)** (multi-select tags) | **Edge Label(s)** (multi-select tags)
   - Select **Target Label(s)** (multi-select with tags), optional **Target Entity**
-  - Multiple labels use OR logic for both nodes and edges (e.g., `street_address` + `email` → `(a:street_address|email)`, `manages` + `part_of` → `-[e:manages|part_of]->`)
+  - Multiple labels use OR logic for both nodes and edges (e.g., `street_address` + `email` → `(a:street_address|email)`, `manages` + `part_of` → `-[e:manages|part_of]->`). Pathfinding prefers exact label matches over partial (e.g., `actor` target finds `acted` edge, not `directed` edge to `director|actor`)
   - Click **Generate Query** — finds the shortest path between labels using the ontology graph (BFS through waypoints) and generates a direction-aware GQL MATCH pattern with proper `->` and `<-` arrows. Labels with spaces are auto-quoted. Graph names are double-quoted per part (e.g., `GRAPH "schema"."graph_name"`). Helper auto-collapses after generation, showing the path found info in green next to the header
   - If ontology is not loaded, falls back to a generic untyped pattern
   - Entity IDs can be pasted from click-to-copy on any graph visualization node
