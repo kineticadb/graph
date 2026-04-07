@@ -1231,6 +1231,10 @@ function QueryPanel(props) {
         setSql(gql);
         setShowHelper(false);
         setNodeDetail(null);
+        setResult(null);
+        setActiveTab(null);
+        if (graphRef.current) { graphRef.current._destructor && graphRef.current._destructor(); graphRef.current = null; }
+        if (graphContainerRef.current) graphContainerRef.current.innerHTML = '';
     };
 
     // Auto-run query on mount if autoRun is set
@@ -1864,8 +1868,11 @@ function GraphTablePreview(props) {
         <div style={{ background:"#fff", borderRadius:12, boxShadow:"0 2px 8px rgba(0,0,0,0.04)", padding:8, marginBottom:0, borderLeft:"6px solid #0984e3" }}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12, flexWrap:"wrap", gap:8 }}>
                 <div>
-                    <h2 style={{ margin:0, fontSize:12, fontWeight:700, color:"#2d3436" }}>Graph Table Data</h2>
-                    <p style={{ margin:"4px 0 0", fontSize:12, color:"#636e72" }}>Edges: <strong>{graphTable}</strong> &nbsp;|&nbsp; Nodes: <strong>{graphTable}_nodes</strong></p>
+                    <h2 style={{ margin:0, fontSize:12, fontWeight:700, color:"#2d3436" }}>Graph Data</h2>
+                    {data && data.edgeTable && data.edgeTable.indexOf('(entities)') !== -1
+                        ? <p style={{ margin:"4px 0 0", fontSize:12, color:"#636e72" }}>Source: <strong>graph entities</strong> &nbsp;|&nbsp; Nodes: <strong>{data.nodes.total.toLocaleString()}</strong> &nbsp;|&nbsp; Edges: <strong>{data.edges.total.toLocaleString()}</strong></p>
+                        : <p style={{ margin:"4px 0 0", fontSize:12, color:"#636e72" }}>Edges: <strong>{graphTable}</strong> &nbsp;|&nbsp; Nodes: <strong>{graphTable}_nodes</strong></p>
+                    }
                 </div>
                 <div style={{ display:"flex", gap:8 }}>
                     <button onClick={onFetch} disabled={loading} style={{
@@ -2386,8 +2393,8 @@ function CanvasGraph(props) {
                     )}
                 </div>
                 <div style={{ display:"flex", gap:14, alignItems:"center", flexWrap:"wrap" }}>
-                    <label style={ctrlStyle}>Nodes: {nodeLimit.toLocaleString()} <input type="range" min="50" max="50000" step="50" value={nodeLimit} onChange={function(e){ setNodeLimit(parseInt(e.target.value)); }} style={sliderStyle}/></label>
-                    <label style={ctrlStyle}>Edges: {edgeLimit.toLocaleString()} <input type="range" min="100" max="100000" step="100" value={edgeLimit} onChange={function(e){ setEdgeLimit(parseInt(e.target.value)); }} style={sliderStyle}/></label>
+                    <label style={ctrlStyle}>Nodes: {nodeLimit.toLocaleString()} <input type="range" min="50" max="1000000" step="50" value={nodeLimit} onChange={function(e){ setNodeLimit(parseInt(e.target.value)); }} style={sliderStyle}/></label>
+                    <label style={ctrlStyle}>Edges: {edgeLimit.toLocaleString()} <input type="range" min="100" max="1000000" step="100" value={edgeLimit} onChange={function(e){ setEdgeLimit(parseInt(e.target.value)); }} style={sliderStyle}/></label>
                 </div>
             </div>
             {legendItems.length > 0 && (
@@ -2640,6 +2647,161 @@ function App() {
         }
     }, [graphTable, credentials, api]);
 
+    /* Fetch graph data via /get/graph/entities (preferred over fetchGraphTableData) */
+    var fetchGraphEntities = useCallback(async function() {
+        if (!activeGraph || !credentials.url) return;
+        setGraphTableError(null);
+        setFetchProgress({ edgesDone: 0, edgesTotal: '?', nodesDone: 0, nodesTotal: '?' });
+        try {
+            var BATCH = 100000;
+            var BATCH_THRESHOLD = 500000;
+
+            // Helper: fetch entities — batch only for large graphs (>500K entities)
+            async function fetchEntities(entityType, onProgress) {
+                // Single fetch with limit=-1
+                if (onProgress) onProgress(0, '?');
+                var res = await api.request(credentials.url + '/get/graph/entities', {
+                    graph_name: activeGraph, offset: 0, limit: -1,
+                    options: { entity_type: entityType }
+                }, credentials);
+                if (res._cancelled) return null;
+                if (res.status === 'ERROR') throw new Error(res.message || 'get/graph/entities failed');
+                var outer = safeParse(res.data_str) || res;
+                var labels = outer.labels || [];
+                var identifierType = (outer.info && outer.info.identifier_type) || 'string';
+                var entities = identifierType === 'int' ? (outer.entities_int || []) : (outer.entities_string || []);
+                var stride = entityType === 'node' ? 2 : 4;
+                var total = entities.length / stride;
+                if (onProgress) onProgress(total, total);
+                return { entities: entities, labels: labels, identifierType: identifierType, total: total };
+            }
+
+            // Batched version for large graphs
+            async function fetchEntitiesBatched(entityType, onProgress) {
+                var probeRes = await api.request(credentials.url + '/get/graph/entities', {
+                    graph_name: activeGraph, offset: 0, limit: 0,
+                    options: { entity_type: entityType }
+                }, credentials);
+                if (probeRes._cancelled) return null;
+                if (probeRes.status === 'ERROR') throw new Error(probeRes.message || 'get/graph/entities failed');
+                var probeOuter = safeParse(probeRes.data_str) || probeRes;
+                var total = parseInt((probeOuter.info && probeOuter.info.total_count) || '0', 10);
+                var labels = probeOuter.labels || [];
+                var identifierType = (probeOuter.info && probeOuter.info.identifier_type) || 'string';
+                if (onProgress) onProgress(0, total);
+
+                var allEntities = [];
+                var offset = 0;
+                var stride = entityType === 'node' ? 2 : 4;
+                while (offset < total) {
+                    var batchLimit = Math.min(BATCH, total - offset);
+                    var res = await api.request(credentials.url + '/get/graph/entities', {
+                        graph_name: activeGraph, offset: offset, limit: batchLimit,
+                        options: { entity_type: entityType }
+                    }, credentials);
+                    if (res._cancelled) return null;
+                    if (res.status === 'ERROR') throw new Error(res.message || 'get/graph/entities batch failed');
+                    var outer = safeParse(res.data_str) || res;
+                    labels = outer.labels || labels;
+                    identifierType = (outer.info && outer.info.identifier_type) || identifierType;
+                    var arr = identifierType === 'int' ? (outer.entities_int || []) : (outer.entities_string || []);
+                    for (var i = 0; i < arr.length; i++) allEntities.push(arr[i]);
+                    offset += arr.length / stride;
+                    if (onProgress) onProgress(offset, total);
+                    if (arr.length === 0) break;
+                }
+                return { entities: allEntities, labels: labels, identifierType: identifierType, total: total };
+            }
+
+            // Determine if batching is needed based on edge count from show/graph
+            var numEdges = (labelData && (labelData.total_labeled_edges + labelData.total_unlabeled_edges)) || 0;
+            var useBatch = numEdges > BATCH_THRESHOLD;
+
+            // Fetch nodes
+            var fetchFn = useBatch ? fetchEntitiesBatched : fetchEntities;
+            var nodeResult = await fetchFn('node', function(done, total) {
+                setFetchProgress(function(p) { return Object.assign({}, p, { nodesDone: done, nodesTotal: total }); });
+            });
+            if (!nodeResult) return;
+
+            // Fetch edges
+            var edgeResult = await fetchFn('edge', function(done, total) {
+                setFetchProgress(function(p) { return Object.assign({}, p, { edgesDone: done, edgesTotal: total }); });
+            });
+            if (!edgeResult) return;
+
+            // Helper: resolve label from 1-based index — labels may already be JSON arrays like '["FEMALE","business"]'
+            function resolveLabelStr(labelIdx, labels) {
+                var idx = typeof labelIdx === 'string' ? parseInt(labelIdx, 10) : labelIdx;
+                if (idx > 0 && idx <= labels.length) {
+                    var lbl = labels[idx - 1];
+                    // If already a JSON array, return as-is; otherwise wrap
+                    if (lbl && lbl.charAt(0) === '[') return lbl;
+                    return lbl ? '["' + lbl + '"]' : '';
+                }
+                return '';
+            }
+
+            // Convert nodes: stride 2 [id, label_idx, ...] → [{NODE_NAME/NODE_ID, NODE_LABEL}, ...]
+            var nodeRecords = [];
+            var nodeIdField = nodeResult.identifierType === 'int' ? 'NODE_ID' : 'NODE_NAME';
+            var ents = nodeResult.entities;
+            for (var ni = 0; ni < ents.length; ni += 2) {
+                var nodeId = ents[ni];
+                var nodeLabelIdx = ents[ni + 1];
+                var nrec = {};
+                nrec[nodeIdField] = nodeId;
+                nrec['NODE_LABEL'] = resolveLabelStr(nodeLabelIdx, nodeResult.labels);
+                nodeRecords.push(nrec);
+            }
+            var nodeHeaders = [nodeIdField, 'NODE_LABEL'];
+
+            // Convert edges: stride 4 [edge_id, node1, node2, label_idx, ...] → [{EDGE_ID, NODE1_NAME/ID, NODE2_NAME/ID, EDGE_LABEL}, ...]
+            var edgeRecords = [];
+            var edgeNodeField1 = edgeResult.identifierType === 'int' ? 'EDGE_NODE1_ID' : 'NODE1_NAME';
+            var edgeNodeField2 = edgeResult.identifierType === 'int' ? 'EDGE_NODE2_ID' : 'NODE2_NAME';
+            var eents = edgeResult.entities;
+            for (var ei = 0; ei < eents.length; ei += 4) {
+                var edgeId = eents[ei];
+                var node1 = eents[ei + 1];
+                var node2 = eents[ei + 2];
+                var edgeLabelIdx = eents[ei + 3];
+                var erec = {};
+                erec['EDGE_ID'] = edgeId;
+                erec[edgeNodeField1] = node1;
+                erec[edgeNodeField2] = node2;
+                erec['EDGE_LABEL'] = resolveLabelStr(edgeLabelIdx, edgeResult.labels);
+                edgeRecords.push(erec);
+            }
+            var edgeHeaders = ['EDGE_ID', edgeNodeField1, edgeNodeField2, 'EDGE_LABEL'];
+
+            setGraphTableData({
+                edges: { records: edgeRecords, headers: edgeHeaders, total: edgeResult.total },
+                nodes: { records: nodeRecords, headers: nodeHeaders, total: nodeResult.total },
+                edgeTable: activeGraph + ' (entities)',
+                nodeTable: activeGraph + ' (entities/nodes)',
+            });
+            setFetchProgress(null);
+        } catch(err) {
+            // Re-throw so the wrapper can catch and fall back
+            setFetchProgress(null);
+            throw err;
+        }
+    }, [activeGraph, credentials, api]);
+
+    /* Fetch graph data: try /get/graph/entities first, fall back to fetchGraphTableData */
+    var fetchGraphData = useCallback(async function() {
+        try {
+            await fetchGraphEntities();
+        } catch(err) {
+            // /get/graph/entities not available — fall back to table-based fetch
+            console.log('get/graph/entities not available, falling back to table fetch:', err.message);
+            setGraphTableError(null);
+            setGraphTableData(null);
+            fetchGraphTableData();
+        }
+    }, [fetchGraphEntities, fetchGraphTableData]);
+
     /* Bidirectional picking: ontology SVG click → highlight table rows */
     var handleOntologyPick = useCallback(function(text) {
         if (!pickingEnabled || !text) return;
@@ -2766,8 +2928,8 @@ function App() {
                         // Restore ontology
                         if (session.graph.ontologyDot) { setDotString(session.graph.ontologyDot); setShowOntology(true); }
                         // Restore data fetch + visualization
-                        if (session.graph.dataFetched && gt) {
-                            fetchGraphTableData(gt).then(function() {
+                        if (session.graph.dataFetched) {
+                            fetchGraphData().then(function() {
                                 if (session.graph.showForceGraph) setShowForceGraph(true);
                             });
                         }
@@ -2822,7 +2984,7 @@ function App() {
                         <SplitPane direction="horizontal" split={hSplit} onSplitChange={setHSplit} minA={300} minB={250}>
                             {/* LEFT: Graph controls + ontology + visualization */}
                             <div style={{ display:'flex', flexDirection:'column', gap:8, height:'100%', overflow:'auto', paddingRight:4 }}>
-                                <GraphTablePreview graphTable={graphTable} data={graphTableData} error={graphTableError} onFetch={fetchGraphTableData} loading={api.loading || !!fetchProgress} fetchProgress={fetchProgress} onVisualize={function(){ setShowForceGraph(function(p){ return !p; }); }} showingGraph={showForceGraph} />
+                                <GraphTablePreview graphTable={graphTable || activeGraph} data={graphTableData} error={graphTableError} onFetch={fetchGraphData} loading={api.loading || !!fetchProgress} fetchProgress={fetchProgress} onVisualize={function(){ setShowForceGraph(function(p){ return !p; }); }} showingGraph={showForceGraph} />
 
                                 {(showOntology && dotString) || (showForceGraph && graphTableData) ? (
                                     <SplitPane direction="vertical" split={vSplit} onSplitChange={setVSplit} minA={showOntology && dotString ? 80 : 0} minB={showForceGraph && graphTableData ? 150 : 0}>

@@ -41,7 +41,8 @@ Edit `KineticaGraphExplorer.html` and open/refresh in a browser. No build or ins
 
 - `POST /show/graph` — List graphs (empty name) or get graph label details (specific name)
 - `POST /modify/graph` — Retrieve graph ontology in DOT format. Supports `schema_node_labelkeys` and `schema_edge_labelkeys` options (`'false'` to show actual labels instead of schema types)
-- `POST /get/records` — Fetch backing table rows for `GraphTablePreview`
+- `POST /get/graph/entities` — Fetch graph nodes/edges directly from the graph server (preferred). Options: `entity_type` (`"node"`/`"edge"`), `offset`, `limit` (-1 for all). Response: strided flat arrays (`entities_int`/`entities_string`), `labels` array (1-based index), `info.identifier_type`, `info.total_count`. Batches at 100K for graphs >500K edges. Falls back to table-based fetch if endpoint unavailable
+- `POST /get/records` — Fallback: fetch backing table rows for `GraphTablePreview`
 - `POST /execute/sql` — Run SQL/GQL queries via `QueryPanel`
 
 ### Key Libraries (loaded via CDN)

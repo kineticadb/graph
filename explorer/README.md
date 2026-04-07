@@ -31,7 +31,7 @@ No build step, no dependencies to install, no server to run.
 - Pan, zoom, and click on nodes/edges in the ontology to highlight matching labels in the charts.
 
 ### Graph Table Data
-- **Fetch All Data** loads the graph's backing edge and node tables. Supports both NAME-based and ID-based column schemas.
+- **Fetch All Data** loads graph nodes and edges via `/get/graph/entities` (preferred, with batching for large graphs >500K edges) or falls back to table-based `/get/records` if the endpoint is unavailable. Supports both NAME-based and ID-based column schemas.
 - **Visualize** renders a force-directed graph (for non-geospatial graphs) with colors exactly matching the label charts (node and edge colors tracked independently via combo keys). Click a node to fetch its full record from the source table, displayed as a table strip below the graph.
 - Click a node in the visualization to **copy its entity ID** to clipboard (for use in Query Helper or queries).
 - Label selection in the charts filters the visualization to matching subgraphs. Multi-label combos (e.g., `["director","actor"]`) are selected as exact combos — won't match single-label nodes.
