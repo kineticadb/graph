@@ -2000,11 +2000,12 @@ function MapView(props) {
     var maximized = props.maximized, onToggleMaximize = props.onToggleMaximize;
     var canvasRef = useRef(null);
     var containerRef = useRef(null);
+    var coordOverlayRef = useRef(null); // DOM ref for hover coords (bypass React re-renders)
     var viewRef = useRef({ zoom: 1, panX: 0, panY: 0 });
+    var canvasSizeRef = useRef({ w: 0, h: 0 }); // cached canvas CSS dimensions
     var dragRef = useRef(null);
     const [nodeDetail, setNodeDetail] = useState(null);
     const [nodeDetailLoading, setNodeDetailLoading] = useState(false);
-    const [hoverCoord, setHoverCoord] = useState(null); // { lng, lat }
 
     // Build edge color map matching LabelChart
     var labelColorMap = useMemo(function() {
@@ -2022,11 +2023,106 @@ function MapView(props) {
         return labelColorMap[labels.slice().sort().join('|')] || '#0984e3';
     };
 
-    var parseWkt = function(wkt) {
-        if (!wkt) return null;
-        var m = wkt.match(/POINT\s*\(\s*([-\d.]+)\s+([-\d.]+)\s*\)/i);
-        return m ? { x: parseFloat(m[1]), y: parseFloat(m[2]) } : null;
-    };
+    // ── Optimization 1+2: Pre-parse all WKT coords + bounds ONCE ──
+    // coords layout: [x1, y1, x2, y2, x1, y1, x2, y2, ...]
+    var parsedEdges = useMemo(function() {
+        if (!graphTableData) return null;
+        var edges = graphTableData.edges.records;
+        var headers = graphTableData.edges.headers;
+        var n1Field = headers[1], n2Field = headers[2];
+        var n = edges.length;
+        var coords = new Float64Array(n * 4);
+        var colors = new Array(n);
+        var valid = new Uint8Array(n); // 1 if both endpoints parsed
+        var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        var wktRe = /POINT\s*\(\s*([-\d.]+)\s+([-\d.]+)\s*\)/i;
+        for (var i = 0; i < n; i++) {
+            var rec = edges[i];
+            var m1 = rec[n1Field] && rec[n1Field].match(wktRe);
+            var m2 = rec[n2Field] && rec[n2Field].match(wktRe);
+            if (m1 && m2) {
+                var x1 = parseFloat(m1[1]), y1 = parseFloat(m1[2]);
+                var x2 = parseFloat(m2[1]), y2 = parseFloat(m2[2]);
+                var off = i * 4;
+                coords[off] = x1; coords[off+1] = y1; coords[off+2] = x2; coords[off+3] = y2;
+                valid[i] = 1;
+                if (x1 < minX) minX = x1; if (x1 > maxX) maxX = x1;
+                if (y1 < minY) minY = y1; if (y1 > maxY) maxY = y1;
+                if (x2 < minX) minX = x2; if (x2 > maxX) maxX = x2;
+                if (y2 < minY) minY = y2; if (y2 > maxY) maxY = y2;
+            }
+            colors[i] = getEdgeColor(rec['EDGE_LABEL']);
+        }
+        return { coords: coords, colors: colors, valid: valid, count: n,
+                 bounds: { minX: minX, maxX: maxX, minY: minY, maxY: maxY } };
+    }, [graphTableData, labelColorMap]);
+
+    // ── Optimization 5: LOD decimation levels ──
+    // Build index arrays for filtered edges at 4 stride levels: 8, 4, 2, 1
+    var lodLevels = useMemo(function() {
+        if (!parsedEdges) return null;
+        var edges = graphTableData.edges.records;
+        var hasNodeFilter = selectedNodeLabels.length > 0;
+        var hasEdgeFilter = selectedEdgeLabels.length > 0;
+        var nodeFilterSet = {};
+        selectedNodeLabels.forEach(function(l) { nodeFilterSet[l] = true; });
+        var edgeFilterSet = {};
+        selectedEdgeLabels.forEach(function(l) { edgeFilterSet[l] = true; });
+        var headers = graphTableData.edges.headers;
+        var n1Field = headers[1], n2Field = headers[2];
+
+        // Build full filtered index list
+        var full = [];
+        for (var i = 0; i < parsedEdges.count; i++) {
+            if (!parsedEdges.valid[i]) continue;
+            if (hasNodeFilter || hasEdgeFilter) {
+                var rec = edges[i];
+                var pass = false;
+                if (hasEdgeFilter) {
+                    var rawEL = rec['EDGE_LABEL'] || '';
+                    var eLabels = typeof rawEL === 'string' && rawEL.charAt(0) === '[' ? (function(){ try { return JSON.parse(rawEL); } catch(e) { return [rawEL]; } })() : [rawEL];
+                    if (edgeFilterSet[eLabels.slice().sort().join('|')]) pass = true;
+                }
+                if (!pass && hasNodeFilter) {
+                    var n1Key = nodeLabelMap[rec[n1Field]] || '';
+                    var n2Key = nodeLabelMap[rec[n2Field]] || '';
+                    if (nodeFilterSet[n1Key] || nodeFilterSet[n2Key]) pass = true;
+                }
+                if (!pass) continue;
+            }
+            full.push(i);
+        }
+
+        // Build adaptive LOD levels targeting ~5K edges at coarsest
+        // Compute strides: coarsest targets ~5000 edges, each level doubles detail
+        var TARGET_COARSE = 5000;
+        var n = full.length;
+        var maxStride = Math.max(1, Math.round(n / TARGET_COARSE));
+        // Build power-of-2 strides from maxStride down to 1
+        var strides = [1];
+        var s = 2;
+        while (s < maxStride) { strides.unshift(s); s *= 2; }
+        if (maxStride > 1) strides.unshift(maxStride);
+        // Remove duplicate or out-of-order entries
+        var seen = {};
+        strides = strides.filter(function(v) { if (seen[v] || v < 1) return false; seen[v] = true; return true; });
+
+        var levels = [];
+        for (var si = 0; si < strides.length; si++) {
+            var stride = strides[si];
+            if (stride === 1) { levels.push(full); continue; }
+            var decimated = [];
+            for (var j = 0; j < full.length; j += stride) decimated.push(full[j]);
+            levels.push(decimated);
+        }
+        return { levels: levels, strides: strides, full: full };
+    }, [parsedEdges, graphTableData, selectedNodeLabels, selectedEdgeLabels, nodeLabelMap]);
+
+    // LOD state: which level to render (0=coarsest, last=full)
+    var lodRef = useRef(3);
+    var settleTimerRef = useRef(null);
+    var rafRef = useRef(null);
+    var interactingRef = useRef(false); // true during drag/zoom
 
     // Fetch edge detail from original edge source table
     var fetchEdgeDetail = async function(edgeRecord) {
@@ -2098,120 +2194,174 @@ function MapView(props) {
         return map;
     }, [graphTableData]);
 
-    // Filter edges based on selected labels
-    var filteredEdges = useMemo(function() {
-        if (!graphTableData) return [];
-        var edges = graphTableData.edges.records;
-        var hasNodeFilter = selectedNodeLabels.length > 0;
-        var hasEdgeFilter = selectedEdgeLabels.length > 0;
-        if (!hasNodeFilter && !hasEdgeFilter) return edges;
-
-        var nodeFilterSet = {};
-        selectedNodeLabels.forEach(function(l) { nodeFilterSet[l] = true; });
-        var edgeFilterSet = {};
-        selectedEdgeLabels.forEach(function(l) { edgeFilterSet[l] = true; });
-
-        var headers = graphTableData.edges.headers;
-        var n1Field = headers[1], n2Field = headers[2];
-
-        return edges.filter(function(rec) {
-            if (hasEdgeFilter) {
-                var rawEL = rec['EDGE_LABEL'] || '';
-                var eLabels = typeof rawEL === 'string' && rawEL.charAt(0) === '[' ? (function(){ try { return JSON.parse(rawEL); } catch(e) { return [rawEL]; } })() : [rawEL];
-                if (edgeFilterSet[eLabels.slice().sort().join('|')]) return true;
-            }
-            if (hasNodeFilter) {
-                var n1Key = nodeLabelMap[rec[n1Field]] || '';
-                var n2Key = nodeLabelMap[rec[n2Field]] || '';
-                if (nodeFilterSet[n1Key] || nodeFilterSet[n2Key]) return true;
-            }
-            return false;
-        });
-    }, [graphTableData, selectedNodeLabels, selectedEdgeLabels, nodeLabelMap]);
-
     // Store base transform for hit detection
     var baseTransform = useRef(null);
 
-    // Render edges on canvas with zoom/pan
-    var renderCanvas = useCallback(function() {
-        if (!canvasRef.current || !containerRef.current || !graphTableData) return;
+    // ── Optimized renderCanvas: pre-parsed coords, batched by color, LOD ──
+    var renderCanvas = useCallback(function(forceLod) {
+        if (!canvasRef.current || !containerRef.current || !parsedEdges || !lodLevels) return;
         var canvas = canvasRef.current;
         var cssW = containerRef.current.clientWidth || 800;
         var cssH = containerRef.current.clientHeight || 600;
-        // At high zoom, use higher resolution for crisper lines
+        // Only resize canvas buffer when container size actually changed (avoids expensive GPU reset)
+        var cached = canvasSizeRef.current;
         var dpr = window.devicePixelRatio || 1;
-        var renderScale = Math.min(dpr, 2); // cap at 2x to avoid huge canvases
-        var w = Math.round(cssW * renderScale);
-        var h = Math.round(cssH * renderScale);
-        canvas.width = w; canvas.height = h;
-        canvas.style.width = cssW + 'px'; canvas.style.height = cssH + 'px';
+        var renderScale = Math.min(dpr, 2);
+        if (cached.w !== cssW || cached.h !== cssH) {
+            var pw = Math.round(cssW * renderScale);
+            var ph = Math.round(cssH * renderScale);
+            canvas.width = pw; canvas.height = ph;
+            canvas.style.width = cssW + 'px'; canvas.style.height = cssH + 'px';
+            cached.w = cssW; cached.h = cssH;
+        }
         var ctx = canvas.getContext('2d');
-        ctx.scale(renderScale, renderScale);
-        // Use CSS dimensions for all coordinate math
-        w = cssW; h = cssH;
+        ctx.setTransform(renderScale, 0, 0, renderScale, 0, 0);
+        var w = cssW, h = cssH;
         ctx.fillStyle = '#1a1a2e';
         ctx.fillRect(0, 0, w, h);
 
-        var edges = filteredEdges;
-        var headers = graphTableData.edges.headers;
-        var n1Field = headers[1], n2Field = headers[2];
-
-        // Compute bounds from ALL edges (not just filtered) for stable base transform
-        var allEdges = graphTableData.edges.records;
-        var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-        for (var i = 0; i < allEdges.length; i++) {
-            var p1 = parseWkt(allEdges[i][n1Field]), p2 = parseWkt(allEdges[i][n2Field]);
-            if (p1) { if (p1.x < minX) minX = p1.x; if (p1.x > maxX) maxX = p1.x; if (p1.y < minY) minY = p1.y; if (p1.y > maxY) maxY = p1.y; }
-            if (p2) { if (p2.x < minX) minX = p2.x; if (p2.x > maxX) maxX = p2.x; if (p2.y < minY) minY = p2.y; if (p2.y > maxY) maxY = p2.y; }
-        }
-        if (minX === Infinity) {
+        var bds = parsedEdges.bounds;
+        if (bds.minX === Infinity) {
             ctx.fillStyle = '#636e72'; ctx.font = '13px sans-serif'; ctx.textAlign = 'center';
             ctx.fillText('No edges to display', w / 2, h / 2);
             return;
         }
-        var dx = (maxX - minX) || 0.01, dy = (maxY - minY) || 0.01;
+
+        // Pre-computed bounds → stable base transform
+        var dx = (bds.maxX - bds.minX) || 0.01, dy = (bds.maxY - bds.minY) || 0.01;
         var pad = 20;
-        var scaleX = (w - 2 * pad) / dx, scaleY = (h - 2 * pad) / dy;
-        var baseScale = Math.min(scaleX, scaleY);
-        var baseOffX = pad + ((w - 2 * pad) - dx * baseScale) / 2 - minX * baseScale;
-        var baseOffY = pad + ((h - 2 * pad) - dy * baseScale) / 2 - minY * baseScale;
+        var baseScale = Math.min((w - 2 * pad) / dx, (h - 2 * pad) / dy);
+        var baseOffX = pad + ((w - 2 * pad) - dx * baseScale) / 2 - bds.minX * baseScale;
+        var baseOffY = pad + ((h - 2 * pad) - dy * baseScale) / 2 - bds.minY * baseScale;
         baseTransform.current = { baseScale: baseScale, baseOffX: baseOffX, baseOffY: baseOffY, w: w, h: h };
 
         var v = viewRef.current;
-        var toX = function(x) { return (x * baseScale + baseOffX) * v.zoom + v.panX; };
-        var toY = function(y) { return (h - (y * baseScale + baseOffY)) * v.zoom + v.panY; };
+        var zm = v.zoom, px = v.panX, py = v.panY;
 
-        // Draw filtered edges — only those intersecting viewport
+        // Pick LOD level — at high zoom, viewport culling already limits edges, so use full detail
+        var maxLodLevel = lodLevels.levels.length - 1;
+        var lod;
+        if (zm >= 4) {
+            lod = maxLodLevel; // full detail — viewport culling handles it
+        } else {
+            lod = typeof forceLod === 'number' ? forceLod : lodRef.current;
+        }
+        var indices = lodLevels.levels[Math.min(lod, maxLodLevel)];
+        var coords = parsedEdges.coords;
+        var colors = parsedEdges.colors;
+
+        // ── Optimization 3: batch edges by color, one beginPath/stroke per group ──
+        var colorBuckets = {};
+        var margin = 10;
+        var visibleCount = 0;
+        for (var k = 0; k < indices.length; k++) {
+            var idx = indices[k];
+            var off = idx * 4;
+            var sx1 = (coords[off] * baseScale + baseOffX) * zm + px;
+            var sy1 = (h - (coords[off+1] * baseScale + baseOffY)) * zm + py;
+            var sx2 = (coords[off+2] * baseScale + baseOffX) * zm + px;
+            var sy2 = (h - (coords[off+3] * baseScale + baseOffY)) * zm + py;
+            // Viewport culling
+            if ((sx1 < -margin && sx2 < -margin) || (sx1 > w+margin && sx2 > w+margin) ||
+                (sy1 < -margin && sy2 < -margin) || (sy1 > h+margin && sy2 > h+margin)) continue;
+            visibleCount++;
+            var c = colors[idx];
+            if (!colorBuckets[c]) colorBuckets[c] = [];
+            colorBuckets[c].push(sx1, sy1, sx2, sy2);
+        }
+
         ctx.lineWidth = 1;
         ctx.globalAlpha = 0.6;
-        var margin = 10;
-        for (var j = 0; j < edges.length; j++) {
-            var ep1 = parseWkt(edges[j][n1Field]), ep2 = parseWkt(edges[j][n2Field]);
-            if (!ep1 || !ep2) continue;
-            var sx1 = toX(ep1.x), sy1 = toY(ep1.y), sx2 = toX(ep2.x), sy2 = toY(ep2.y);
-            // Viewport culling
-            if ((sx1 < -margin && sx2 < -margin) || (sx1 > w+margin && sx2 > w+margin) || (sy1 < -margin && sy2 < -margin) || (sy1 > h+margin && sy2 > h+margin)) continue;
-            ctx.strokeStyle = getEdgeColor(edges[j]['EDGE_LABEL']);
+        var bucketKeys = Object.keys(colorBuckets);
+        for (var b = 0; b < bucketKeys.length; b++) {
+            var col = bucketKeys[b];
+            var segs = colorBuckets[col];
+            ctx.strokeStyle = col;
             ctx.beginPath();
-            ctx.moveTo(sx1, sy1);
-            ctx.lineTo(sx2, sy2);
+            for (var s = 0; s < segs.length; s += 4) {
+                ctx.moveTo(segs[s], segs[s+1]);
+                ctx.lineTo(segs[s+2], segs[s+3]);
+            }
             ctx.stroke();
         }
         ctx.globalAlpha = 1.0;
 
-        // Draw zoom info + visible count
-        if (v.zoom !== 1) {
-            ctx.fillStyle = 'rgba(255,255,255,0.6)'; ctx.font = '10px sans-serif'; ctx.textAlign = 'left';
-            ctx.fillText('Zoom: ' + v.zoom.toFixed(1) + 'x', 8, h - 8);
+        // ── Data bounding box: shows full extent during interaction (drag/zoom) ──
+        if (interactingRef.current) {
+            var bxL = (bds.minX * baseScale + baseOffX) * zm + px;
+            var bxR = (bds.maxX * baseScale + baseOffX) * zm + px;
+            var byT = (h - (bds.maxY * baseScale + baseOffY)) * zm + py;
+            var byB = (h - (bds.minY * baseScale + baseOffY)) * zm + py;
+            ctx.strokeStyle = 'rgba(225,112,85,0.8)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([8, 4]);
+            ctx.strokeRect(bxL, byT, bxR - bxL, byB - byT);
+            ctx.setLineDash([]);
         }
-    }, [graphTableData, filteredEdges, labelColorMap]);
+
+        // ── Info overlay (bottom-left) ──
+        var totalFiltered = lodLevels.full.length;
+        var parts = [];
+        if (zm !== 1) parts.push(zm.toFixed(1) + 'x');
+        parts.push(visibleCount.toLocaleString() + ' visible / ' + totalFiltered.toLocaleString());
+        if (lod < maxLodLevel) parts.push('LOD ' + (lod+1) + '/' + (maxLodLevel+1));
+        if (parts.length > 0) {
+            var info = parts.join('  |  ');
+            ctx.font = '12px sans-serif'; ctx.textAlign = 'left';
+            var tw = ctx.measureText(info).width;
+            ctx.fillStyle = lod < maxLodLevel ? 'rgba(230,126,34,0.8)' : 'rgba(0,0,0,0.5)';
+            ctx.fillRect(4, h - 24, tw + 16, 22);
+            ctx.fillStyle = '#fff'; ctx.fillText(info, 12, h - 9);
+        }
+    }, [parsedEdges, lodLevels]);
+
+    // ── Optimization 4: rAF-throttled rendering with LOD settle ──
+    var scheduleRender = useCallback(function(interactive) {
+        if (interactive) {
+            interactingRef.current = true;
+            var zm = viewRef.current.zoom;
+            var maxLod = lodLevels ? lodLevels.levels.length - 1 : 4;
+            // At high zoom, viewport culling is enough — skip LOD entirely
+            var startLod = zm >= 4 ? maxLod : 0;
+            lodRef.current = startLod;
+            clearTimeout(settleTimerRef.current);
+            if (!rafRef.current) {
+                rafRef.current = requestAnimationFrame(function() {
+                    rafRef.current = null;
+                    renderCanvas(startLod);
+                });
+            }
+            // After interaction settles, progressively refine then hide bounding box
+            settleTimerRef.current = setTimeout(function() {
+                if (startLod < maxLod) {
+                    var step = function(level) {
+                        lodRef.current = level;
+                        renderCanvas(level);
+                        if (level < maxLod) {
+                            settleTimerRef.current = setTimeout(function() { step(level + 1); }, 80);
+                        } else {
+                            // Final LOD reached — hide bounding box
+                            interactingRef.current = false;
+                            renderCanvas(maxLod);
+                        }
+                    };
+                    step(1);
+                } else {
+                    // No LOD was used — just hide bounding box
+                    interactingRef.current = false;
+                    renderCanvas(maxLod);
+                }
+            }, 300);
+        } else {
+            renderCanvas();
+        }
+    }, [renderCanvas, lodLevels]);
 
     // Mouse handlers for zoom/pan/click
     useEffect(function() {
         if (!canvasRef.current) return;
         var canvas = canvasRef.current;
 
-        // Convert client coords to CSS pixel coords (canvas uses ctx.scale for DPR)
         var canvasCoords = function(e) {
             var rect = canvas.getBoundingClientRect();
             return { x: e.clientX - rect.left, y: e.clientY - rect.top };
@@ -2226,10 +2376,9 @@ function MapView(props) {
             v.panX = m.x - (m.x - v.panX) * (newZoom / v.zoom);
             v.panY = m.y - (m.y - v.panY) * (newZoom / v.zoom);
             v.zoom = newZoom;
-            renderCanvas();
+            scheduleRender(true);
         };
 
-        // Inverse transform: screen → geo coordinates
         var screenToGeo = function(sx, sy) {
             var bt = baseTransform.current;
             if (!bt) return null;
@@ -2246,50 +2395,52 @@ function MapView(props) {
             }
         };
         var handleMouseMove = function(e) {
-            var m = canvasCoords(e);
-            // Only show coords when inside canvas
-            var rect = canvas.getBoundingClientRect();
-            if (e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom) {
-                var geo = screenToGeo(m.x, m.y);
-                if (geo) setHoverCoord(geo);
-            } else {
-                setHoverCoord(null);
-            }
             if (!dragRef.current) return;
+            var m = canvasCoords(e);
             dragRef.current.moved = true;
             viewRef.current.panX = dragRef.current.panX + (m.x - dragRef.current.startX);
             viewRef.current.panY = dragRef.current.panY + (m.y - dragRef.current.startY);
-            renderCanvas();
+            scheduleRender(true);
         };
-        var handleMouseLeave = function() { setHoverCoord(null); };
         var handleMouseUp = function(e) {
             if (dragRef.current && !dragRef.current.moved) {
+                // Edge picking — uses pre-parsed coords for speed
                 var m = canvasCoords(e);
                 var mx = m.x, my = m.y;
                 var bt = baseTransform.current;
-                if (bt) {
+                if (bt && parsedEdges && lodLevels) {
                     var v = viewRef.current;
-                    var toX = function(x) { return (x * bt.baseScale + bt.baseOffX) * v.zoom + v.panX; };
-                    var toY = function(y) { return (bt.h - (y * bt.baseScale + bt.baseOffY)) * v.zoom + v.panY; };
-                    var headers = graphTableData.edges.headers;
-                    var n1Field = headers[1], n2Field = headers[2];
+                    var bsv = bt.baseScale, box = bt.baseOffX, boy = bt.baseOffY, bh = bt.h;
+                    var zm = v.zoom, vpx = v.panX, vpy = v.panY;
+                    var cds = parsedEdges.coords;
+                    var full = lodLevels.full;
                     var bestDist = 20;
-                    var bestEdge = null;
-                    for (var i = 0; i < filteredEdges.length; i++) {
-                        var p1 = parseWkt(filteredEdges[i][n1Field]), p2 = parseWkt(filteredEdges[i][n2Field]);
-                        if (!p1 || !p2) continue;
-                        var ax = toX(p1.x), ay = toY(p1.y), bx = toX(p2.x), by = toY(p2.y);
+                    var bestIdx = -1;
+                    for (var i = 0; i < full.length; i++) {
+                        var fi = full[i];
+                        var o = fi * 4;
+                        var ax = (cds[o] * bsv + box) * zm + vpx;
+                        var ay = (bh - (cds[o+1] * bsv + boy)) * zm + vpy;
+                        var bx = (cds[o+2] * bsv + box) * zm + vpx;
+                        var by = (bh - (cds[o+3] * bsv + boy)) * zm + vpy;
                         var ddx = bx-ax, ddy = by-ay, len2 = ddx*ddx+ddy*ddy;
                         var t = len2 > 0 ? Math.max(0, Math.min(1, ((mx-ax)*ddx+(my-ay)*ddy)/len2)) : 0;
                         var px = ax+t*ddx, py = ay+t*ddy;
                         var dist = Math.sqrt((mx-px)*(mx-px)+(my-py)*(my-py));
-                        if (dist < bestDist) { bestDist = dist; bestEdge = filteredEdges[i]; }
+                        if (dist < bestDist) { bestDist = dist; bestIdx = fi; }
                     }
-                    if (bestEdge) {
-                        if (navigator.clipboard) navigator.clipboard.writeText(String(bestEdge['EDGE_ID'] || bestEdge[n1Field]));
+                    if (bestIdx >= 0) {
+                        var bestEdge = graphTableData.edges.records[bestIdx];
+                        var headers = graphTableData.edges.headers;
+                        if (navigator.clipboard) navigator.clipboard.writeText(String(bestEdge['EDGE_ID'] || bestEdge[headers[1]]));
+                        // Show pick coordinates
+                        var geo = screenToGeo(mx, my);
+                        var overlay = coordOverlayRef.current;
+                        if (geo && overlay) { overlay.textContent = geo.lng.toFixed(6) + ', ' + geo.lat.toFixed(6); overlay.style.display = ''; }
                         fetchEdgeDetail(bestEdge);
                     } else {
                         setNodeDetail(null);
+                        if (coordOverlayRef.current) coordOverlayRef.current.style.display = 'none';
                     }
                 }
             }
@@ -2298,28 +2449,34 @@ function MapView(props) {
 
         canvas.addEventListener('wheel', handleWheel, { passive: false });
         canvas.addEventListener('mousedown', handleMouseDown);
-        canvas.addEventListener('mouseleave', handleMouseLeave);
         window.addEventListener('mousemove', handleMouseMove);
         window.addEventListener('mouseup', handleMouseUp);
         return function() {
             canvas.removeEventListener('wheel', handleWheel);
             canvas.removeEventListener('mousedown', handleMouseDown);
-            canvas.removeEventListener('mouseleave', handleMouseLeave);
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseup', handleMouseUp);
+            cancelAnimationFrame(rafRef.current);
+            clearTimeout(settleTimerRef.current);
         };
-    }, [renderCanvas, filteredEdges, graphTableData]);
+    }, [scheduleRender, parsedEdges, lodLevels, graphTableData]);
 
-    useEffect(function() { renderCanvas(); }, [renderCanvas]);
+    // Initial render + render on data/filter change (full LOD)
+    useEffect(function() { canvasSizeRef.current = { w: 0, h: 0 }; lodRef.current = lodLevels ? lodLevels.levels.length - 1 : 4; renderCanvas(lodRef.current); }, [renderCanvas]);
 
-    // Resize
+    // Resize — invalidate cached size so canvas buffer gets reallocated
     useEffect(function() {
         if (!containerRef.current) return;
         var debounce = null;
-        var ro = new ResizeObserver(function() { clearTimeout(debounce); debounce = setTimeout(renderCanvas, 100); });
+        var ro = new ResizeObserver(function() {
+            canvasSizeRef.current = { w: 0, h: 0 };
+            clearTimeout(debounce);
+            var maxLod = lodLevels ? lodLevels.levels.length - 1 : 4;
+            debounce = setTimeout(function() { renderCanvas(maxLod); }, 100);
+        });
         ro.observe(containerRef.current);
         return function() { clearTimeout(debounce); ro.disconnect(); };
-    }, [renderCanvas]);
+    }, [renderCanvas, lodLevels]);
 
     var nodeCount = graphTableData ? graphTableData.nodes.total : 0;
     var edgeCount = graphTableData ? graphTableData.edges.total : 0;
@@ -2329,8 +2486,7 @@ function MapView(props) {
             <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
                 <h2 style={{ margin:0, fontSize:12, fontWeight:700, color:'#e17055', whiteSpace:'nowrap' }}>Map Visualization</h2>
                 <span style={{ fontSize:10, color:'#b2bec3', whiteSpace:'nowrap' }}>{nodeCount.toLocaleString()}n / {edgeCount.toLocaleString()}e (WKT)</span>
-                {hoverCoord && <span style={{ fontSize:10, color:'#dfe6e9', fontFamily:'monospace', whiteSpace:'nowrap', background:'#2d3436', padding:'1px 6px', borderRadius:3 }}>{hoverCoord.lng.toFixed(6)}, {hoverCoord.lat.toFixed(6)}</span>}
-                {viewRef.current.zoom !== 1 && <span style={{ fontSize:10, color:'#b2bec3', whiteSpace:'nowrap' }}>{viewRef.current.zoom.toFixed(1)}x</span>}
+                <span ref={coordOverlayRef} style={{ fontSize:10, color:'#dfe6e9', fontFamily:'monospace', whiteSpace:'nowrap', background:'#2d3436', padding:'1px 6px', borderRadius:3, display:'none' }}/>
                 <span style={{ flex:1 }}/>
                 {onVisualize && <button onClick={onVisualize} disabled={vizLoading} title="Re-fetch graph data" style={{
                     padding:'4px 10px', border:'none', borderRadius:4, cursor: vizLoading ? 'not-allowed':'pointer',
@@ -3628,7 +3784,7 @@ function App() {
             {maximizedPanel === 'canvas' && graphTableData && (
                 <div style={{ position:'fixed', top:0, left:0, width:'100vw', height:'100vh', zIndex:999, display:'flex', flexDirection:'column', background:'#fff' }}>
                     {graphTableData.identifierType === 'wkt' ? (
-                        <MapView data={graphTableData} labelData={labelData} selectedNodeLabels={selectedNodeLabels} selectedEdgeLabels={selectedEdgeLabels} credentials={credentials} nodeSourceTable={nodeSourceTable} edgeSourceTable={edgeSourceTable}
+                        <MapView data={graphTableData} labelData={labelData} selectedNodeLabels={selectedNodeLabels} selectedEdgeLabels={selectedEdgeLabels} credentials={credentials} nodeSourceTable={nodeSourceTable} edgeSourceTable={edgeSourceTable} graphDirected={graphDirected}
                             onVisualize={function(){ fetchGraphData(); setShowForceGraph(true); }}
                             vizLoading={api.loading || !!fetchProgress}
                             maximized={true} onToggleMaximize={function(){ setMaximizedPanel(null); }}
