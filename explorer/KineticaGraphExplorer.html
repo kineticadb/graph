@@ -39,6 +39,7 @@
 const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
 /* ═══════════════════════ CONSTANTS ════════════════════════ */
+const EXPLORER_VERSION = "7.2.3.12";  // Tied to Kinetica core-graph release tag (release/v7.2.3-ga-12)
 const SAFETY_TIMEOUT_MS = 10 * 60 * 1000;
 const PALETTE = [
     { solid: '#0984e3', light: '#e1f0fb' }, { solid: '#00cec9', light: '#e0f9f8' },
@@ -92,7 +93,7 @@ function extractNodeSourceTable(originalRequest, graphName) {
     if (!entry) return null;
     var statement = entry.statement || "";
     // Find NODES => INPUT_TABLES(...) section — greedy to capture all sub-selects
-    var nodesMatch = statement.match(/NODES\s*=>\s*INPUT_TABLES\s*\(([\s\S]*?)\)\s*\)\s*[,)]/i);
+    var nodesMatch = statement.match(/NODES\s*=>\s*INPUT_TABLES?\s*\(\s*\(?([\s\S]*?)\)?\s*\)\s*[,)]/i);
     if (!nodesMatch) return null;
     var inner = nodesMatch[1];
     // Find all FROM <table> references — pick ones that look like real table names (word.word or word)
@@ -126,6 +127,33 @@ function extractNodeSourceTable(originalRequest, graphName) {
     return { table: tableName, idCol: idCol };
 }
 
+// Extract the edge source table and ID column from the graph creation statement
+function extractEdgeSourceTable(originalRequest, graphName) {
+    if (!originalRequest || !originalRequest.length) return null;
+    var entry = originalRequest[0];
+    if (typeof entry === "string") entry = safeParse(entry);
+    if (!entry) return null;
+    var statement = entry.statement || "";
+    var edgesMatch = statement.match(/EDGES\s*=>\s*INPUT_TABLES?\s*\(\s*\(?([\s\S]*?)\)?\s*\)\s*[,)]/i);
+    if (!edgesMatch) return null;
+    var inner = edgesMatch[1];
+    var fromRe = /FROM\s+([\w.]+)/gi;
+    var m, tables = [];
+    while ((m = fromRe.exec(inner)) !== null) {
+        var t = m[1].replace(/\).*$/, '');
+        if (t && t.toLowerCase() !== 'dual') tables.push(t);
+    }
+    if (tables.length === 0) return null;
+    var tableName = tables[tables.length - 1];
+    if (tableName.indexOf('.') === -1 && graphName && graphName.indexOf('.') !== -1) {
+        var schema = graphName.substring(0, graphName.indexOf('.'));
+        tableName = schema + '.' + tableName;
+    }
+    var idMatch = inner.match(/(\w+)\s+as\s+(?:EDGE_ID|ID)\b/i);
+    var idCol = idMatch ? idMatch[1] : null;
+    return { table: tableName, idCol: idCol };
+}
+
 // Resolve column name from headers, trying multiple variants (e.g. NODE1_NAME or EDGE_NODE1_NAME)
 function resolveCol(headers, candidates) {
     for (var i = 0; i < candidates.length; i++) {
@@ -152,7 +180,7 @@ function useKineticaApi() {
         cancel();
         setLoading(true);
         abortRef.current = new AbortController();
-        timeoutRef.current = setTimeout(function() { cancel(); alert("Request timed out (10 min)."); }, SAFETY_TIMEOUT_MS);
+        timeoutRef.current = setTimeout(function() { cancel(); if(typeof showToast==='function') showToast('23F0 Request timed out (10 min).', 'error'); else alert('Request timed out.'); }, SAFETY_TIMEOUT_MS);
 
         var headers = { "Content-Type": "application/json" };
         if (creds.user || creds.pass) {
@@ -385,6 +413,7 @@ function Sidebar(props) {
             <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:24, flexShrink:0 }}>
                 <img src="kinetica_graph_logo.png" style={{ height:32, width:'auto' }} alt="Logo" onError={function(e){ e.target.style.display='none'; }} />
                 <span style={{ fontWeight:700, fontSize:17, color:'#0984e3', letterSpacing:-0.3 }}>Graph Explorer</span>
+                <span style={{ fontSize:13, color:'#b2bec3', fontWeight:700 }}>v{EXPLORER_VERSION}</span>
             </div>
 
             <div style={{ marginBottom:20, flexShrink:0 }}>
@@ -468,7 +497,7 @@ function Sidebar(props) {
 
 /* ═══════════════════ SummaryCards ═════════════════════════ */
 function SummaryCards(props) {
-    var data = props.data, server = props.server;
+    var data = props.data;
     var numNodeLabels = (data.node_labels || []).length;
     var numEdgeLabels = (data.edge_labels || []).length;
     var items = [
@@ -488,10 +517,6 @@ function SummaryCards(props) {
                     </div>
                 );
             })}
-            <div style={{ borderLeft:'1px solid #eee', paddingLeft:16 }}>
-                <p style={{ margin:0, fontSize:10, color:'#636e72', fontWeight:600, letterSpacing:0.5 }}>SOURCE</p>
-                <p style={{ margin:'3px 0 0', fontWeight:700, fontSize:13, color:'#2d3436', wordBreak:'break-all' }}>{server}</p>
-            </div>
         </div>
     );
 }
@@ -626,6 +651,11 @@ function LabelChart(props) {
 /* ═══════════════════ OntologyViewer ══════════════════════ */
 function OntologyViewer(props) {
     var dotString = props.dotString, pickingEnabled = props.pickingEnabled, onPickLabel = props.onPickLabel, apiRef = props.apiRef;
+    var schemaFullSearch = props.schemaFullSearch, onToggleSchemaFullSearch = props.onToggleSchemaFullSearch;
+    var schemaNodeLabelkeys = props.schemaNodeLabelkeys, onToggleSchemaNodeLabelkeys = props.onToggleSchemaNodeLabelkeys;
+    var schemaEdgeLabelkeys = props.schemaEdgeLabelkeys, onToggleSchemaEdgeLabelkeys = props.onToggleSchemaEdgeLabelkeys;
+    var onRefresh = props.onRefresh, loading = props.loading;
+    var maximized = props.maximized, onToggleMaximize = props.onToggleMaximize;
     const containerRef = useRef(null);
     const svgRef       = useRef(null);
     const innerGRef    = useRef(null);
@@ -695,7 +725,12 @@ function OntologyViewer(props) {
     }, [pickingEnabled, onPickLabel]);
 
     useEffect(function() {
-        if (!dotString || !containerRef.current) return;
+        if (!containerRef.current) return;
+        if (!dotString) {
+            d3.select(containerRef.current).html('<p style="padding:20px;color:#b2bec3;font-size:13px;">No ontology available</p>');
+            svgRef.current = null; innerGRef.current = null;
+            return;
+        }
         var container = d3.select(containerRef.current);
         container.html('<p style="padding:20px;color:#636e72;animation:pulse 1.5s infinite">Calculating Layout…</p>');
 
@@ -726,9 +761,32 @@ function OntologyViewer(props) {
 
     return (
         <div style={{ background:'#fff', borderRadius:12, boxShadow:'0 2px 8px rgba(0,0,0,0.04)', padding:10, marginBottom:0, flex:1, display:'flex', flexDirection:'column', minHeight:0, overflow:'hidden' }}>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
+            <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:8 }}>
                 <h2 style={{ margin:0, fontSize:12, fontWeight:700, color:'#fd9644' }}>Graph Ontology</h2>
-                <button onClick={function(){ resetView(true); }} style={{ padding:'6px 14px', fontSize:11, fontWeight:700, color:'#fff', background:'#0984e3', border:'none', borderRadius:6, cursor:'pointer', fontFamily:'inherit' }}>Reset View</button>
+                <div style={{ display:'inline-flex', alignItems:'center', gap:4, background:'#f1f2f6', padding:'2px 6px', borderRadius:4 }}>
+                    <div onClick={onToggleSchemaFullSearch} title="Full search: ON = exhaustive edge search (slower), OFF = fast cached" style={{ display:'inline-flex', alignItems:'center', gap:2, cursor:'pointer', userSelect:'none' }}>
+                        <span style={{ fontSize:9, fontWeight:700, color: schemaFullSearch ? '#fd9644':'#636e72' }}>Full</span>
+                        <div style={{ width:18, height:9, borderRadius:20, position:'relative', background: schemaFullSearch ? '#fd9644':'#ccc', transition:'0.2s' }}>
+                            <div style={{ width:5, height:5, borderRadius:'50%', background:'#fff', position:'absolute', top:2, left: schemaFullSearch ? 11:2, transition:'0.2s' }}/>
+                        </div>
+                    </div>
+                    <div onClick={onToggleSchemaNodeLabelkeys} title="NKey: ON = group by schema type, OFF = actual node labels" style={{ display:'inline-flex', alignItems:'center', gap:2, cursor:'pointer', userSelect:'none' }}>
+                        <span style={{ fontSize:9, fontWeight:700, color: schemaNodeLabelkeys ? '#fd9644':'#636e72' }}>NKey</span>
+                        <div style={{ width:18, height:9, borderRadius:20, position:'relative', background: schemaNodeLabelkeys ? '#fd9644':'#ccc', transition:'0.2s' }}>
+                            <div style={{ width:5, height:5, borderRadius:'50%', background:'#fff', position:'absolute', top:2, left: schemaNodeLabelkeys ? 11:2, transition:'0.2s' }}/>
+                        </div>
+                    </div>
+                    <div onClick={onToggleSchemaEdgeLabelkeys} title="EKey: ON = group by schema type, OFF = actual edge labels" style={{ display:'inline-flex', alignItems:'center', gap:2, cursor:'pointer', userSelect:'none' }}>
+                        <span style={{ fontSize:9, fontWeight:700, color: schemaEdgeLabelkeys ? '#fd9644':'#636e72' }}>EKey</span>
+                        <div style={{ width:18, height:9, borderRadius:20, position:'relative', background: schemaEdgeLabelkeys ? '#fd9644':'#ccc', transition:'0.2s' }}>
+                            <div style={{ width:5, height:5, borderRadius:'50%', background:'#fff', position:'absolute', top:2, left: schemaEdgeLabelkeys ? 11:2, transition:'0.2s' }}/>
+                        </div>
+                    </div>
+                </div>
+                <span style={{ flex:1 }}/>
+                {onRefresh && <button onClick={onRefresh} disabled={loading} title="Refresh ontology" style={{ padding:'4px 10px', fontSize:10, fontWeight:700, color:'#fff', background: loading ? '#b2bec3':'#fd9644', border:'none', borderRadius:4, cursor: loading ? 'not-allowed':'pointer', fontFamily:'inherit' }}>{'\u21BB'} Refresh</button>}
+                <button onClick={function(){ resetView(true); }} style={{ padding:'4px 10px', fontSize:10, fontWeight:700, color:'#fff', background:'#0984e3', border:'none', borderRadius:4, cursor:'pointer', fontFamily:'inherit' }}>Reset View</button>
+                {onToggleMaximize && <button onClick={onToggleMaximize} title={maximized ? 'Restore to split view (Esc)' : 'Maximize to full window'} style={{ padding:'4px 10px', fontSize:10, fontWeight:700, color: maximized ? '#fff' : '#fff', background: maximized ? '#d63031' : '#0984e3', border:'none', borderRadius:4, cursor:'pointer', fontFamily:'inherit', flexShrink:0, transition:'0.2s' }}>{maximized ? '\u25A3 Restore' : '\u2922'}</button>}
             </div>
             <div ref={containerRef} style={{ width:'100%', flex:1, minHeight:200, background:'#fafafa', border:'1px solid #eee', borderRadius:8, overflow:'hidden', cursor:'grab' }}/>
         </div>
@@ -738,10 +796,13 @@ function OntologyViewer(props) {
 /* ═══════════════════ DashboardHeader ═════════════════════ */
 function DashboardHeader(props) {
     var graphName = props.graphName, server = props.server, lastRefresh = props.lastRefresh, pickingEnabled = props.pickingEnabled;
-    var onTogglePicking = props.onTogglePicking, onRefresh = props.onRefresh, onOntology = props.onOntology, onQuery = props.onQuery, loading = props.loading;
-    var schemaNodeLabelkeys = props.schemaNodeLabelkeys, onToggleSchemaNodeLabelkeys = props.onToggleSchemaNodeLabelkeys;
-    var schemaEdgeLabelkeys = props.schemaEdgeLabelkeys, onToggleSchemaEdgeLabelkeys = props.onToggleSchemaEdgeLabelkeys;
+    var onTogglePicking = props.onTogglePicking, onRefresh = props.onRefresh, onQuery = props.onQuery, onVisualize = props.onVisualize, loading = props.loading;
+    var minimizedPanels = props.minimizedPanels || [], onRestorePanel = props.onRestorePanel;
+    var hSplit = props.hSplit || 0.65;
+    var nodeCount = props.nodeCount || 0, edgeCount = props.edgeCount || 0;
+    var fetchProgress = props.fetchProgress;
     var autoRefresh = props.autoRefresh, autoInterval = props.autoInterval, onToggleAutoRefresh = props.onToggleAutoRefresh, onChangeInterval = props.onChangeInterval;
+    var bigGraphThreshold = props.bigGraphThreshold || 10000000, onChangeBigGraphThreshold = props.onChangeBigGraphThreshold;
     const [elapsed, setElapsed] = useState('');
 
     useEffect(function() {
@@ -760,56 +821,78 @@ function DashboardHeader(props) {
         );
     };
 
+    var separator = <div style={{ width:1, alignSelf:'stretch', background:'#b2bec3', flexShrink:0 }}/>;
+
     return (
         <div style={{ marginBottom:8, borderBottom:'1px solid #eee', paddingBottom:6 }}>
-            <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap' }}>
-                {/* Info */}
-                <div style={{ fontSize:11, color:'#636e72', lineHeight:1.4 }}>
-                    <span style={{ fontWeight:800, fontSize:13, color:'#2d3436' }}>{graphName}</span>
-                    <span style={{ margin:'0 6px', color:'#ddd' }}>|</span>
-                    <span>{server}</span>
-                    {loading && <span style={{ marginLeft:6, fontSize:10, color:'#0984e3', fontWeight:700 }}>{'\u23F3'}</span>}
+            <div style={{ display:'flex', alignItems:'center' }}>
+                {/* ── Left side (matches left split pane) ── */}
+                <div style={{ width: (hSplit * 100) + '%', display:'flex', alignItems:'center', gap:8, paddingRight:8, boxSizing:'border-box' }}>
+                    {/* Section 1: Info */}
+                    <span style={{ fontWeight:800, fontSize:14, color:'#2d3436', whiteSpace:'nowrap' }}>{graphName}</span>
+                    {(nodeCount > 0 || edgeCount > 0) && <>
+                        <span style={{ fontWeight:700, fontSize:11, color:'#0984e3', whiteSpace:'nowrap' }}>N:{nodeCount.toLocaleString()}</span>
+                        <span style={{ color:'#ddd' }}>/</span>
+                        <span style={{ fontWeight:700, fontSize:11, color:'#00b894', whiteSpace:'nowrap' }}>E:{edgeCount.toLocaleString()}</span>
+                    </>}
+                    {loading && !fetchProgress && <span style={{ fontSize:10, color:'#0984e3', fontWeight:700 }}>{'\u23F3'}</span>}
+                    {fetchProgress && (function() {
+                        var nD = fetchProgress.nodesDone || 0, nT = typeof fetchProgress.nodesTotal === 'number' ? fetchProgress.nodesTotal : 0;
+                        var eD = fetchProgress.edgesDone || 0, eT = typeof fetchProgress.edgesTotal === 'number' ? fetchProgress.edgesTotal : 0;
+                        var phase = (nT > 0 && nD > 0 && nD >= nT) ? 'edge' : 'node';
+                        var pct;
+                        if (phase === 'node') {
+                            pct = nT > 0 ? Math.round(nD / nT * 100) : 0;
+                        } else {
+                            pct = eT > 0 ? Math.round(eD / eT * 100) : (nT > 0 ? 100 : 0);
+                        }
+                        var barColor = phase === 'node' ? '#0984e3' : '#00b894';
+                        return <div style={{ display:'flex', alignItems:'center', gap:4, minWidth:200 }}>
+                            <div style={{ flex:1, height:6, background:'#eee', borderRadius:3, overflow:'hidden' }}>
+                                <div style={{ height:'100%', borderRadius:3, background: barColor, transition:'width 0.3s', width: pct + '%' }}/>
+                            </div>
+                            <span style={{ fontSize:11, fontWeight:700, color: barColor, whiteSpace:'nowrap' }}>{pct}%</span>
+                        </div>;
+                    })()}
+
+                    {separator}
+
+                    {/* Section 2: Query */}
+                    {smallBtn('+ Query', '#6c5ce7', onQuery, 'Open a new SQL/GQL query panel')}
+                    {minimizedPanels.map(function(mp) {
+                        return <button key={mp.id} onClick={function(){ if (onRestorePanel) onRestorePanel(mp.id); }} title={'Restore ' + mp.label} style={{
+                            padding:'4px 10px', border:'2px solid #6c5ce7', borderRadius:6, cursor:'pointer',
+                            fontWeight:700, color:'#6c5ce7', background:'#f0eefc', fontSize:11, fontFamily:'inherit', transition:'0.2s',
+                        }}>{mp.label}</button>;
+                    })}
                 </div>
-                {/* Action buttons */}
-                <div onClick={onTogglePicking} title="Enable cross-view picking: click ontology nodes/edges to highlight matching labels" style={{ display:'inline-flex', alignItems:'center', gap:4, background:'#f1f2f6', padding:'3px 8px', borderRadius:6, cursor:'pointer', userSelect:'none', fontSize:10, fontWeight:700, color: pickingEnabled ? '#00b894':'#636e72' }}>
-                    Pick
-                    <div style={{ width:24, height:12, borderRadius:20, position:'relative', background: pickingEnabled ? '#00b894':'#ccc', transition:'0.2s' }}>
-                        <div style={{ width:8, height:8, borderRadius:'50%', background:'#fff', position:'absolute', top:2, left: pickingEnabled ? 14:2, transition:'0.2s' }}/>
-                    </div>
-                </div>
-                {smallBtn('Ontology', '#fd9644', onOntology, 'Load and display the graph ontology structure')}
-                <div style={{ display:'inline-flex', alignItems:'center', gap:3, background:'#f1f2f6', padding:'3px 6px', borderRadius:6 }}>
-                    <div onClick={onToggleSchemaNodeLabelkeys} title="Node schema label keys: ON = group by schema type, OFF = show actual node labels (re-click Ontology to apply)" style={{ display:'inline-flex', alignItems:'center', gap:2, cursor:'pointer', userSelect:'none' }}>
-                        <span style={{ fontSize:8, fontWeight:700, color: schemaNodeLabelkeys ? '#fd9644':'#636e72' }}>NKey</span>
-                        <div style={{ width:20, height:10, borderRadius:20, position:'relative', background: schemaNodeLabelkeys ? '#fd9644':'#ccc', transition:'0.2s' }}>
-                            <div style={{ width:6, height:6, borderRadius:'50%', background:'#fff', position:'absolute', top:2, left: schemaNodeLabelkeys ? 12:2, transition:'0.2s' }}/>
+
+                {separator}
+
+                {/* ── Right side (matches right split pane / label charts) ── */}
+                <div style={{ width: ((1 - hSplit) * 100) + '%', display:'flex', alignItems:'center', gap:6, paddingLeft:8, boxSizing:'border-box' }}>
+                    <div onClick={onTogglePicking} title="Enable cross-view picking: click ontology nodes/edges to highlight matching labels" style={{ display:'inline-flex', alignItems:'center', gap:4, background:'#f1f2f6', padding:'3px 8px', borderRadius:6, cursor:'pointer', userSelect:'none', fontSize:10, fontWeight:700, color: pickingEnabled ? '#00b894':'#636e72' }}>
+                        Pick
+                        <div style={{ width:24, height:12, borderRadius:20, position:'relative', background: pickingEnabled ? '#00b894':'#ccc', transition:'0.2s' }}>
+                            <div style={{ width:8, height:8, borderRadius:'50%', background:'#fff', position:'absolute', top:2, left: pickingEnabled ? 14:2, transition:'0.2s' }}/>
                         </div>
                     </div>
-                    <div onClick={onToggleSchemaEdgeLabelkeys} title="Edge schema label keys: ON = group by schema type, OFF = show actual edge labels (re-click Ontology to apply)" style={{ display:'inline-flex', alignItems:'center', gap:2, cursor:'pointer', userSelect:'none' }}>
-                        <span style={{ fontSize:8, fontWeight:700, color: schemaEdgeLabelkeys ? '#fd9644':'#636e72' }}>EKey</span>
-                        <div style={{ width:20, height:10, borderRadius:20, position:'relative', background: schemaEdgeLabelkeys ? '#fd9644':'#ccc', transition:'0.2s' }}>
-                            <div style={{ width:6, height:6, borderRadius:'50%', background:'#fff', position:'absolute', top:2, left: schemaEdgeLabelkeys ? 12:2, transition:'0.2s' }}/>
+                    <div style={{ display:'inline-flex', alignItems:'center', gap:4, background: autoRefresh ? '#e8f8f5':'#f1f2f6', padding:'3px 6px', borderRadius:6 }}>
+                        <div onClick={onToggleAutoRefresh} title="Auto-refresh label counts at the selected interval" style={{ display:'inline-flex', alignItems:'center', gap:3, cursor:'pointer', userSelect:'none' }}>
+                            <span style={{ fontSize:10, fontWeight:700, color: autoRefresh ? '#00b894':'#636e72' }}>Auto</span>
+                            <div style={{ width:24, height:12, borderRadius:20, position:'relative', background: autoRefresh ? '#00b894':'#ccc', transition:'0.2s' }}>
+                                <div style={{ width:8, height:8, borderRadius:'50%', background:'#fff', position:'absolute', top:2, left: autoRefresh ? 14:2, transition:'0.2s' }}/>
+                            </div>
                         </div>
+                        {autoRefresh && (
+                            <select value={autoInterval} onChange={function(e){ onChangeInterval(parseInt(e.target.value)); }} style={{ fontSize:10, border:'1px solid #ddd', borderRadius:3, padding:'1px 2px', fontFamily:'inherit' }}>
+                                <option value={5}>5s</option><option value={10}>10s</option><option value={15}>15s</option>
+                                <option value={30}>30s</option><option value={60}>60s</option><option value={300}>5m</option>
+                            </select>
+                        )}
                     </div>
+                    {lastRefresh && <span style={{ fontSize:9, color:'#636e72', whiteSpace:'nowrap' }}>{new Date(lastRefresh).toLocaleTimeString()} <span style={{ color:'#0984e3' }}>({elapsed})</span></span>}
                 </div>
-                {smallBtn('Query', '#6c5ce7', onQuery, 'Open a new SQL/GQL query panel')}
-                <span style={{ flex:1 }}/>
-                {smallBtn('Refresh', '#00b894', onRefresh, 'Refresh label counts')}
-                <div style={{ display:'inline-flex', alignItems:'center', gap:4, background: autoRefresh ? '#e8f8f5':'#f1f2f6', padding:'3px 6px', borderRadius:6 }}>
-                    <div onClick={onToggleAutoRefresh} title="Auto-refresh label counts at the selected interval" style={{ display:'inline-flex', alignItems:'center', gap:3, cursor:'pointer', userSelect:'none' }}>
-                        <span style={{ fontSize:10, fontWeight:700, color: autoRefresh ? '#00b894':'#636e72' }}>Auto</span>
-                        <div style={{ width:24, height:12, borderRadius:20, position:'relative', background: autoRefresh ? '#00b894':'#ccc', transition:'0.2s' }}>
-                            <div style={{ width:8, height:8, borderRadius:'50%', background:'#fff', position:'absolute', top:2, left: autoRefresh ? 14:2, transition:'0.2s' }}/>
-                        </div>
-                    </div>
-                    {autoRefresh && (
-                        <select value={autoInterval} onChange={function(e){ onChangeInterval(parseInt(e.target.value)); }} style={{ fontSize:10, border:'1px solid #ddd', borderRadius:3, padding:'1px 2px', fontFamily:'inherit' }}>
-                            <option value={5}>5s</option><option value={10}>10s</option><option value={15}>15s</option>
-                            <option value={30}>30s</option><option value={60}>60s</option><option value={300}>5m</option>
-                        </select>
-                    )}
-                </div>
-                {lastRefresh && <span style={{ fontSize:10, color:'#636e72', whiteSpace:'nowrap' }}>{new Date(lastRefresh).toLocaleTimeString()} <span style={{ color:'#0984e3' }}>({elapsed})</span></span>}
             </div>
         </div>
     );
@@ -817,7 +900,7 @@ function DashboardHeader(props) {
 
 /* ═══════════════════ QueryPanel (unified SQL + results + visualization) ════ */
 function QueryPanel(props) {
-    var onClose = props.onClose, credentials = props.credentials, labelData = props.labelData, panelIndex = props.panelIndex || 0;
+    var onClose = props.onClose, onMinimize = props.onMinimize, credentials = props.credentials, labelData = props.labelData, panelIndex = props.panelIndex || 0;
     var initialSql = props.initialSql || '', initialTab = props.initialTab || null, stateRef = props.stateRef, autoRun = props.autoRun;
     var dotString = props.dotString, activeGraph = props.activeGraph, graphDirected = props.graphDirected, nodeSourceTable = props.nodeSourceTable, initialHelper = props.initialHelper;
     const [sql, setSql] = useState(initialSql);
@@ -922,7 +1005,8 @@ function QueryPanel(props) {
     // nodeKey is the cleaned DOT node name (e.g., "FEMALE:\ndance") normalized to sorted "FEMALE|dance"
     // Normalize DOT node name to canonical key: "FEMALE:\ndance (20%)" → "FEMALE|dance"
     var normNodeKey = function(raw) {
-        return raw.replace(/\s*\([^)]*\)\s*$/, '').trim().split(/[:\n]+/).map(function(s){ return s.trim(); }).filter(Boolean).sort().join('|');
+        // Strip percentage suffix, then split on colon, literal \n (backslash-n in DOT), or actual newlines
+        return raw.replace(/\s*\([^)]*\)\s*$/, '').trim().split(/(?:\\n|[\n:])+/).map(function(s){ return s.trim(); }).filter(Boolean).sort().join('|');
     };
 
     var isUndirectedGraph = useMemo(function() {
@@ -941,7 +1025,7 @@ function QueryPanel(props) {
         while ((m = re.exec(dotString)) !== null) {
             var src = normNodeKey(m[1]);
             var tgt = normNodeKey(m[2]);
-            var edgeRaw = m[3].replace(/[\s:]+$/g, '').replace(/^\s+/, '').split(/[\n:]/)[0].trim();
+            var edgeRaw = m[3].replace(/\s*\([^)]*\)\s*$/, '').replace(/^\s+/, '').trim();
             if (!adj[src]) adj[src] = [];
             if (!adj[src].some(function(e) { return e.edge === edgeRaw && e.target === tgt; })) {
                 adj[src].push({ edge: edgeRaw, target: tgt });
@@ -1179,10 +1263,12 @@ function QueryPanel(props) {
                     tgtWhere = ' WHERE (' + nextVar + '.NODE =\'' + tgtEntity + '\')';
                 }
                 var edgeLabelGql = ':' + userEdgeLabelsForHop(i).map(quoteLabel).join('|');
-                if (path[i].dir === 'fwd') {
-                    matchParts.push(isUndirectedGraph ? '-[' + edgeVar + edgeLabelGql + ']-' : '-[' + edgeVar + edgeLabelGql + ']->');
+                if (isUndirectedGraph) {
+                    matchParts.push('-[' + edgeVar + edgeLabelGql + ']-');
+                } else if (path[i].dir === 'fwd') {
+                    matchParts.push('-[' + edgeVar + edgeLabelGql + ']->');
                 } else {
-                    matchParts.push(isUndirectedGraph ? '-[' + edgeVar + edgeLabelGql + ']-' : '<-[' + edgeVar + edgeLabelGql + ']-');
+                    matchParts.push('<-[' + edgeVar + edgeLabelGql + ']-');
                 }
                 matchParts.push('(' + nextVar + nodeKeyToUserLabel(nextKey, i) + tgtWhere + ')');
                 returnParts.push(nextVar + '.NODE as ' + nextVar + '_node');
@@ -1571,6 +1657,11 @@ function QueryPanel(props) {
                     SQL Query{count > 0 ? ' — ' + count + ' record' + (count !== 1 ? 's' : '') : ''}
                 </span>
                 <div style={{ display:'flex', gap:4 }}>
+                    {onMinimize && <button onClick={function(){ onMinimize(); }} title="Minimize to header bar" style={{
+                        border:'none', background:'rgba(255,255,255,0.2)', color:'#fff',
+                        borderRadius:4, cursor:'pointer', fontWeight:700, fontSize:12,
+                        padding:'2px 8px', fontFamily:'inherit',
+                    }}>{'\u2013'}</button>}
                     <button onClick={function() {
                         if (maximized) {
                             if (savedLayout.current) { setPos(savedLayout.current.pos); setSize(savedLayout.current.size); }
@@ -1765,20 +1856,20 @@ function QueryPanel(props) {
                     <div ref={graphContainerRef} style={{ flex:1, minHeight:0 }}/>
                     {/* Node detail table strip */}
                     {(nodeDetail || nodeDetailLoading) && (
-                        <div style={{ flexShrink:0, maxHeight:100, overflowY:'auto', overflowX:'auto', borderTop:'2px solid #6c5ce7', background:'#fff' }}>
-                            {nodeDetailLoading && <div style={{ padding:6, fontSize:10, color:'#b2bec3' }}>Loading...</div>}
-                            {nodeDetail && nodeDetail.error && <div style={{ padding:6, fontSize:10, color:'#d63031' }}>Error: {nodeDetail.error}</div>}
-                            {nodeDetail && !nodeDetail.record && !nodeDetail.error && <div style={{ padding:6, fontSize:10, color:'#b2bec3' }}>No record found for {nodeDetail.nodeId}</div>}
+                        <div style={{ flexShrink:0, maxHeight:140, overflowY:'auto', overflowX:'auto', borderTop:'2px solid #6c5ce7', background:'#fff' }}>
+                            {nodeDetailLoading && <div style={{ padding:10, fontSize:13, color:'#b2bec3' }}>Loading...</div>}
+                            {nodeDetail && nodeDetail.error && <div style={{ padding:10, fontSize:13, color:'#d63031' }}>Error: {nodeDetail.error}</div>}
+                            {nodeDetail && !nodeDetail.record && !nodeDetail.error && <div style={{ padding:10, fontSize:13, color:'#b2bec3' }}>No record found for {nodeDetail.nodeId}</div>}
                             {nodeDetail && nodeDetail.record && (
-                                <table style={{ borderCollapse:'collapse', fontSize:10, whiteSpace:'nowrap' }}>
+                                <table style={{ borderCollapse:'collapse', fontSize:13, whiteSpace:'nowrap' }}>
                                     <thead><tr>
                                         {Object.keys(nodeDetail.record).map(function(key) {
-                                            return <th key={key} style={{ position:'sticky', top:0, background:'#f1f2f6', padding:'3px 8px', textAlign:'left', fontWeight:700, fontSize:9, color:'#636e72', borderBottom:'1px solid #dfe6e9' }}>{key}</th>;
+                                            return <th key={key} style={{ position:'sticky', top:0, background:'#f1f2f6', padding:'6px 12px', textAlign:'left', fontWeight:700, fontSize:12, color:'#636e72', borderBottom:'2px solid #dfe6e9' }}>{key}</th>;
                                         })}
                                     </tr></thead>
                                     <tbody><tr>
                                         {Object.keys(nodeDetail.record).map(function(key) {
-                                            return <td key={key} style={{ padding:'3px 8px', fontSize:10, color:'#2d3436', borderBottom:'1px solid #f1f2f6' }}>{nodeDetail.record[key] == null ? '' : String(nodeDetail.record[key])}</td>;
+                                            return <td key={key} style={{ padding:'6px 12px', fontSize:13, color:'#2d3436', borderBottom:'1px solid #f1f2f6' }}>{nodeDetail.record[key] == null ? '' : String(nodeDetail.record[key])}</td>;
                                         })}
                                     </tr></tbody>
                                 </table>
@@ -1875,17 +1966,8 @@ function GraphTablePreview(props) {
                     }
                 </div>
                 <div style={{ display:"flex", gap:8 }}>
-                    <button onClick={onFetch} disabled={loading} style={{
-                        padding:"8px 16px", border:"none", borderRadius:6, cursor: loading ? "not-allowed":"pointer",
-                        fontWeight:700, color:"#fff", background: loading ? "#74b9ff":"#0984e3", fontSize:12, fontFamily:"inherit", transition:"0.2s"
-                    }}>{loading ? (fetchProgress ? ("\u23F3 Edges: " + (fetchProgress.edgesDone || 0).toLocaleString() + "/" + (fetchProgress.edgesTotal || "?").toLocaleString() + " Nodes: " + (fetchProgress.nodesDone || 0).toLocaleString() + "/" + (fetchProgress.nodesTotal || "?").toLocaleString()) : "Fetching\u2026") : "\uD83D\uDCCA Fetch All Data"}</button>
-                    {canVisualize && (
-                        <button onClick={onVisualize} style={{
-                            padding:"8px 16px", border:"none", borderRadius:6, cursor:"pointer",
-                            fontWeight:700, color:"#fff", background: showingGraph ? "#636e72" : "#00cec9", fontSize:12, fontFamily:"inherit", transition:"0.2s"
-                        }}>{showingGraph ? "\u2715 Hide Graph" : "\uD83D\uDD17 Visualize"}</button>
-                    )}
-                    {data && <button onClick={function(){ setShowDetail(function(p){ return !p; }); }} style={{ padding:"6px 12px", border:"none", borderRadius:6, cursor:"pointer", fontWeight:700, color: showDetail ? "#fff" : "#636e72", background: showDetail ? "#636e72" : "#f1f2f6", fontSize:11, fontFamily:"inherit" }}>{showDetail ? "\u25B2 Hide Tables" : "\u25BC Show Tables"}</button>}
+                    {loading && <span style={{ fontSize:11, fontWeight:700, color:"#0984e3", alignSelf:"center" }}>{fetchProgress ? ("\u23F3 E:" + (fetchProgress.edgesDone || 0).toLocaleString() + "/" + (fetchProgress.edgesTotal || "?").toLocaleString() + " N:" + (fetchProgress.nodesDone || 0).toLocaleString() + "/" + (fetchProgress.nodesTotal || "?").toLocaleString()) : "\u23F3 Fetching\u2026"}</span>}
+                    <button onClick={function(){ if (!data) { onFetch(); } setShowDetail(function(p){ return !p; }); }} disabled={loading} style={{ padding:"6px 12px", border:"none", borderRadius:6, cursor: loading ? "not-allowed":"pointer", fontWeight:700, color: showDetail ? "#fff" : "#636e72", background: showDetail ? "#636e72" : "#f1f2f6", fontSize:11, fontFamily:"inherit", opacity: loading ? 0.5:1 }}>{showDetail ? "\u25B2 Hide Tables" : "\u25BC Show Tables"}</button>
                 </div>
             </div>
             {error && <p style={{ color:"#d63031", fontSize:12, fontWeight:600 }}>Error: {error}</p>}
@@ -1909,9 +1991,388 @@ function GraphTablePreview(props) {
 }
 
 /* ═══════════════════ CanvasGraph (force-graph Canvas) ═════ */
+/* ═══════════════════ MapView (Canvas renderer for WKT graphs) ═══ */
+function MapView(props) {
+    var graphTableData = props.data, labelData = props.labelData;
+    var selectedNodeLabels = props.selectedNodeLabels || [], selectedEdgeLabels = props.selectedEdgeLabels || [];
+    var credentials = props.credentials, nodeSourceTable = props.nodeSourceTable, edgeSourceTable = props.edgeSourceTable;
+    var onVisualize = props.onVisualize, vizLoading = props.vizLoading;
+    var maximized = props.maximized, onToggleMaximize = props.onToggleMaximize;
+    var canvasRef = useRef(null);
+    var containerRef = useRef(null);
+    var viewRef = useRef({ zoom: 1, panX: 0, panY: 0 });
+    var dragRef = useRef(null);
+    const [nodeDetail, setNodeDetail] = useState(null);
+    const [nodeDetailLoading, setNodeDetailLoading] = useState(false);
+    const [hoverCoord, setHoverCoord] = useState(null); // { lng, lat }
+
+    // Build edge color map matching LabelChart
+    var labelColorMap = useMemo(function() {
+        var map = {};
+        if (labelData) {
+            var el = [].concat(labelData.edge_labels || []).sort(function(a, b) { return b.count - a.count; });
+            el.forEach(function(item, idx) { var ck = (item.labels || []).slice().sort().join('|'); map[ck] = PALETTE[idx % PALETTE.length].solid; });
+        }
+        return map;
+    }, [labelData]);
+
+    var getEdgeColor = function(rawLabel) {
+        if (!rawLabel) return '#0984e3';
+        var labels = typeof rawLabel === 'string' && rawLabel.charAt(0) === '[' ? (function(){ try { return JSON.parse(rawLabel); } catch(e) { return [rawLabel]; } })() : [rawLabel];
+        return labelColorMap[labels.slice().sort().join('|')] || '#0984e3';
+    };
+
+    var parseWkt = function(wkt) {
+        if (!wkt) return null;
+        var m = wkt.match(/POINT\s*\(\s*([-\d.]+)\s+([-\d.]+)\s*\)/i);
+        return m ? { x: parseFloat(m[1]), y: parseFloat(m[2]) } : null;
+    };
+
+    // Fetch edge detail from original edge source table
+    var fetchEdgeDetail = async function(edgeRecord) {
+        if (!credentials || !credentials.url) return;
+        var src = edgeSourceTable || nodeSourceTable;
+        if (!src) {
+            // No source table — show the entity record directly
+            setNodeDetail({ record: edgeRecord, nodeId: 'Edge ' + (edgeRecord['EDGE_ID'] || '') });
+            return;
+        }
+        setNodeDetailLoading(true); setNodeDetail(null);
+        try {
+            var tableName = src.table;
+            var hdrs = { 'Content-Type': 'application/json' };
+            if (credentials.user || credentials.pass) hdrs['Authorization'] = 'Basic ' + btoa(credentials.user + ':' + credentials.pass);
+
+            var edgeId = edgeRecord['EDGE_ID'];
+            var idCol = src.idCol;
+            var tryExprs = [];
+
+            // Try edge ID first if available
+            if (edgeId && idCol) {
+                var escapedId = String(edgeId).replace(/'/g, "''");
+                tryExprs.push(isNaN(edgeId) ? idCol + " = '" + escapedId + "'" : idCol + ' = ' + edgeId);
+            }
+
+            // Fallback: match by WKT line constructed from the two endpoints
+            var headers = graphTableData.edges.headers;
+            var n1Wkt = edgeRecord[headers[1]], n2Wkt = edgeRecord[headers[2]];
+            if (n1Wkt && n2Wkt) {
+                // Probe table for WKT column name
+                var probeRes = await fetch(credentials.url + '/get/records', { method: 'POST', headers: hdrs, body: JSON.stringify({ table_name: tableName, offset: 0, limit: 1, encoding: 'json', options: {} }) });
+                if (probeRes.ok) {
+                    var probeData = await probeRes.json(); var probeInner = safeParse(probeData.data_str) || probeData;
+                    var probeRecs = (probeInner.records_json || []).map(function(r) { return safeParse(r, r); });
+                    if (probeRecs.length > 0) {
+                        var wktCol = resolveCol(Object.keys(probeRecs[0]), ['wkt', 'WKTLINE', 'EDGE_WKTLINE', 'geom', 'geometry', 'segment']);
+                        if (wktCol) {
+                            // Match by ST_STARTPOINT and ST_ENDPOINT
+                            var p1 = n1Wkt.replace(/'/g, "''"), p2 = n2Wkt.replace(/'/g, "''");
+                            tryExprs.push("STXY_DISTANCE(" + wktCol + ", ST_GEOMFROMTEXT('" + p1 + "'), 1) < 0.0001");
+                        }
+                    }
+                }
+            }
+
+            var recs = [];
+            for (var t = 0; t < tryExprs.length && recs.length === 0; t++) {
+                var res = await fetch(credentials.url + '/get/records', { method: 'POST', headers: hdrs, body: JSON.stringify({ table_name: tableName, offset: 0, limit: 1, encoding: 'json', options: { expression: tryExprs[t] } }) });
+                if (res.ok) { var data = await res.json(); var inner = safeParse(data.data_str) || data; recs = (inner.records_json || []).map(function(r) { return safeParse(r, r); }); }
+            }
+            setNodeDetail({ record: recs[0] || edgeRecord, nodeId: 'Edge ' + (edgeId || ''), table: tableName });
+        } catch(err) { setNodeDetail({ record: edgeRecord, nodeId: 'Edge ' + (edgeRecord['EDGE_ID'] || ''), error: err.message }); }
+        finally { setNodeDetailLoading(false); }
+    };
+
+    // Build node label map: wkt_point → label combo key
+    var nodeLabelMap = useMemo(function() {
+        if (!graphTableData) return {};
+        var map = {};
+        var nodeHeaders = graphTableData.nodes.headers;
+        var nodeIdField = nodeHeaders[0], nodeLabelField = nodeHeaders[1];
+        graphTableData.nodes.records.forEach(function(rec) {
+            var id = rec[nodeIdField];
+            var rawLabel = rec[nodeLabelField] || '';
+            var labels = typeof rawLabel === 'string' && rawLabel.charAt(0) === '[' ? (function(){ try { return JSON.parse(rawLabel); } catch(e) { return [rawLabel]; } })() : [rawLabel];
+            map[id] = labels.slice().sort().join('|');
+        });
+        return map;
+    }, [graphTableData]);
+
+    // Filter edges based on selected labels
+    var filteredEdges = useMemo(function() {
+        if (!graphTableData) return [];
+        var edges = graphTableData.edges.records;
+        var hasNodeFilter = selectedNodeLabels.length > 0;
+        var hasEdgeFilter = selectedEdgeLabels.length > 0;
+        if (!hasNodeFilter && !hasEdgeFilter) return edges;
+
+        var nodeFilterSet = {};
+        selectedNodeLabels.forEach(function(l) { nodeFilterSet[l] = true; });
+        var edgeFilterSet = {};
+        selectedEdgeLabels.forEach(function(l) { edgeFilterSet[l] = true; });
+
+        var headers = graphTableData.edges.headers;
+        var n1Field = headers[1], n2Field = headers[2];
+
+        return edges.filter(function(rec) {
+            if (hasEdgeFilter) {
+                var rawEL = rec['EDGE_LABEL'] || '';
+                var eLabels = typeof rawEL === 'string' && rawEL.charAt(0) === '[' ? (function(){ try { return JSON.parse(rawEL); } catch(e) { return [rawEL]; } })() : [rawEL];
+                if (edgeFilterSet[eLabels.slice().sort().join('|')]) return true;
+            }
+            if (hasNodeFilter) {
+                var n1Key = nodeLabelMap[rec[n1Field]] || '';
+                var n2Key = nodeLabelMap[rec[n2Field]] || '';
+                if (nodeFilterSet[n1Key] || nodeFilterSet[n2Key]) return true;
+            }
+            return false;
+        });
+    }, [graphTableData, selectedNodeLabels, selectedEdgeLabels, nodeLabelMap]);
+
+    // Store base transform for hit detection
+    var baseTransform = useRef(null);
+
+    // Render edges on canvas with zoom/pan
+    var renderCanvas = useCallback(function() {
+        if (!canvasRef.current || !containerRef.current || !graphTableData) return;
+        var canvas = canvasRef.current;
+        var cssW = containerRef.current.clientWidth || 800;
+        var cssH = containerRef.current.clientHeight || 600;
+        // At high zoom, use higher resolution for crisper lines
+        var dpr = window.devicePixelRatio || 1;
+        var renderScale = Math.min(dpr, 2); // cap at 2x to avoid huge canvases
+        var w = Math.round(cssW * renderScale);
+        var h = Math.round(cssH * renderScale);
+        canvas.width = w; canvas.height = h;
+        canvas.style.width = cssW + 'px'; canvas.style.height = cssH + 'px';
+        var ctx = canvas.getContext('2d');
+        ctx.scale(renderScale, renderScale);
+        // Use CSS dimensions for all coordinate math
+        w = cssW; h = cssH;
+        ctx.fillStyle = '#1a1a2e';
+        ctx.fillRect(0, 0, w, h);
+
+        var edges = filteredEdges;
+        var headers = graphTableData.edges.headers;
+        var n1Field = headers[1], n2Field = headers[2];
+
+        // Compute bounds from ALL edges (not just filtered) for stable base transform
+        var allEdges = graphTableData.edges.records;
+        var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (var i = 0; i < allEdges.length; i++) {
+            var p1 = parseWkt(allEdges[i][n1Field]), p2 = parseWkt(allEdges[i][n2Field]);
+            if (p1) { if (p1.x < minX) minX = p1.x; if (p1.x > maxX) maxX = p1.x; if (p1.y < minY) minY = p1.y; if (p1.y > maxY) maxY = p1.y; }
+            if (p2) { if (p2.x < minX) minX = p2.x; if (p2.x > maxX) maxX = p2.x; if (p2.y < minY) minY = p2.y; if (p2.y > maxY) maxY = p2.y; }
+        }
+        if (minX === Infinity) {
+            ctx.fillStyle = '#636e72'; ctx.font = '13px sans-serif'; ctx.textAlign = 'center';
+            ctx.fillText('No edges to display', w / 2, h / 2);
+            return;
+        }
+        var dx = (maxX - minX) || 0.01, dy = (maxY - minY) || 0.01;
+        var pad = 20;
+        var scaleX = (w - 2 * pad) / dx, scaleY = (h - 2 * pad) / dy;
+        var baseScale = Math.min(scaleX, scaleY);
+        var baseOffX = pad + ((w - 2 * pad) - dx * baseScale) / 2 - minX * baseScale;
+        var baseOffY = pad + ((h - 2 * pad) - dy * baseScale) / 2 - minY * baseScale;
+        baseTransform.current = { baseScale: baseScale, baseOffX: baseOffX, baseOffY: baseOffY, w: w, h: h };
+
+        var v = viewRef.current;
+        var toX = function(x) { return (x * baseScale + baseOffX) * v.zoom + v.panX; };
+        var toY = function(y) { return (h - (y * baseScale + baseOffY)) * v.zoom + v.panY; };
+
+        // Draw filtered edges — only those intersecting viewport
+        ctx.lineWidth = 1;
+        ctx.globalAlpha = 0.6;
+        var margin = 10;
+        for (var j = 0; j < edges.length; j++) {
+            var ep1 = parseWkt(edges[j][n1Field]), ep2 = parseWkt(edges[j][n2Field]);
+            if (!ep1 || !ep2) continue;
+            var sx1 = toX(ep1.x), sy1 = toY(ep1.y), sx2 = toX(ep2.x), sy2 = toY(ep2.y);
+            // Viewport culling
+            if ((sx1 < -margin && sx2 < -margin) || (sx1 > w+margin && sx2 > w+margin) || (sy1 < -margin && sy2 < -margin) || (sy1 > h+margin && sy2 > h+margin)) continue;
+            ctx.strokeStyle = getEdgeColor(edges[j]['EDGE_LABEL']);
+            ctx.beginPath();
+            ctx.moveTo(sx1, sy1);
+            ctx.lineTo(sx2, sy2);
+            ctx.stroke();
+        }
+        ctx.globalAlpha = 1.0;
+
+        // Draw zoom info + visible count
+        if (v.zoom !== 1) {
+            ctx.fillStyle = 'rgba(255,255,255,0.6)'; ctx.font = '10px sans-serif'; ctx.textAlign = 'left';
+            ctx.fillText('Zoom: ' + v.zoom.toFixed(1) + 'x', 8, h - 8);
+        }
+    }, [graphTableData, filteredEdges, labelColorMap]);
+
+    // Mouse handlers for zoom/pan/click
+    useEffect(function() {
+        if (!canvasRef.current) return;
+        var canvas = canvasRef.current;
+
+        // Convert client coords to CSS pixel coords (canvas uses ctx.scale for DPR)
+        var canvasCoords = function(e) {
+            var rect = canvas.getBoundingClientRect();
+            return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+        };
+
+        var handleWheel = function(e) {
+            e.preventDefault();
+            var delta = e.deltaY > 0 ? 0.9 : 1.1;
+            var v = viewRef.current;
+            var m = canvasCoords(e);
+            var newZoom = Math.max(0.5, Math.min(50, v.zoom * delta));
+            v.panX = m.x - (m.x - v.panX) * (newZoom / v.zoom);
+            v.panY = m.y - (m.y - v.panY) * (newZoom / v.zoom);
+            v.zoom = newZoom;
+            renderCanvas();
+        };
+
+        // Inverse transform: screen → geo coordinates
+        var screenToGeo = function(sx, sy) {
+            var bt = baseTransform.current;
+            if (!bt) return null;
+            var v = viewRef.current;
+            var gx = ((sx - v.panX) / v.zoom - bt.baseOffX) / bt.baseScale;
+            var gy = (bt.h - (sy - v.panY) / v.zoom - bt.baseOffY) / bt.baseScale;
+            return { lng: gx, lat: gy };
+        };
+
+        var handleMouseDown = function(e) {
+            if (e.button === 0) {
+                var m = canvasCoords(e);
+                dragRef.current = { startX: m.x, startY: m.y, panX: viewRef.current.panX, panY: viewRef.current.panY, moved: false };
+            }
+        };
+        var handleMouseMove = function(e) {
+            var m = canvasCoords(e);
+            // Only show coords when inside canvas
+            var rect = canvas.getBoundingClientRect();
+            if (e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom) {
+                var geo = screenToGeo(m.x, m.y);
+                if (geo) setHoverCoord(geo);
+            } else {
+                setHoverCoord(null);
+            }
+            if (!dragRef.current) return;
+            dragRef.current.moved = true;
+            viewRef.current.panX = dragRef.current.panX + (m.x - dragRef.current.startX);
+            viewRef.current.panY = dragRef.current.panY + (m.y - dragRef.current.startY);
+            renderCanvas();
+        };
+        var handleMouseLeave = function() { setHoverCoord(null); };
+        var handleMouseUp = function(e) {
+            if (dragRef.current && !dragRef.current.moved) {
+                var m = canvasCoords(e);
+                var mx = m.x, my = m.y;
+                var bt = baseTransform.current;
+                if (bt) {
+                    var v = viewRef.current;
+                    var toX = function(x) { return (x * bt.baseScale + bt.baseOffX) * v.zoom + v.panX; };
+                    var toY = function(y) { return (bt.h - (y * bt.baseScale + bt.baseOffY)) * v.zoom + v.panY; };
+                    var headers = graphTableData.edges.headers;
+                    var n1Field = headers[1], n2Field = headers[2];
+                    var bestDist = 20;
+                    var bestEdge = null;
+                    for (var i = 0; i < filteredEdges.length; i++) {
+                        var p1 = parseWkt(filteredEdges[i][n1Field]), p2 = parseWkt(filteredEdges[i][n2Field]);
+                        if (!p1 || !p2) continue;
+                        var ax = toX(p1.x), ay = toY(p1.y), bx = toX(p2.x), by = toY(p2.y);
+                        var ddx = bx-ax, ddy = by-ay, len2 = ddx*ddx+ddy*ddy;
+                        var t = len2 > 0 ? Math.max(0, Math.min(1, ((mx-ax)*ddx+(my-ay)*ddy)/len2)) : 0;
+                        var px = ax+t*ddx, py = ay+t*ddy;
+                        var dist = Math.sqrt((mx-px)*(mx-px)+(my-py)*(my-py));
+                        if (dist < bestDist) { bestDist = dist; bestEdge = filteredEdges[i]; }
+                    }
+                    if (bestEdge) {
+                        if (navigator.clipboard) navigator.clipboard.writeText(String(bestEdge['EDGE_ID'] || bestEdge[n1Field]));
+                        fetchEdgeDetail(bestEdge);
+                    } else {
+                        setNodeDetail(null);
+                    }
+                }
+            }
+            dragRef.current = null;
+        };
+
+        canvas.addEventListener('wheel', handleWheel, { passive: false });
+        canvas.addEventListener('mousedown', handleMouseDown);
+        canvas.addEventListener('mouseleave', handleMouseLeave);
+        window.addEventListener('mousemove', handleMouseMove);
+        window.addEventListener('mouseup', handleMouseUp);
+        return function() {
+            canvas.removeEventListener('wheel', handleWheel);
+            canvas.removeEventListener('mousedown', handleMouseDown);
+            canvas.removeEventListener('mouseleave', handleMouseLeave);
+            window.removeEventListener('mousemove', handleMouseMove);
+            window.removeEventListener('mouseup', handleMouseUp);
+        };
+    }, [renderCanvas, filteredEdges, graphTableData]);
+
+    useEffect(function() { renderCanvas(); }, [renderCanvas]);
+
+    // Resize
+    useEffect(function() {
+        if (!containerRef.current) return;
+        var debounce = null;
+        var ro = new ResizeObserver(function() { clearTimeout(debounce); debounce = setTimeout(renderCanvas, 100); });
+        ro.observe(containerRef.current);
+        return function() { clearTimeout(debounce); ro.disconnect(); };
+    }, [renderCanvas]);
+
+    var nodeCount = graphTableData ? graphTableData.nodes.total : 0;
+    var edgeCount = graphTableData ? graphTableData.edges.total : 0;
+
+    return (
+        <div style={{ background:'#fff', borderRadius:12, boxShadow:'0 2px 8px rgba(0,0,0,0.04)', padding:10, borderLeft:'6px solid #e17055', display:'flex', flexDirection:'column', flex:1, minHeight:0, overflow:'hidden' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
+                <h2 style={{ margin:0, fontSize:12, fontWeight:700, color:'#e17055', whiteSpace:'nowrap' }}>Map Visualization</h2>
+                <span style={{ fontSize:10, color:'#b2bec3', whiteSpace:'nowrap' }}>{nodeCount.toLocaleString()}n / {edgeCount.toLocaleString()}e (WKT)</span>
+                {hoverCoord && <span style={{ fontSize:10, color:'#dfe6e9', fontFamily:'monospace', whiteSpace:'nowrap', background:'#2d3436', padding:'1px 6px', borderRadius:3 }}>{hoverCoord.lng.toFixed(6)}, {hoverCoord.lat.toFixed(6)}</span>}
+                {viewRef.current.zoom !== 1 && <span style={{ fontSize:10, color:'#b2bec3', whiteSpace:'nowrap' }}>{viewRef.current.zoom.toFixed(1)}x</span>}
+                <span style={{ flex:1 }}/>
+                {onVisualize && <button onClick={onVisualize} disabled={vizLoading} title="Re-fetch graph data" style={{
+                    padding:'4px 10px', border:'none', borderRadius:4, cursor: vizLoading ? 'not-allowed':'pointer',
+                    fontWeight:700, color:'#fff', background: vizLoading ? '#b2bec3':'#e17055', fontSize:10, fontFamily:'inherit', flexShrink:0,
+                }}>{'\u21BB'} Pull+Visualize</button>}
+                {onToggleMaximize && <button onClick={onToggleMaximize} title={maximized ? 'Restore to split view (Esc)' : 'Maximize to full window'} style={{ padding:'4px 10px', fontSize:10, fontWeight:700, color: maximized ? '#fff' : '#fff', background: maximized ? '#d63031' : '#0984e3', border:'none', borderRadius:4, cursor:'pointer', fontFamily:'inherit', flexShrink:0, transition:'0.2s' }}>{maximized ? '\u25A3 Restore' : '\u2922'}</button>}
+            </div>
+            <div ref={containerRef} style={{ flex:1, minHeight:200, borderRadius:8, overflow:'hidden', position:'relative' }}>
+                <canvas ref={canvasRef} style={{ width:'100%', height:'100%', display:'block', cursor:'grab' }}/>
+            </div>
+            {/* Node/edge detail table strip */}
+            {(nodeDetail || nodeDetailLoading) && (
+                <div style={{ flexShrink:0, maxHeight:140, overflowY:'auto', overflowX:'auto', borderTop:'2px solid #e17055', background:'#fff' }}>
+                    {nodeDetailLoading && <div style={{ padding:10, fontSize:13, color:'#b2bec3' }}>Loading...</div>}
+                    {nodeDetail && nodeDetail.error && <div style={{ padding:10, fontSize:13, color:'#d63031' }}>Error: {nodeDetail.error}</div>}
+                    {nodeDetail && !nodeDetail.record && !nodeDetail.error && <div style={{ padding:10, fontSize:13, color:'#b2bec3' }}>No record found for {nodeDetail.nodeId}</div>}
+                    {nodeDetail && nodeDetail.record && (
+                        <table style={{ borderCollapse:'collapse', fontSize:13, whiteSpace:'nowrap' }}>
+                            <thead><tr>
+                                {Object.keys(nodeDetail.record).map(function(key) {
+                                    return <th key={key} style={{ position:'sticky', top:0, background:'#f1f2f6', padding:'6px 12px', textAlign:'left', fontWeight:700, fontSize:12, color:'#636e72', borderBottom:'2px solid #dfe6e9' }}>{key}</th>;
+                                })}
+                            </tr></thead>
+                            <tbody><tr>
+                                {Object.keys(nodeDetail.record).map(function(key) {
+                                    return <td key={key} style={{ padding:'6px 12px', fontSize:13, color:'#2d3436', borderBottom:'1px solid #f1f2f6' }}>{nodeDetail.record[key] == null ? '' : String(nodeDetail.record[key])}</td>;
+                                })}
+                            </tr></tbody>
+                        </table>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
+/* ═══════════════════ CanvasGraph (force-graph Canvas) ═════ */
 function CanvasGraph(props) {
     var graphTableData = props.data, graphName = props.graphName, selectedNodeLabels = props.selectedNodeLabels || [], selectedEdgeLabels = props.selectedEdgeLabels || [], labelData = props.labelData;
-    var credentials = props.credentials, nodeSourceTable = props.nodeSourceTable;
+    var credentials = props.credentials, nodeSourceTable = props.nodeSourceTable, onVisualize = props.onVisualize, vizLoading = props.vizLoading;
+    var bigGraphThreshold = props.bigGraphThreshold || 10000000, onChangeBigGraphThreshold = props.onChangeBigGraphThreshold;
+    var maximized = props.maximized, onToggleMaximize = props.onToggleMaximize;
     var containerRef = useRef(null);
     var graphRef = useRef(null);
     const [nodeDetail, setNodeDetail] = useState(null);
@@ -1946,8 +2407,8 @@ function CanvasGraph(props) {
         } catch(err) { setNodeDetail({ record: null, nodeId: nodeId, error: err.message }); }
         finally { setNodeDetailLoading(false); }
     };
-    const [nodeLimit, setNodeLimit] = useState(500);
-    const [edgeLimit, setEdgeLimit] = useState(2000);
+    var nodeLimit = props.nodeLimit || 500, setNodeLimit = props.onNodeLimitChange || function(){};
+    var edgeLimit = props.edgeLimit || 2000, setEdgeLimit = props.onEdgeLimitChange || function(){};
     const [focusNode, setFocusNode] = useState(null);
     const [hoverNode, setHoverNode] = useState(null);
 
@@ -2107,9 +2568,7 @@ function CanvasGraph(props) {
     // Auto-adjust limits when label selection changes to show all filtered data
     useEffect(function() {
         if (!graphTableData || (selectedNodeLabels.length === 0 && selectedEdgeLabels.length === 0)) {
-            // No filter active — reset to defaults
-            setNodeLimit(500);
-            setEdgeLimit(2000);
+            // No filter active — keep current limits (don't reset, may have been set by session restore)
             return;
         }
         // Compute filtered edge count (same logic as useMemo filter)
@@ -2366,7 +2825,7 @@ function CanvasGraph(props) {
         var label = key.substring(2); // strip "n:" or "e:" prefix
         return { type: isNode ? 'node' : 'edge', label: label.replace(/\|/g, ', '), color: labelColorMap[key] };
     });
-    var sliderStyle = { width: 90, accentColor: "#0984e3", cursor: "pointer" };
+    var sliderStyle = { flex:'1 1 100px', minWidth:50, maxWidth:200, accentColor: "#0984e3", cursor: "pointer" };
     var ctrlStyle = { fontSize: 11, fontWeight: 600, color: "#636e72", marginRight: 4 };
 
     // Early returns (after all hooks)
@@ -2375,54 +2834,43 @@ function CanvasGraph(props) {
 
     return (
         <div style={{ background:"#fff", borderRadius:12, boxShadow:"0 2px 8px rgba(0,0,0,0.04)", padding:16, borderLeft:"6px solid #00cec9", display:"flex", flexDirection:"column", flex:1, minHeight:0, overflow:"hidden" }}>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8, flexWrap:"wrap", gap:8 }}>
-                <div>
-                    <h2 style={{ margin:0, fontSize:14, fontWeight:700, color:"#00cec9" }}>
-                        Graph Visualization {graphName && <span style={{ fontWeight:400, color:"#636e72" }}>{" \u2014 "}{graphName}</span>}
-                    </h2>
-                    <p style={{ margin:"2px 0 0", fontSize:11, color:"#b2bec3" }}>
-                        Rendering {graphData.nodes.length.toLocaleString()} nodes, {graphData.links.length.toLocaleString()} edges
-                        {(graphData.totalAvailableEdges > graphData.links.length || graphData.totalAvailableNodes > graphData.nodes.length) && <span style={{ color:"#fd9644" }}> of {graphData.totalAvailableNodes.toLocaleString()} / {graphData.totalAvailableEdges.toLocaleString()} available</span>}
-                        {(selectedNodeLabels.length > 0 || selectedEdgeLabels.length > 0) && <span style={{ color:"#6c5ce7" }}> — filtering: {selectedNodeLabels.map(function(l){ return "\u25CF " + l; }).concat(selectedEdgeLabels.map(function(l){ return "\u2194 " + l; })).join(", ")}</span>}
-                        {focusNode && <span> — focused: <strong>{focusNode}</strong> <span onClick={function(){ setFocusNode(null); if(graphRef.current) graphRef.current.zoomToFit(400, 40); }} style={{ cursor:"pointer", color:"#d63031", fontSize:10 }}>[reset]</span></span>}
-                    </p>
-                    {graphData.totalAvailableEdges > 20000 && selectedNodeLabels.length === 0 && selectedEdgeLabels.length === 0 && (
-                        <p style={{ margin:"4px 0 0", fontSize:11, color:"#fd9644", fontWeight:600 }}>
-                            Large graph detected ({graphData.totalAvailableEdges.toLocaleString()} edges). Select labels in the charts below to filter, or adjust the sliders to control rendering.
-                        </p>
-                    )}
-                </div>
-                <div style={{ display:"flex", gap:14, alignItems:"center", flexWrap:"wrap" }}>
-                    <label style={ctrlStyle}>Nodes: {nodeLimit.toLocaleString()} <input type="range" min="50" max="1000000" step="50" value={nodeLimit} onChange={function(e){ setNodeLimit(parseInt(e.target.value)); }} style={sliderStyle}/></label>
-                    <label style={ctrlStyle}>Edges: {edgeLimit.toLocaleString()} <input type="range" min="100" max="1000000" step="100" value={edgeLimit} onChange={function(e){ setEdgeLimit(parseInt(e.target.value)); }} style={sliderStyle}/></label>
-                </div>
+            <div style={{ display:"flex", alignItems:"center", marginBottom:4, gap:6 }} title="Select labels in the charts to filter, adjust sliders to control rendering">
+                <h2 style={{ margin:0, fontSize:12, fontWeight:700, color:"#00cec9", whiteSpace:'nowrap', flexShrink:0 }}>Graph Visualization</h2>
+                <span style={{ fontSize:10, color:"#b2bec3", whiteSpace:'nowrap', flexShrink:0 }}>
+                    {graphData.nodes.length.toLocaleString()}n/{graphData.links.length.toLocaleString()}e
+                    {(graphData.totalAvailableEdges > graphData.links.length || graphData.totalAvailableNodes > graphData.nodes.length) && <span style={{ color:"#fd9644" }}> of {graphData.totalAvailableNodes.toLocaleString()}/{graphData.totalAvailableEdges.toLocaleString()}</span>}
+                </span>
+                {(selectedNodeLabels.length > 0 || selectedEdgeLabels.length > 0) && <span style={{ fontSize:10, color:"#6c5ce7", whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', flexShrink:1, minWidth:0 }}>{selectedNodeLabels.map(function(l){ return "\u25CF " + l; }).concat(selectedEdgeLabels.map(function(l){ return "\u2194 " + l; })).join(", ")}</span>}
+                {focusNode && <span style={{ fontSize:10, whiteSpace:'nowrap', flexShrink:0 }}><strong>{focusNode}</strong> <span onClick={function(){ setFocusNode(null); if(graphRef.current) graphRef.current.zoomToFit(400, 40); }} style={{ cursor:"pointer", color:"#d63031" }}>[reset]</span></span>}
+                <label style={Object.assign({}, ctrlStyle, { display:'flex', alignItems:'center', gap:3, flex:'1 1 100px', minWidth:80 })}>N:{nodeLimit.toLocaleString()} <input type="range" min="50" max="1000000" step="50" value={nodeLimit} onChange={function(e){ setNodeLimit(parseInt(e.target.value)); }} style={sliderStyle}/></label>
+                <label style={Object.assign({}, ctrlStyle, { display:'flex', alignItems:'center', gap:3, flex:'1 1 100px', minWidth:80 })}>E:{edgeLimit.toLocaleString()} <input type="range" min="100" max="1000000" step="100" value={edgeLimit} onChange={function(e){ setEdgeLimit(parseInt(e.target.value)); }} style={sliderStyle}/></label>
+                {onChangeBigGraphThreshold && <select value={bigGraphThreshold} onChange={function(e){ onChangeBigGraphThreshold(parseInt(e.target.value)); }} title="Viz limit" style={{ fontSize:9, border:'1px solid #ddd', borderRadius:4, padding:'2px 3px', fontFamily:'inherit', color:'#636e72', flexShrink:0 }}>
+                    <option value={10000}>10K</option><option value={100000}>100K</option><option value={1000000}>1M</option>
+                    <option value={10000000}>10M</option><option value={100000000}>100M</option><option value={0}>{'\u221E'}</option>
+                </select>}
+                {onVisualize && <button onClick={onVisualize} disabled={vizLoading} title="Re-fetch graph data and refresh visualization" style={{
+                    padding:'4px 10px', border:'none', borderRadius:4, cursor: vizLoading ? 'not-allowed':'pointer',
+                    fontWeight:700, color:'#fff', background: vizLoading ? '#b2bec3':'#00cec9', fontSize:10, fontFamily:'inherit', opacity: vizLoading ? 0.5:1, flexShrink:0, whiteSpace:'nowrap',
+                }}>{'\u21BB'} Pull+Visualize</button>}
+                {onToggleMaximize && <button onClick={onToggleMaximize} title={maximized ? 'Restore to split view (Esc)' : 'Maximize to full window'} style={{ padding:'4px 10px', fontSize:10, fontWeight:700, color: maximized ? '#fff' : '#fff', background: maximized ? '#d63031' : '#0984e3', border:'none', borderRadius:4, cursor:'pointer', fontFamily:'inherit', flexShrink:0, transition:'0.2s' }}>{maximized ? '\u25A3 Restore' : '\u2922'}</button>}
             </div>
-            {legendItems.length > 0 && (
-                <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginBottom:8 }}>
-                    {legendItems.map(function(item) {
-                        return <span key={item.label} style={{ display:"inline-flex", alignItems:"center", gap:4, fontSize:10, fontWeight:600, color:"#636e72" }}>
-                            <span style={{ width:8, height:8, borderRadius:"50%", background:item.color, display:"inline-block" }}/> {item.label}
-                        </span>;
-                    })}
-                </div>
-            )}
             <div ref={containerRef} style={{ width:"100%", flex:"1 1 0", minHeight:200, border:"1px solid #1a1a2e", borderRadius:8, overflow:"hidden", cursor:"grab", background:"#0a0a1a" }}/>
             {/* Node detail table strip */}
             {(nodeDetail || nodeDetailLoading) && (
-                <div style={{ flexShrink:0, maxHeight:100, overflowY:'auto', overflowX:'auto', borderTop:'2px solid #6c5ce7', background:'#fff', borderRadius:'0 0 8px 8px' }}>
-                    {nodeDetailLoading && <div style={{ padding:6, fontSize:10, color:'#b2bec3' }}>Loading...</div>}
-                    {nodeDetail && nodeDetail.error && <div style={{ padding:6, fontSize:10, color:'#d63031' }}>Error: {nodeDetail.error}</div>}
-                    {nodeDetail && !nodeDetail.record && !nodeDetail.error && <div style={{ padding:6, fontSize:10, color:'#b2bec3' }}>No record found for {nodeDetail.nodeId}</div>}
+                <div style={{ flexShrink:0, maxHeight:140, overflowY:'auto', overflowX:'auto', borderTop:'2px solid #6c5ce7', background:'#fff', borderRadius:'0 0 8px 8px' }}>
+                    {nodeDetailLoading && <div style={{ padding:10, fontSize:13, color:'#b2bec3' }}>Loading...</div>}
+                    {nodeDetail && nodeDetail.error && <div style={{ padding:10, fontSize:13, color:'#d63031' }}>Error: {nodeDetail.error}</div>}
+                    {nodeDetail && !nodeDetail.record && !nodeDetail.error && <div style={{ padding:10, fontSize:13, color:'#b2bec3' }}>No record found for {nodeDetail.nodeId}</div>}
                     {nodeDetail && nodeDetail.record && (
-                        <table style={{ borderCollapse:'collapse', fontSize:10, whiteSpace:'nowrap' }}>
+                        <table style={{ borderCollapse:'collapse', fontSize:13, whiteSpace:'nowrap' }}>
                             <thead><tr>
                                 {Object.keys(nodeDetail.record).map(function(key) {
-                                    return <th key={key} style={{ position:'sticky', top:0, background:'#f1f2f6', padding:'3px 8px', textAlign:'left', fontWeight:700, fontSize:9, color:'#636e72', borderBottom:'1px solid #dfe6e9' }}>{key}</th>;
+                                    return <th key={key} style={{ position:'sticky', top:0, background:'#f1f2f6', padding:'6px 12px', textAlign:'left', fontWeight:700, fontSize:12, color:'#636e72', borderBottom:'2px solid #dfe6e9' }}>{key}</th>;
                                 })}
                             </tr></thead>
                             <tbody><tr>
                                 {Object.keys(nodeDetail.record).map(function(key) {
-                                    return <td key={key} style={{ padding:'3px 8px', fontSize:10, color:'#2d3436', borderBottom:'1px solid #f1f2f6' }}>{nodeDetail.record[key] == null ? '' : String(nodeDetail.record[key])}</td>;
+                                    return <td key={key} style={{ padding:'6px 12px', fontSize:13, color:'#2d3436', borderBottom:'1px solid #f1f2f6' }}>{nodeDetail.record[key] == null ? '' : String(nodeDetail.record[key])}</td>;
                                 })}
                             </tr></tbody>
                         </table>
@@ -2441,20 +2889,38 @@ function App() {
     const [activeGraph, setActiveGraph]   = useState('');
     const [credentials, setCredentials]   = useState({ url:'', user:'', pass:'' });
     const [labelData, setLabelData]       = useState(null);
+    const [graphCounts, setGraphCounts]   = useState({ nodes:0, edges:0 });
     const [dotString, setDotString]       = useState(null);
     const [showOntology, setShowOntology] = useState(false);
     const [schemaNodeLabelkeys, setSchemaNodeLabelkeys] = useState(false);
     const [schemaEdgeLabelkeys, setSchemaEdgeLabelkeys] = useState(false);
+    const [schemaFullSearch, setSchemaFullSearch] = useState(false);
+    const [vizConfirm, setVizConfirm] = useState(null); // null or {nodes, edges, threshold}
+    const [toast, setToast] = useState(null); // null or {message, type}
+    var showToast = function(msg, type) { setToast({message:msg, type:type||'info'}); setTimeout(function(){ setToast(null); }, 4000); };
     const [pickingEnabled, setPicking]    = useState(true);
     const [lastRefresh, setLastRefresh]   = useState(null);
     const [autoRefresh, setAutoRefresh]   = useState(false);
     const [autoInterval, setAutoInterval] = useState(15);
+    const [bigGraphThreshold, setBigGraphThreshold] = useState(10000000);
     const [graphTable, setGraphTable]     = useState(null);
     const [nodeSourceTable, setNodeSourceTable] = useState(null); // { table, idCol }
+    const [edgeSourceTable, setEdgeSourceTable] = useState(null); // { table, idCol }
     const [graphDirected, setGraphDirected] = useState(true);
     const [graphTableData, setGraphTableData] = useState(null);
     const [graphTableError, setGraphTableError] = useState(null);
     const [showForceGraph, setShowForceGraph] = useState(false);
+    const [maximizedPanel, setMaximizedPanel] = useState(null); // null | 'ontology' | 'canvas'
+
+    // Escape key restores maximized panel
+    useEffect(function() {
+        if (!maximizedPanel) return;
+        var handler = function(e) { if (e.key === 'Escape') setMaximizedPanel(null); };
+        document.addEventListener('keydown', handler);
+        return function() { document.removeEventListener('keydown', handler); };
+    }, [maximizedPanel]);
+    const [canvasNodeLimit, setCanvasNodeLimit] = useState(2000);
+    const [canvasEdgeLimit, setCanvasEdgeLimit] = useState(4000);
     const [hSplit, setHSplit] = useState(0.65);
     const [vSplit, setVSplit] = useState(0.5);
     const [rightVSplit, setRightVSplit] = useState(0.5);
@@ -2471,13 +2937,13 @@ function App() {
     const mainContentRef = useRef(null);
 
     var clearGraphs = useCallback(function() {
-        setGraphs([]); setActiveGraph(''); setLabelData(null); setDotString(null); setShowOntology(false); setAutoRefresh(false); setGraphTable(null); setGraphTableData(null); setGraphTableError(null); setShowForceGraph(false); setSelectedNodeLabels([]); setSelectedEdgeLabels([]); setFetchProgress(null); setQueryPanels([]);
+        setGraphs([]); setActiveGraph(''); setLabelData(null); setDotString(null); setShowOntology(false); setAutoRefresh(false); setGraphTable(null); setGraphTableData(null); setGraphTableError(null); setShowForceGraph(false); setSelectedNodeLabels([]); setSelectedEdgeLabels([]); setFetchProgress(null); setQueryPanels([]); setMaximizedPanel(null); setGraphCounts({ nodes:0, edges:0 }); setNodeSourceTable(null); setEdgeSourceTable(null);
     }, []);
 
     /* Connect & list graphs */
     var handleConnect = async function(creds) {
         setCredentials(creds);
-        setActiveGraph(''); setLabelData(null); setDotString(null); setShowOntology(false);
+        setActiveGraph(''); setLabelData(null); setDotString(null); setShowOntology(false); setMaximizedPanel(null); setGraphTableData(null); setShowForceGraph(false);
         var result = await api.request(creds.url + '/show/graph', { graph_name:'', options:{} }, creds);
         if (result._cancelled) return;
         var outer = safeParse(result.data_str);
@@ -2490,48 +2956,68 @@ function App() {
         if (!graphName || !credentials.url) return;
         var graphChanged = graphName !== activeGraph;
         setActiveGraph(graphName);
-        if (graphChanged) { setShowOntology(false); setDotString(null); }
-        if (graphChanged) { setSelectedNodeLabels([]); setSelectedEdgeLabels([]); }
-        if (graphChanged) setQueryPanels([]);
-        if (graphChanged) setGraphTableData(null);
-        if (graphChanged) setGraphTableError(null);
-        if (graphChanged) setShowForceGraph(false);
-        if (graphChanged) setFetchProgress(null);
-        var result = await api.request(credentials.url + '/show/graph', { graph_name: graphName, options:{} }, credentials);
+        if (graphChanged) {
+            setDotString(null); setShowOntology(false);
+            setLabelData({ total_labeled_nodes:0, total_unlabeled_nodes:0, total_labeled_edges:0, total_unlabeled_edges:0 });
+            setSelectedNodeLabels([]); setSelectedEdgeLabels([]);
+            setQueryPanels([]);
+            setGraphTableData(null); setGraphTableError(null);
+            setShowForceGraph(false); setFetchProgress(null);
+            setGraphCounts({ nodes:0, edges:0 });
+            setMaximizedPanel(null);
+            setNodeSourceTable(null); setEdgeSourceTable(null);
+        }
+        var opts = { export_graph_schema: 'true' };
+        if (!schemaNodeLabelkeys) opts.schema_node_labelkeys = 'false';
+        if (!schemaEdgeLabelkeys) opts.schema_edge_labelkeys = 'false';
+        if (schemaFullSearch) opts.schema_full_search = 'true';
+        var result = await api.request(credentials.url + '/show/graph', { graph_name: graphName, options: opts }, credentials);
         if (result._cancelled) return;
         var outer = safeParse(result.data_str);
         var data = { total_labeled_nodes:0, total_unlabeled_nodes:0, total_labeled_edges:0, total_unlabeled_edges:0 };
         if (outer && outer.info && outer.info.labeljson) data = safeParse(outer.info.labeljson, data);
         setLabelData(data);
+        if (outer && outer.num_nodes && outer.num_edges)
+            setGraphCounts({ nodes: outer.num_nodes[0] || 0, edges: outer.num_edges[0] || 0 });
         setLastRefresh(Date.now());
+        // Extract ontology DOT from show/graph response
+        if (outer && outer.info && outer.info.dot) {
+            setDotString(outer.info.dot);
+            setShowOntology(true);
+        }
         // Extract graph_table from original_request statement
-        // original_request can be at top level of response OR inside data_str
         var origReq = result.original_request || (outer && outer.original_request);
         var gt = extractGraphTable(origReq, graphName);
         setGraphTable(gt);
         var nst = extractNodeSourceTable(origReq, graphName);
         setNodeSourceTable(nst);
+        var est = extractEdgeSourceTable(origReq, graphName);
+        setEdgeSourceTable(est);
         // Extract directed flag from show/graph response
         var dirArr = outer && outer.directed;
         setGraphDirected(Array.isArray(dirArr) ? dirArr[0] !== false : true);
-        if (graphChanged) setGraphTableData(null);
-        if (graphChanged) setGraphTableError(null);
-        if (graphChanged) setShowForceGraph(false);
         return gt;
-    }, [credentials, api, activeGraph]);
+    }, [credentials, api, activeGraph, schemaNodeLabelkeys, schemaEdgeLabelkeys, schemaFullSearch]);
 
-    /* Load ontology (expensive call) */
-    var loadOntology = useCallback(async function() {
+    /* Reload ontology with current schema options (called when NKey/EKey/FullSearch toggles change) */
+    var reloadOntology = useCallback(async function() {
         if (!activeGraph || !credentials.url) return;
-        var opts = {};
+        var opts = { export_graph_schema: 'true' };
         if (!schemaNodeLabelkeys) opts.schema_node_labelkeys = 'false';
         if (!schemaEdgeLabelkeys) opts.schema_edge_labelkeys = 'false';
-        var result = await api.request(credentials.url + '/modify/graph', { graph_name: activeGraph, options: opts }, credentials);
+        if (schemaFullSearch) opts.schema_full_search = 'true';
+        var result = await api.request(credentials.url + '/show/graph', { graph_name: activeGraph, options: opts }, credentials);
         if (result._cancelled) return;
         var outer = safeParse(result.data_str);
         if (outer && outer.info && outer.info.dot) { setDotString(outer.info.dot); setShowOntology(true); }
-    }, [activeGraph, credentials, api, schemaNodeLabelkeys, schemaEdgeLabelkeys]);
+    }, [activeGraph, credentials, api, schemaNodeLabelkeys, schemaEdgeLabelkeys, schemaFullSearch]);
 
+    // Auto-reload ontology when schema toggles change (skip initial mount)
+    var schemaTogglesInit = useRef(true);
+    useEffect(function() {
+        if (schemaTogglesInit.current) { schemaTogglesInit.current = false; return; }
+        if (activeGraph && showOntology) reloadOntology();
+    }, [schemaNodeLabelkeys, schemaEdgeLabelkeys, schemaFullSearch]);
 
     /* Fetch graph table data (edges + nodes) using columnar /get/records/bycolumn for speed */
     const [fetchProgress, setFetchProgress] = useState(null);
@@ -2640,7 +3126,8 @@ function App() {
                 edgeTable: edgeTable,
                 nodeTable: nodeTable
             });
-            setFetchProgress(null);
+            setFetchProgress(function(p) { return Object.assign({}, p, { nodesDone: p.nodesTotal, edgesDone: p.edgesTotal }); });
+            setTimeout(function() { setFetchProgress(null); }, 500);
         } catch(err) {
             setGraphTableError(err.message);
             setFetchProgress(null);
@@ -2648,20 +3135,21 @@ function App() {
     }, [graphTable, credentials, api]);
 
     /* Fetch graph data via /get/graph/entities (preferred over fetchGraphTableData) */
-    var fetchGraphEntities = useCallback(async function() {
-        if (!activeGraph || !credentials.url) return;
+    var fetchGraphEntities = useCallback(async function(overrideGraph) {
+        var graphName = overrideGraph || activeGraph;
+        if (!graphName || !credentials.url) return;
         setGraphTableError(null);
         setFetchProgress({ edgesDone: 0, edgesTotal: '?', nodesDone: 0, nodesTotal: '?' });
         try {
             var BATCH = 100000;
-            var BATCH_THRESHOLD = 500000;
+            var BATCH_THRESHOLD = 300000;
 
             // Helper: fetch entities — batch only for large graphs (>500K entities)
             async function fetchEntities(entityType, onProgress) {
                 // Single fetch with limit=-1
                 if (onProgress) onProgress(0, '?');
                 var res = await api.request(credentials.url + '/get/graph/entities', {
-                    graph_name: activeGraph, offset: 0, limit: -1,
+                    graph_name: graphName, offset: 0, limit: -1,
                     options: { entity_type: entityType }
                 }, credentials);
                 if (res._cancelled) return null;
@@ -2679,7 +3167,7 @@ function App() {
             // Batched version for large graphs
             async function fetchEntitiesBatched(entityType, onProgress) {
                 var probeRes = await api.request(credentials.url + '/get/graph/entities', {
-                    graph_name: activeGraph, offset: 0, limit: 0,
+                    graph_name: graphName, offset: 0, limit: 0,
                     options: { entity_type: entityType }
                 }, credentials);
                 if (probeRes._cancelled) return null;
@@ -2696,7 +3184,7 @@ function App() {
                 while (offset < total) {
                     var batchLimit = Math.min(BATCH, total - offset);
                     var res = await api.request(credentials.url + '/get/graph/entities', {
-                        graph_name: activeGraph, offset: offset, limit: batchLimit,
+                        graph_name: graphName, offset: offset, limit: batchLimit,
                         options: { entity_type: entityType }
                     }, credentials);
                     if (res._cancelled) return null;
@@ -2778,10 +3266,12 @@ function App() {
             setGraphTableData({
                 edges: { records: edgeRecords, headers: edgeHeaders, total: edgeResult.total },
                 nodes: { records: nodeRecords, headers: nodeHeaders, total: nodeResult.total },
-                edgeTable: activeGraph + ' (entities)',
-                nodeTable: activeGraph + ' (entities/nodes)',
+                edgeTable: graphName + ' (entities)',
+                nodeTable: graphName + ' (entities/nodes)',
+                identifierType: nodeResult.identifierType || edgeResult.identifierType || 'string',
             });
-            setFetchProgress(null);
+            setFetchProgress(function(p) { return Object.assign({}, p, { nodesDone: p.nodesTotal, edgesDone: p.edgesTotal }); });
+            setTimeout(function() { setFetchProgress(null); }, 500);
         } catch(err) {
             // Re-throw so the wrapper can catch and fall back
             setFetchProgress(null);
@@ -2790,9 +3280,9 @@ function App() {
     }, [activeGraph, credentials, api]);
 
     /* Fetch graph data: try /get/graph/entities first, fall back to fetchGraphTableData */
-    var fetchGraphData = useCallback(async function() {
+    var fetchGraphData = useCallback(async function(overrideGraph) {
         try {
-            await fetchGraphEntities();
+            await fetchGraphEntities(overrideGraph);
         } catch(err) {
             // /get/graph/entities not available — fall back to table-based fetch
             console.log('get/graph/entities not available, falling back to table fetch:', err.message);
@@ -2869,6 +3359,8 @@ function App() {
                 ontologyDot: showOntology && dotString ? dotString : null,
                 dataFetched: !!graphTableData,
                 showForceGraph: showForceGraph,
+                canvasNodeLimit: canvasNodeLimit,
+                canvasEdgeLimit: canvasEdgeLimit,
             },
             queries: queryPanels.map(function(panel) {
                 var s = panel.stateRef && panel.stateRef.current;
@@ -2883,10 +3375,12 @@ function App() {
         var blob = new Blob([JSON.stringify(session, null, 2)], { type: 'application/json' });
         var a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        a.download = (activeGraph || 'session').replace(/\./g, '_') + '_session.json';
+        var now = new Date();
+        var ts = String(now.getFullYear()) + String(now.getMonth()+1).padStart(2,'0') + String(now.getDate()).padStart(2,'0') + '_' + String(now.getHours()).padStart(2,'0') + String(now.getMinutes()).padStart(2,'0');
+        a.download = (activeGraph || 'session').replace(/\./g, '_') + '_session_' + ts + '.json';
         a.click();
         URL.revokeObjectURL(a.href);
-        alert('Session saved: ' + a.download);
+        showToast('\u2705 Session saved: ' + a.download, 'success');
     };
 
     var loadSession = function(file) {
@@ -2894,13 +3388,16 @@ function App() {
         reader.onload = function(e) {
             try {
                 var session = JSON.parse(e.target.result);
-                if (!session || session.version !== 1) { alert('Invalid session file.'); return; }
+                if (!session || session.version !== 1) { showToast('274C Invalid session file.', 'error'); return; }
 
                 // Warn if session was saved from a different server
                 var sessionServer = session.connection && session.connection.url;
                 if (sessionServer && credentials.url && sessionServer !== credentials.url) {
-                    alert('Note: This session was saved from server "' + sessionServer + '"\nbut you are connected to "' + credentials.url + '".\n\nWill attempt to load the graph on the current server.');
+                    showToast('\u26A0\uFE0F Session from "' + sessionServer + '" — loading on current server "' + credentials.url + '"', 'warn');
                 }
+
+                // Clear existing canvas visualization before restoring
+                setGraphTableData(null); setShowForceGraph(false);
 
                 // Use the active connection (don't reconnect to session's server)
                 var restoreGraph = function() {
@@ -2909,7 +3406,7 @@ function App() {
 
                     // Check if graph exists on current server
                     if (graphs.indexOf(graphName) === -1) {
-                        alert('Graph "' + graphName + '" was not found on the current server.\n\nAvailable graphs: ' + (graphs.length > 0 ? graphs.join(', ') : 'none'));
+                        showToast('\u274C Graph "' + graphName + '" not found. Available: ' + (graphs.length > 0 ? graphs.join(', ') : 'none'), 'error');
                         // Still restore query panels (SQL text may be useful)
                         if (session.queries && session.queries.length > 0) {
                             var panels = session.queries.map(function(q) {
@@ -2929,8 +3426,10 @@ function App() {
                         if (session.graph.ontologyDot) { setDotString(session.graph.ontologyDot); setShowOntology(true); }
                         // Restore data fetch + visualization
                         if (session.graph.dataFetched) {
-                            fetchGraphData().then(function() {
+                            fetchGraphData(graphName).then(function() {
                                 if (session.graph.showForceGraph) setShowForceGraph(true);
+                                if (session.graph.canvasNodeLimit) setCanvasNodeLimit(session.graph.canvasNodeLimit);
+                                if (session.graph.canvasEdgeLimit) setCanvasEdgeLimit(session.graph.canvasEdgeLimit);
                             });
                         }
                         // Restore query panels
@@ -2951,18 +3450,36 @@ function App() {
                 } else {
                     restoreGraph();
                 }
-            } catch(err) { alert('Error loading session: ' + err.message); }
+            } catch(err) { showToast('274C Error loading session: ' + err.message, 'error'); }
         };
         reader.readAsText(file);
+    };
+
+    // Session change confirmation — stores pending action, shows banner
+    const [sessionChangePrompt, setSessionChangePrompt] = useState(null); // null or { action: function }
+
+    var confirmSessionChange = function(action) {
+        if (!activeGraph || !labelData) { action(); return; }
+        setSessionChangePrompt({ action: action });
     };
 
     var hasDashboard = !!labelData;
 
     return (
         <div style={{ display:'flex', height:'100vh', overflow:'hidden' }}>
-            <Sidebar onConnect={handleConnect} onClearGraphs={clearGraphs} graphs={graphs} activeGraph={activeGraph} onSelectGraph={loadGraphDetails} loading={api.loading} onLoad={loadSession} onSave={saveSession} autoRunQueries={autoRunQueries} onToggleAutoRun={function(){ setAutoRunQueries(function(p){ return !p; }); }} />
+            <Sidebar onConnect={function(creds){ confirmSessionChange(function(){ handleConnect(creds); }); }} onClearGraphs={function(){ confirmSessionChange(function(){ clearGraphs(); }); }} graphs={graphs} activeGraph={activeGraph} onSelectGraph={function(name){ if (name === activeGraph) { loadGraphDetails(name); return; } confirmSessionChange(function(){ loadGraphDetails(name); }); }} loading={api.loading} onLoad={function(file){ confirmSessionChange(function(){ loadSession(file); }); }} onSave={saveSession} autoRunQueries={autoRunQueries} onToggleAutoRun={function(){ setAutoRunQueries(function(p){ return !p; }); }} />
 
             <div ref={mainContentRef} style={{ flexGrow:1, overflow:'hidden', padding:16, display:'flex', flexDirection:'column', height:'100vh' }}>
+
+                {/* Session change confirmation banner */}
+                {sessionChangePrompt && (
+                    <div style={{ display:'flex', alignItems:'center', gap:14, padding:'12px 20px', background:'#d63031', borderRadius:8, margin:'0 0 8px', fontSize:15, fontWeight:600, color:'#fff', boxShadow:'0 2px 8px rgba(0,0,0,0.08)' }}>
+                        <span>{'\u26A0\uFE0F'} Active session for <strong>{activeGraph}</strong> will be lost.</span>
+                        <button onClick={function(){ saveSession(); var action = sessionChangePrompt.action; setSessionChangePrompt(null); action(); }} style={{ padding:'8px 18px', border:'none', borderRadius:5, cursor:'pointer', fontWeight:700, color:'#fff', background:'#6c5ce7', fontSize:13, fontFamily:'inherit' }}>Save &amp; Continue</button>
+                        <button onClick={function(){ var action = sessionChangePrompt.action; setSessionChangePrompt(null); action(); }} style={{ padding:'8px 18px', border:'none', borderRadius:5, cursor:'pointer', fontWeight:700, color:'#fff', background:'#00b894', fontSize:13, fontFamily:'inherit' }}>Continue</button>
+                        <button onClick={function(){ setSessionChangePrompt(null); }} style={{ padding:'8px 18px', border:'none', borderRadius:5, cursor:'pointer', fontWeight:700, color:'#636e72', background:'#dfe6e9', fontSize:13, fontFamily:'inherit' }}>Cancel</button>
+                    </div>
+                )}
 
                 {!hasDashboard && <WelcomeScreen />}
 
@@ -2970,37 +3487,93 @@ function App() {
                     <div style={{ animation:'fadeIn 0.4s ease-out', display:'flex', flexDirection:'column', flex:1, minHeight:0 }}>
                         <DashboardHeader
                             graphName={activeGraph} server={credentials.url} lastRefresh={lastRefresh}
+                            nodeCount={graphCounts.nodes} edgeCount={graphCounts.edges} hSplit={hSplit}
                             pickingEnabled={pickingEnabled} onTogglePicking={function(){ setPicking(function(p){ return !p; }); }}
-                            onRefresh={function(){ loadGraphDetails(activeGraph); }} onOntology={loadOntology} onQuery={function(){ queryIdCounter.current++; setQueryPanels(function(prev){ return prev.concat([{ id: queryIdCounter.current, initialSql: '', initialTab: null, stateRef: { current: null } }]); }); }}
-                            schemaNodeLabelkeys={schemaNodeLabelkeys} onToggleSchemaNodeLabelkeys={function(){ setSchemaNodeLabelkeys(function(p){ return !p; }); }}
-                            schemaEdgeLabelkeys={schemaEdgeLabelkeys} onToggleSchemaEdgeLabelkeys={function(){ setSchemaEdgeLabelkeys(function(p){ return !p; }); }}
-                            loading={api.loading}
+                            onRefresh={function(){ loadGraphDetails(activeGraph); }}
+                            onQuery={function(){ queryIdCounter.current++; setQueryPanels(function(prev){ return prev.concat([{ id: queryIdCounter.current, initialSql: '', initialTab: null, stateRef: { current: null } }]); }); }}
+                            onVisualize={function(){ var n=graphCounts.nodes||0, e=graphCounts.edges||0; if (bigGraphThreshold > 0 && (n > bigGraphThreshold || e > bigGraphThreshold)) { setVizConfirm({nodes:n, edges:e, threshold:bigGraphThreshold}); return; } fetchGraphData(); setShowForceGraph(true); }}
+                            bigGraphThreshold={bigGraphThreshold} onChangeBigGraphThreshold={setBigGraphThreshold}
+                            loading={api.loading} fetchProgress={fetchProgress}
                             autoRefresh={autoRefresh} autoInterval={autoInterval}
                             onToggleAutoRefresh={function(){ setAutoRefresh(function(p){ return !p; }); }}
                             onChangeInterval={function(val){ setAutoInterval(val); }}
+                            minimizedPanels={queryPanels.filter(function(p){ return p.minimized; }).map(function(p, i) {
+                                var s = p.stateRef && p.stateRef.current;
+                                var label = 'Q' + (queryPanels.indexOf(p) + 1);
+                                return { id: p.id, label: label };
+                            })}
+                            onRestorePanel={function(id){ setQueryPanels(function(prev){ return prev.map(function(p){ return p.id === id ? Object.assign({}, p, { minimized: false, autoRun: true }) : p; }); }); }}
                         />
 
-                        <div style={{ position:"relative", flex:1, minHeight:0, display:'flex', flexDirection:'column' }}>
-                        <SplitPane direction="horizontal" split={hSplit} onSplitChange={setHSplit} minA={300} minB={250}>
-                            {/* LEFT: Graph controls + ontology + visualization */}
-                            <div style={{ display:'flex', flexDirection:'column', gap:8, height:'100%', overflow:'auto', paddingRight:4 }}>
-                                <GraphTablePreview graphTable={graphTable || activeGraph} data={graphTableData} error={graphTableError} onFetch={fetchGraphData} loading={api.loading || !!fetchProgress} fetchProgress={fetchProgress} onVisualize={function(){ setShowForceGraph(function(p){ return !p; }); }} showingGraph={showForceGraph} />
+                        {toast && (
+                            <div style={{ position:'fixed', top:12, right:12, zIndex:9999, padding:'10px 18px', borderRadius:8, fontSize:13, fontWeight:600, color:'#2d3436', boxShadow:'0 4px 16px rgba(0,0,0,0.15)', animation:'fadeIn 0.2s', maxWidth:500,
+                                background: toast.type === 'error' ? '#fab1a0' : toast.type === 'warn' ? '#ffeaa7' : toast.type === 'success' ? '#55efc4' : '#dfe6e9'
+                            }}>{toast.message}</div>
+                        )}
 
-                                {(showOntology && dotString) || (showForceGraph && graphTableData) ? (
-                                    <SplitPane direction="vertical" split={vSplit} onSplitChange={setVSplit} minA={showOntology && dotString ? 80 : 0} minB={showForceGraph && graphTableData ? 150 : 0}>
-                                        {showOntology && dotString ? (
-                                            <OntologyViewer dotString={dotString} pickingEnabled={pickingEnabled} onPickLabel={handleOntologyPick} apiRef={ontologyApiRef} />
-                                        ) : <div />}
-                                        {showForceGraph && graphTableData ? (
-                                            <CanvasGraph data={graphTableData} graphName={activeGraph} selectedNodeLabels={selectedNodeLabels} selectedEdgeLabels={selectedEdgeLabels} labelData={labelData} credentials={credentials} nodeSourceTable={nodeSourceTable} />
-                                        ) : <div />}
-                                    </SplitPane>
-                                ) : null}
+                        {vizConfirm && (
+                            <div style={{ display:'flex', alignItems:'center', gap:14, padding:'12px 20px', background:'#d63031', borderRadius:8, margin:'0 0 6px', fontSize:15, fontWeight:600, color:'#fff' }}>
+                                <span>{'\u26A0\uFE0F'} Large graph: {vizConfirm.nodes.toLocaleString()} nodes, {vizConfirm.edges.toLocaleString()} edges (limit: {vizConfirm.threshold.toLocaleString()}). Visualizing may be slow.</span>
+                                <button onClick={function(){ setVizConfirm(null); fetchGraphData(); setShowForceGraph(true); }} style={{ padding:'8px 18px', border:'none', borderRadius:5, cursor:'pointer', fontWeight:700, color:'#fff', background:'#00b894', fontSize:13, fontFamily:'inherit' }}>Continue</button>
+                                <button onClick={function(){ setVizConfirm(null); }} style={{ padding:'8px 18px', border:'none', borderRadius:5, cursor:'pointer', fontWeight:700, color:'#636e72', background:'#dfe6e9', fontSize:13, fontFamily:'inherit' }}>Cancel</button>
+                            </div>
+                        )}
+
+                        <div style={{ position:"relative", flex:1, minHeight:0, display:'flex', flexDirection:'column' }}>
+
+                        {/* Maximized panels rendered below as fixed overlays */}
+
+                        {/* Normal split layout */}
+                        {!maximizedPanel && <React.Fragment><SplitPane direction="horizontal" split={hSplit} onSplitChange={setHSplit} minA={300} minB={250}>
+                            {/* LEFT: Ontology + Canvas visualization (always visible) */}
+                            <div style={{ display:'flex', flexDirection:'column', gap:8, height:'100%', overflow:'auto', paddingRight:4 }}>
+                                <SplitPane direction="vertical" split={vSplit} onSplitChange={setVSplit} minA={80} minB={150}>
+                                    <OntologyViewer dotString={dotString} pickingEnabled={pickingEnabled} onPickLabel={handleOntologyPick} apiRef={ontologyApiRef}
+                                        schemaFullSearch={schemaFullSearch} onToggleSchemaFullSearch={function(){ setSchemaFullSearch(function(p){ return !p; }); }}
+                                        schemaNodeLabelkeys={schemaNodeLabelkeys} onToggleSchemaNodeLabelkeys={function(){ setSchemaNodeLabelkeys(function(p){ return !p; }); }}
+                                        schemaEdgeLabelkeys={schemaEdgeLabelkeys} onToggleSchemaEdgeLabelkeys={function(){ setSchemaEdgeLabelkeys(function(p){ return !p; }); }}
+                                        onRefresh={function(){ loadGraphDetails(activeGraph); }}
+                                        loading={api.loading}
+                                        onToggleMaximize={function(){ setMaximizedPanel('ontology'); }}
+                                    />
+                                    {graphTableData && graphTableData.identifierType === 'wkt' ? (
+                                        <MapView data={graphTableData} labelData={labelData} selectedNodeLabels={selectedNodeLabels} selectedEdgeLabels={selectedEdgeLabels} credentials={credentials} nodeSourceTable={nodeSourceTable} edgeSourceTable={edgeSourceTable}
+                                            onVisualize={function(){ fetchGraphData(); setShowForceGraph(true); }}
+                                            vizLoading={api.loading || !!fetchProgress}
+                                            onToggleMaximize={function(){ setMaximizedPanel('canvas'); }}
+                                        />
+                                    ) : graphTableData ? (
+                                        <CanvasGraph data={graphTableData} graphName={activeGraph} selectedNodeLabels={selectedNodeLabels} selectedEdgeLabels={selectedEdgeLabels} labelData={labelData} credentials={credentials} nodeSourceTable={nodeSourceTable} nodeLimit={canvasNodeLimit} onNodeLimitChange={setCanvasNodeLimit} edgeLimit={canvasEdgeLimit} onEdgeLimitChange={setCanvasEdgeLimit}
+                                            onVisualize={function(){ var n=graphCounts.nodes||0, e=graphCounts.edges||0; if (bigGraphThreshold > 0 && (n > bigGraphThreshold || e > bigGraphThreshold)) { setVizConfirm({nodes:n, edges:e, threshold:bigGraphThreshold}); return; } fetchGraphData(); setShowForceGraph(true); }}
+                                            vizLoading={api.loading || !!fetchProgress}
+                                            bigGraphThreshold={bigGraphThreshold} onChangeBigGraphThreshold={setBigGraphThreshold}
+                                            onToggleMaximize={function(){ setMaximizedPanel('canvas'); }}
+                                        />
+                                    ) : (
+                                        <div style={{ background:'#0a0a1a', borderRadius:8, flex:1, display:'flex', flexDirection:'column', minHeight:150 }}>
+                                            <div style={{ display:'flex', alignItems:'center', gap:6, padding:'8px 10px', flexShrink:0 }}>
+                                                <span style={{ fontSize:12, fontWeight:700, color:'#dfe6e9' }}>Graph Visualization</span>
+                                                <span style={{ flex:1 }}/>
+                                                <select value={bigGraphThreshold} onChange={function(e){ setBigGraphThreshold(parseInt(e.target.value)); }} title="Viz limit" style={{ fontSize:9, border:'1px solid #555', borderRadius:4, padding:'2px 3px', fontFamily:'inherit', color:'#dfe6e9', background:'#2d3436' }}>
+                                                    <option value={10000}>10K</option><option value={100000}>100K</option><option value={1000000}>1M</option>
+                                                    <option value={10000000}>10M</option><option value={100000000}>100M</option><option value={0}>{'\u221E'}</option>
+                                                </select>
+                                                <button onClick={function(){ var n=graphCounts.nodes||0, e=graphCounts.edges||0; if (bigGraphThreshold > 0 && (n > bigGraphThreshold || e > bigGraphThreshold)) { setVizConfirm({nodes:n, edges:e, threshold:bigGraphThreshold}); return; } fetchGraphData(); setShowForceGraph(true); }} disabled={api.loading} title="Fetch graph data and visualize" style={{
+                                                    padding:'4px 12px', border:'none', borderRadius:4, cursor: api.loading ? 'not-allowed':'pointer',
+                                                    fontWeight:700, color:'#fff', background:'#00cec9', fontSize:11, fontFamily:'inherit', opacity: api.loading ? 0.5:1,
+                                                }}>{'\u21BB'} Pull+Visualize</button>
+                                            </div>
+                                            <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center' }}>
+                                                <span style={{ color:'#636e72', fontSize:12 }}>Click Pull+Visualize to load graph data</span>
+                                            </div>
+                                        </div>
+                                    )}
+                                </SplitPane>
                             </div>
 
                             {/* RIGHT: Label charts */}
                             <div style={{ display:'flex', flexDirection:'column', gap:8, height:'100%', overflow:'hidden', paddingLeft:4 }}>
-                                <div style={{ flexShrink:0 }}><SummaryCards data={labelData} server={credentials.url} /></div>
+                                <div style={{ flexShrink:0 }}><SummaryCards data={labelData} /></div>
                                 <SplitPane direction="vertical" split={rightVSplit} onSplitChange={setRightVSplit} minA={150} minB={150}>
                                     <LabelChart title="Node Labels" items={labelData.node_labels} total={labelData.total_labeled_nodes||0} pickingEnabled={pickingEnabled} onHoverLabels={handleChartHoverLabels} selectedLabels={selectedNodeLabels} onToggleLabel={function(label){ setSelectedNodeLabels(function(prev){ return prev.indexOf(label) !== -1 ? prev.filter(function(l){ return l !== label; }) : prev.concat([label]); }); }} />
                                     <LabelChart title="Edge Labels" items={labelData.edge_labels} total={labelData.total_labeled_edges||0} pickingEnabled={pickingEnabled} onHoverLabels={handleChartHoverLabels} selectedLabels={selectedEdgeLabels} onToggleLabel={function(label){ setSelectedEdgeLabels(function(prev){ return prev.indexOf(label) !== -1 ? prev.filter(function(l){ return l !== label; }) : prev.concat([label]); }); }} />
@@ -3016,14 +3589,60 @@ function App() {
                                 var total = mainContentRef.current ? mainContentRef.current.clientHeight - 100 : 600;
                                 return Math.max(0.1, Math.min(0.9, prev + dy / total));
                             });
-                        }} />
+                        }} /></React.Fragment>}
                         </div>
                     </div>
                 )}
             </div>
-            {queryPanels.map(function(panel, idx) {
-                return <QueryPanel key={panel.id} panelIndex={idx} credentials={credentials} labelData={labelData} dotString={dotString} activeGraph={activeGraph} graphDirected={graphDirected} nodeSourceTable={nodeSourceTable} initialSql={panel.initialSql} initialTab={panel.initialTab} initialHelper={panel.initialHelper} stateRef={panel.stateRef} autoRun={panel.autoRun} onClose={function(){ setQueryPanels(function(prev){ return prev.filter(function(p){ return p.id !== panel.id; }); }); }} />;
+            {queryPanels.filter(function(p){ return !p.minimized; }).map(function(panel, idx) {
+                return <QueryPanel key={panel.id} panelIndex={idx} credentials={credentials} labelData={labelData} dotString={dotString} activeGraph={activeGraph} graphDirected={graphDirected} nodeSourceTable={nodeSourceTable} initialSql={panel.initialSql} initialTab={panel.initialTab} initialHelper={panel.initialHelper} stateRef={panel.stateRef} autoRun={panel.autoRun}
+                    onMinimize={function(){
+                        // Save current state before minimizing so it can be restored
+                        var s = panel.stateRef && panel.stateRef.current;
+                        setQueryPanels(function(prev){ return prev.map(function(p){
+                            if (p.id !== panel.id) return p;
+                            var updated = Object.assign({}, p, { minimized: true });
+                            if (s) {
+                                updated.initialSql = s.sql || p.initialSql;
+                                updated.initialTab = s.activeTab != null ? s.activeTab : p.initialTab;
+                                updated.initialHelper = s.helper || p.initialHelper;
+                            }
+                            return updated;
+                        }); });
+                    }}
+                    onClose={function(){ setQueryPanels(function(prev){ return prev.filter(function(p){ return p.id !== panel.id; }); }); }} />;
             })}
+            {/* Maximized panel overlays — full viewport */}
+            {maximizedPanel === 'ontology' && (
+                <div style={{ position:'fixed', top:0, left:0, width:'100vw', height:'100vh', zIndex:999, display:'flex', flexDirection:'column', background:'#fff' }}>
+                    <OntologyViewer dotString={dotString} pickingEnabled={pickingEnabled} onPickLabel={handleOntologyPick} apiRef={ontologyApiRef}
+                        schemaFullSearch={schemaFullSearch} onToggleSchemaFullSearch={function(){ setSchemaFullSearch(function(p){ return !p; }); }}
+                        schemaNodeLabelkeys={schemaNodeLabelkeys} onToggleSchemaNodeLabelkeys={function(){ setSchemaNodeLabelkeys(function(p){ return !p; }); }}
+                        schemaEdgeLabelkeys={schemaEdgeLabelkeys} onToggleSchemaEdgeLabelkeys={function(){ setSchemaEdgeLabelkeys(function(p){ return !p; }); }}
+                        onRefresh={function(){ loadGraphDetails(activeGraph); }}
+                        loading={api.loading}
+                        maximized={true} onToggleMaximize={function(){ setMaximizedPanel(null); }}
+                    />
+                </div>
+            )}
+            {maximizedPanel === 'canvas' && graphTableData && (
+                <div style={{ position:'fixed', top:0, left:0, width:'100vw', height:'100vh', zIndex:999, display:'flex', flexDirection:'column', background:'#fff' }}>
+                    {graphTableData.identifierType === 'wkt' ? (
+                        <MapView data={graphTableData} labelData={labelData} selectedNodeLabels={selectedNodeLabels} selectedEdgeLabels={selectedEdgeLabels} credentials={credentials} nodeSourceTable={nodeSourceTable} edgeSourceTable={edgeSourceTable}
+                            onVisualize={function(){ fetchGraphData(); setShowForceGraph(true); }}
+                            vizLoading={api.loading || !!fetchProgress}
+                            maximized={true} onToggleMaximize={function(){ setMaximizedPanel(null); }}
+                        />
+                    ) : (
+                        <CanvasGraph data={graphTableData} graphName={activeGraph} selectedNodeLabels={selectedNodeLabels} selectedEdgeLabels={selectedEdgeLabels} labelData={labelData} credentials={credentials} nodeSourceTable={nodeSourceTable} nodeLimit={canvasNodeLimit} onNodeLimitChange={setCanvasNodeLimit} edgeLimit={canvasEdgeLimit} onEdgeLimitChange={setCanvasEdgeLimit}
+                            onVisualize={function(){ var n=graphCounts.nodes||0, e=graphCounts.edges||0; if (bigGraphThreshold > 0 && (n > bigGraphThreshold || e > bigGraphThreshold)) { setVizConfirm({nodes:n, edges:e, threshold:bigGraphThreshold}); return; } fetchGraphData(); setShowForceGraph(true); }}
+                            vizLoading={api.loading || !!fetchProgress}
+                            bigGraphThreshold={bigGraphThreshold} onChangeBigGraphThreshold={setBigGraphThreshold}
+                            maximized={true} onToggleMaximize={function(){ setMaximizedPanel(null); }}
+                        />
+                    )}
+                </div>
+            )}
         </div>
     );
 }

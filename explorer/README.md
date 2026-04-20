@@ -13,11 +13,23 @@ No build step, no dependencies to install, no server to run.
 
 ## Screenshots
 
-![Graph Explorer — query helper and visualization](screenshots/KineticaGraphExplorer1.png)
-*Query helper for automatic cypher queries from dynamic ontology and complex SQL query executions.*
+![Graph Explorer — query helper and visualization](screenshots/explorer_query_helper.png)
+*Query Helper generates GQL from ontology labels. Multiple query panels with path visualization, force-graph canvas, and node detail lookup.*
 
-![Graph Explorer — ontology and canvas visualization](screenshots/KineticaGraphExplorer11.png)
-*Full explorer view: ontology structure, GQL query path visualization, force-graph canvas, and label distribution charts.*
+![Graph Explorer — session loss protection](screenshots/explorer_session_banner.png)
+*Session loss protection banner when switching graphs — Save & Continue, Continue, or Cancel. Ontology and canvas visualization with label charts.*
+
+![Graph Explorer — banking graph with node detail](screenshots/explorer_banking_graph.png)
+*Banking graph: ontology structure, colorful canvas visualization with label filtering, node detail strip from source table, and multi-label doughnut charts.*
+
+![Graph Explorer — maximized canvas visualization](screenshots/explorer_maximized_canvas.png)
+*Maximized canvas view: GQL query path visualization with Query Helper, node detail lookup from original source table.*
+
+![Graph Explorer — banking graph full dashboard](screenshots/explorer_banking_full.png)
+*Full dashboard: banking graph with 622K nodes / 845K edges — ontology, canvas visualization (50K node/edge limits), label distribution charts with 16 node labels and 15 edge labels.*
+
+![Graph Explorer — MapView for WKT geospatial graphs](screenshots/explorer_mapview_geo.png)
+*MapView for WKT geospatial graphs: DC road network rendered as canvas lines with zoom/pan, edge picking from original source table, HiDPI rendering.*
 
 ## Features
 
@@ -26,15 +38,18 @@ No build step, no dependencies to install, no server to run.
 - **Summary Cards** — At-a-glance counts of labeled/unlabeled nodes and edges, with number of distinct labels shown.
 
 ### Ontology Visualization
-- Click **Ontology** to render the graph's structural schema as a Graphviz DOT diagram.
-- **NKey / EKey** toggles (default OFF) — control whether the ontology shows actual label names (`mentions`, `document`) or schema-grouped types (`RelationType`, `EntityType`). Re-click Ontology after toggling.
+- Ontology auto-loads on graph selection — renders the graph's structural schema as a Graphviz DOT diagram.
+- **Full / NKey / EKey** toggles in the ontology panel header — Full enables exhaustive edge search for accurate percentages; NKey/EKey control schema label grouping. Toggles auto-reload the ontology.
 - Pan, zoom, and click on nodes/edges in the ontology to highlight matching labels in the charts.
+- **`⤢` Maximize** button for full-viewport ontology view (Esc or `▣ Restore` to return).
 
-### Graph Table Data
-- **Fetch All Data** loads graph nodes and edges via `/get/graph/entities` (preferred, with batching for large graphs >500K edges) or falls back to table-based `/get/records` if the endpoint is unavailable. Supports both NAME-based and ID-based column schemas.
-- **Visualize** renders a force-directed graph (for non-geospatial graphs) with colors exactly matching the label charts (node and edge colors tracked independently via combo keys). Click a node to fetch its full record from the source table, displayed as a table strip below the graph.
+### Graph Visualization
+- **`↻ Pull+Visualize`** fetches graph nodes and edges via `/get/graph/entities` (with batching for large graphs >500K edges, fallback to `/get/records`).
+- **CanvasGraph** (non-WKT graphs) — Force-directed visualization with colors matching label charts. Click a node to fetch its full record from the source table. Node/edge limit sliders and viz limit dropdown in the header.
+- **MapView** (WKT geospatial graphs) — Canvas-based renderer auto-selected when `identifier_type` is `wkt`. Zoom (mouse wheel, cursor-centered), pan (drag), HiDPI rendering, viewport culling. Edge picking queries the original edge source table by edge ID or WKT match. Hover shows lng/lat coordinates. Label filtering supported.
 - Click a node in the visualization to **copy its entity ID** to clipboard (for use in Query Helper or queries).
 - Label selection in the charts filters the visualization to matching subgraphs. Multi-label combos (e.g., `["director","actor"]`) are selected as exact combos — won't match single-label nodes.
+- **`⤢` Maximize** button for full-viewport view (Esc or `▣ Restore` to return).
 - Supports both directed (`digraph`) and undirected (`graph`) ontology topologies — pathfinding works in both, and generated GQL uses `-[]-` (no arrows) for undirected graphs.
 
 ### SQL / GQL Query
@@ -56,7 +71,8 @@ No build step, no dependencies to install, no server to run.
 ### Session Save / Load
 Session controls are in the **Sidebar** (lower left, visible when connected):
 - **Load Session** — Restore from a JSON file. Uses the active server connection (warns if session was saved from a different server). Warns if the graph is not found. Re-fetches table data and visualization if they were active.
-- **Save Session** — Download current state as JSON (connection, graph, labels, ontology, data/viz state, queries including Query Helper selections). Confirms with filename on save.
+- **Save Session** — Download current state as JSON with timestamped filename (`graph_session_YYYYMMDD_HHMM.json` for chronological sort). Includes connection, graph, labels, ontology, data/viz state, queries with Query Helper selections.
+- **Session loss protection** — Switching graphs, changing profiles, connecting, or loading a session shows a red confirmation banner with Save & Continue / Continue / Cancel options.
 - **Auto-run Queries** toggle (on by default) — when on, restored queries execute automatically on session load.
 
 ### Cross-View Picking
@@ -64,8 +80,11 @@ Session controls are in the **Sidebar** (lower left, visible when connected):
 
 ### UI Controls
 - **Auto-refresh** — Polling toggle (5s–5m intervals) for live label count monitoring.
-- **Resizable split panes** — Drag dividers or the corner handle to resize panels.
-- **Floating query panels** — Multiple independent panels, each draggable and resizable with SQL editor, results table, and graph visualization.
+- **Resizable split panes** — Drag dividers or the corner handle to resize panels. Header separator aligns with the split pane boundary.
+- **Floating query panels** — Multiple independent panels with minimize (`–` → Q1/Q2 pill in header), maximize, restore, and close. State preserved on minimize/restore.
+- **Panel maximize** — Ontology and Canvas panels have `⤢` maximize button (full viewport overlay covering sidebar). Red `▣ Restore` button or Esc key to return to split view.
+- **Progress bar** — Color-coded bar during data fetch: blue while fetching nodes (matches N: color), green while fetching edges (matches E: color), with percentage.
+- **Node detail strip** — Click any node in canvas or query visualization to see its full record from the source table (large font, scrollable).
 - **Tooltips** — All buttons and toggles have hover tooltips describing their function.
 
 ## Architecture
@@ -86,10 +105,11 @@ The application is a single HTML file containing inline CSS and JSX (transpiled 
 |---|---|
 | `App` | Root state management (graphs, credentials, labels, ontology, queries) |
 | `Sidebar` | Server connection, profile switching, graph list, session Load/Save, Auto-run toggle |
-| `DashboardHeader` | Single-line: graph info, Pick, Ontology, NKey/EKey, Query (left) — Refresh, Auto, timestamp (right) |
+| `DashboardHeader` | Split-aligned header: Left (graph info, progress bar, + Query, minimized Q1/Q2) \| Right (Pick, Auto-refresh, timestamp) — separator aligns with label chart boundary |
+| `OntologyViewer` | Always visible — Graphviz WASM ontology with D3 zoom/pan, picking, Full/NKey/EKey toggles, ↻ Refresh, Reset View, ⤢ maximize in header |
+| `CanvasGraph` | For non-WKT graphs — force-graph with compact header (stats, labels, sliders, viz limit, ↻ Pull+Visualize, ⤢ maximize), node detail lookup |
+| `MapView` | For WKT geospatial graphs — canvas renderer with zoom/pan, edge picking from original source table, hover coordinates, label filtering, HiDPI rendering |
 | `LabelChart` | Doughnut chart + interactive label table |
-| `OntologyViewer` | Graphviz WASM rendering with D3 zoom/pan |
-| `CanvasGraph` | Force-directed visualization of graph table data |
 | `QueryPanel` | Self-contained SQL editor + results table + path visualization (multiple instances) |
 | `SplitPane` | Resizable split layout (horizontal or vertical) |
 
@@ -97,9 +117,9 @@ The application is a single HTML file containing inline CSS and JSX (transpiled 
 
 | Endpoint | Usage |
 |---|---|
-| `POST /show/graph` | List graphs or get label details for a specific graph |
-| `POST /modify/graph` | Retrieve graph ontology in DOT format |
-| `POST /get/records` | Fetch backing table rows for data preview and visualization |
+| `POST /show/graph` | List graphs, get label details, and ontology DOT (`export_graph_schema: 'true'`) |
+| `POST /get/graph/entities` | Fetch graph nodes/edges directly with labels and identifier type (int/string/wkt) |
+| `POST /get/records` | Fallback for visualization data; also used for node/edge detail lookup from source tables |
 | `POST /execute/sql` | Run SQL and GQL queries |
 
 ### Response Parsing
