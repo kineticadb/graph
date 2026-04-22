@@ -151,7 +151,14 @@ function extractEdgeSourceTable(originalRequest, graphName) {
     }
     var idMatch = inner.match(/(\w+)\s+as\s+(?:EDGE_ID|ID)\b/i);
     var idCol = idMatch ? idMatch[1] : null;
-    return { table: tableName, idCol: idCol };
+    // Extract WKT geometry column (aliased as EDGE_WKTLINE, WKTLINE, WKTPOINT, NODE1_NAME, or NODE1)
+    var wktMatch = inner.match(/(\w+)\s+as\s+(?:EDGE_WKTLINE|WKTLINE|WKTPOINT|NODE1_NAME|NODE1)\b/i);
+    var wktCol = wktMatch ? wktMatch[1] : null;
+    // Extract label column (aliased as LABEL or EDGE_LABEL)
+    // Handles: "col AS LABEL", "func(col) AS LABEL", "CAST(col AS type) AS LABEL"
+    var labelMatch = inner.match(/(?:(\w+)|(?:\w+\((\w+)\))|(?:CAST\((\w+)\s))\s+as\s+(?:EDGE_LABEL|LABEL)\b/i);
+    var labelCol = labelMatch ? (labelMatch[1] || labelMatch[2] || labelMatch[3]) : null;
+    return { table: tableName, idCol: idCol, wktCol: wktCol, labelCol: labelCol };
 }
 
 // Resolve column name from headers, trying multiple variants (e.g. NODE1_NAME or EDGE_NODE1_NAME)
@@ -1998,11 +2005,15 @@ function MapView(props) {
     var credentials = props.credentials, nodeSourceTable = props.nodeSourceTable, edgeSourceTable = props.edgeSourceTable;
     var onVisualize = props.onVisualize, vizLoading = props.vizLoading;
     var maximized = props.maximized, onToggleMaximize = props.onToggleMaximize;
+    var drawChunkRef = props.drawChunkRef; // ref populated by MapView for progressive drawing
     var canvasRef = useRef(null);
     var containerRef = useRef(null);
-    var coordOverlayRef = useRef(null); // DOM ref for hover coords (bypass React re-renders)
+    var coordOverlayRef = useRef(null);
     var viewRef = useRef({ zoom: 1, panX: 0, panY: 0 });
-    var canvasSizeRef = useRef({ w: 0, h: 0 }); // cached canvas CSS dimensions
+    var canvasSizeRef = useRef({ w: 0, h: 0 });
+    var progressiveBoundsRef = useRef({ minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity });
+    var progressiveValidRef = useRef(false); // true = canvas has progressive content, skip auto-render
+    var progressiveSnapshotRef = useRef(null); // saved ImageData of progressive full render
     var dragRef = useRef(null);
     const [nodeDetail, setNodeDetail] = useState(null);
     const [nodeDetailLoading, setNodeDetailLoading] = useState(false);
@@ -2023,17 +2034,121 @@ function MapView(props) {
         return labelColorMap[labels.slice().sort().join('|')] || '#0984e3';
     };
 
-    // ── Optimization 1+2: Pre-parse all WKT coords + bounds ONCE ──
-    // coords layout: [x1, y1, x2, y2, x1, y1, x2, y2, ...]
+    // ── Progressive draw: draw a chunk of edges directly onto the canvas (no React) ──
+    useEffect(function() {
+        if (!drawChunkRef) return;
+        drawChunkRef.current = function(coords, labelIdx, labels, bounds) {
+            if (!canvasRef.current || !containerRef.current) return;
+            var canvas = canvasRef.current;
+            var cssW = containerRef.current.clientWidth || 800;
+            var cssH = containerRef.current.clientHeight || 600;
+            // Ensure canvas is initialized
+            var cached = canvasSizeRef.current;
+            var dpr = window.devicePixelRatio || 1;
+            var renderScale = Math.min(dpr, 2);
+            if (cached.w !== cssW || cached.h !== cssH) {
+                canvas.width = Math.round(cssW * renderScale);
+                canvas.height = Math.round(cssH * renderScale);
+                canvas.style.width = cssW + 'px'; canvas.style.height = cssH + 'px';
+                cached.w = cssW; cached.h = cssH;
+                var initCtx = canvas.getContext('2d');
+                initCtx.setTransform(renderScale, 0, 0, renderScale, 0, 0);
+                initCtx.fillStyle = '#1a1a2e';
+                initCtx.fillRect(0, 0, cssW, cssH);
+            }
+            // Update progressive bounds
+            var pb = progressiveBoundsRef.current;
+            if (bounds.minX < pb.minX) pb.minX = bounds.minX;
+            if (bounds.maxX > pb.maxX) pb.maxX = bounds.maxX;
+            if (bounds.minY < pb.minY) pb.minY = bounds.minY;
+            if (bounds.maxY > pb.maxY) pb.maxY = bounds.maxY;
+            // Compute transform from progressive bounds
+            var w = cssW, h = cssH;
+            var dx = (pb.maxX - pb.minX) || 0.01, dy = (pb.maxY - pb.minY) || 0.01;
+            var pad = 20;
+            var baseScale = Math.min((w - 2 * pad) / dx, (h - 2 * pad) / dy);
+            var baseOffX = pad + ((w - 2 * pad) - dx * baseScale) / 2 - pb.minX * baseScale;
+            var baseOffY = pad + ((h - 2 * pad) - dy * baseScale) / 2 - pb.minY * baseScale;
+            // Build label color lookup
+            var colorLookup = ['#0984e3'];
+            for (var li = 0; li < labels.length; li++) {
+                var lbl = labels[li];
+                colorLookup.push(getEdgeColor(lbl ? (lbl.charAt(0) === '[' ? lbl : '["' + lbl + '"]') : ''));
+            }
+            // Draw edges by color
+            var ctx = canvas.getContext('2d');
+            ctx.setTransform(renderScale, 0, 0, renderScale, 0, 0);
+            ctx.lineWidth = 1;
+            ctx.globalAlpha = 0.6;
+            var buckets = {};
+            var numEdges = coords.length / 4;
+            for (var i = 0; i < numEdges; i++) {
+                var off = i * 4;
+                var sx1 = coords[off] * baseScale + baseOffX;
+                var sy1 = h - (coords[off+1] * baseScale + baseOffY);
+                var sx2 = coords[off+2] * baseScale + baseOffX;
+                var sy2 = h - (coords[off+3] * baseScale + baseOffY);
+                var c = colorLookup[Math.min(labelIdx[i], colorLookup.length - 1)];
+                if (!buckets[c]) buckets[c] = [];
+                buckets[c].push(sx1, sy1, sx2, sy2);
+            }
+            var keys = Object.keys(buckets);
+            for (var b = 0; b < keys.length; b++) {
+                var segs = buckets[keys[b]];
+                ctx.strokeStyle = keys[b];
+                ctx.beginPath();
+                for (var s = 0; s < segs.length; s += 4) {
+                    ctx.moveTo(segs[s], segs[s+1]);
+                    ctx.lineTo(segs[s+2], segs[s+3]);
+                }
+                ctx.stroke();
+            }
+            ctx.globalAlpha = 1.0;
+        };
+        drawChunkRef.current.setProgressiveValid = function(v) { progressiveValidRef.current = v; };
+        drawChunkRef.current.saveSnapshot = function() {
+            if (!canvasRef.current) return;
+            var ctx = canvasRef.current.getContext('2d');
+            progressiveSnapshotRef.current = ctx.getImageData(0, 0, canvasRef.current.width, canvasRef.current.height);
+        };
+        drawChunkRef.current.restoreSnapshot = function() {
+            if (!canvasRef.current || !progressiveSnapshotRef.current) return false;
+            var ctx = canvasRef.current.getContext('2d');
+            ctx.putImageData(progressiveSnapshotRef.current, 0, 0);
+            return true;
+        };
+        return function() { if (drawChunkRef) drawChunkRef.current = null; };
+    }, [drawChunkRef, getEdgeColor]);
+
+    // ── Pre-parsed WKT coords + bounds (from fetch or from record parsing) ──
     var parsedEdges = useMemo(function() {
         if (!graphTableData) return null;
+
+        // Fast path: use pre-parsed WKT chunk data from fetch (no WKT strings in memory)
+        if (graphTableData.wktEdges && graphTableData.wktEdges.coordChunks) {
+            var wkt = graphTableData.wktEdges;
+            var wktLabels = graphTableData.wktEdgeLabels || [];
+            var n = wkt.count;
+            var coordChunks = wkt.coordChunks;
+            var labelIdxChunks = wkt.labelIdxChunks;
+            // Build color lookup: label index → color string (tiny — just #labels entries)
+            var labelColorLookup = ['#0984e3']; // index 0 = no label
+            for (var li = 0; li < wktLabels.length; li++) {
+                var lbl = wktLabels[li];
+                labelColorLookup.push(getEdgeColor(lbl ? (lbl.charAt(0) === '[' ? lbl : '["' + lbl + '"]') : ''));
+            }
+            return { coordChunks: coordChunks, edgeIdChunks: wkt.edgeIdChunks || [], labelIdxChunks: labelIdxChunks, count: n,
+                     bounds: wkt.bounds, labels: wktLabels, labelColorLookup: labelColorLookup, chunked: true };
+        }
+
+        // Fallback: parse WKT from record objects (for table-based fetch or non-batched)
         var edges = graphTableData.edges.records;
         var headers = graphTableData.edges.headers;
         var n1Field = headers[1], n2Field = headers[2];
         var n = edges.length;
-        var coords = new Float64Array(n * 4);
+        var coords = new Float32Array(n * 4);
         var colors = new Array(n);
-        var valid = new Uint8Array(n); // 1 if both endpoints parsed
+        var valid = new Uint8Array(n);
         var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
         var wktRe = /POINT\s*\(\s*([-\d.]+)\s+([-\d.]+)\s*\)/i;
         for (var i = 0; i < n; i++) {
@@ -2058,34 +2173,65 @@ function MapView(props) {
     }, [graphTableData, labelColorMap]);
 
     // ── Optimization 5: LOD decimation levels ──
-    // Build index arrays for filtered edges at 4 stride levels: 8, 4, 2, 1
+    // Clear progressive flag when label selection changes
+    var prevNodeLabelsRef = useRef(selectedNodeLabels);
+    var prevEdgeLabelsRef = useRef(selectedEdgeLabels);
+    if (prevNodeLabelsRef.current !== selectedNodeLabels || prevEdgeLabelsRef.current !== selectedEdgeLabels) {
+        progressiveValidRef.current = false;
+        prevNodeLabelsRef.current = selectedNodeLabels;
+        prevEdgeLabelsRef.current = selectedEdgeLabels;
+    }
     var lodLevels = useMemo(function() {
         if (!parsedEdges) return null;
-        var edges = graphTableData.edges.records;
         var hasNodeFilter = selectedNodeLabels.length > 0;
         var hasEdgeFilter = selectedEdgeLabels.length > 0;
-        var nodeFilterSet = {};
-        selectedNodeLabels.forEach(function(l) { nodeFilterSet[l] = true; });
         var edgeFilterSet = {};
         selectedEdgeLabels.forEach(function(l) { edgeFilterSet[l] = true; });
-        var headers = graphTableData.edges.headers;
-        var n1Field = headers[1], n2Field = headers[2];
+        var nodeFilterSet = {};
+        selectedNodeLabels.forEach(function(l) { nodeFilterSet[l] = true; });
 
         // Build full filtered index list
         var full = [];
+        var useChunked = !!parsedEdges.chunked;
+
+        // For chunked data: build label index lookup per global edge
+        var chunkLabelAt;
+        if (useChunked) {
+            var _lblChunks = parsedEdges.labelIdxChunks;
+            var _chunkStarts = []; var _rs = 0;
+            for (var _ci = 0; _ci < _lblChunks.length; _ci++) { _chunkStarts.push(_rs); _rs += _lblChunks[_ci].length; }
+            chunkLabelAt = function(idx) {
+                for (var ci = _lblChunks.length - 1; ci >= 0; ci--) {
+                    if (idx >= _chunkStarts[ci]) return _lblChunks[ci][idx - _chunkStarts[ci]];
+                }
+                return 0;
+            };
+        }
+
         for (var i = 0; i < parsedEdges.count; i++) {
-            if (!parsedEdges.valid[i]) continue;
+            if (parsedEdges.valid && !parsedEdges.valid[i]) continue;
             if (hasNodeFilter || hasEdgeFilter) {
-                var rec = edges[i];
                 var pass = false;
-                if (hasEdgeFilter) {
+                if (hasEdgeFilter && useChunked && parsedEdges.labels) {
+                    var li = chunkLabelAt(i);
+                    var rawLbl = (li > 0 && li <= parsedEdges.labels.length) ? parsedEdges.labels[li - 1] : '';
+                    // Labels may be JSON arrays like '["road"]' — parse to get combo key
+                    var lblArr = rawLbl && rawLbl.charAt(0) === '[' ? (function(){ try { return JSON.parse(rawLbl); } catch(e) { return [rawLbl]; } })() : rawLbl ? [rawLbl] : [];
+                    var ck = lblArr.slice().sort().join('|');
+                    if (edgeFilterSet[ck]) pass = true;
+                } else if (hasEdgeFilter && !useChunked && parsedEdges.valid) {
+                    // Record-based path
+                    var rec = graphTableData.edges.records[i];
                     var rawEL = rec['EDGE_LABEL'] || '';
                     var eLabels = typeof rawEL === 'string' && rawEL.charAt(0) === '[' ? (function(){ try { return JSON.parse(rawEL); } catch(e) { return [rawEL]; } })() : [rawEL];
                     if (edgeFilterSet[eLabels.slice().sort().join('|')]) pass = true;
                 }
-                if (!pass && hasNodeFilter) {
-                    var n1Key = nodeLabelMap[rec[n1Field]] || '';
-                    var n2Key = nodeLabelMap[rec[n2Field]] || '';
+                if (!pass && hasNodeFilter && !usePreParsed) {
+                    var headers = graphTableData.edges.headers;
+                    var n1Field = headers[1], n2Field = headers[2];
+                    var rec2 = graphTableData.edges.records[i];
+                    var n1Key = nodeLabelMap[rec2[n1Field]] || '';
+                    var n2Key = nodeLabelMap[rec2[n2Field]] || '';
                     if (nodeFilterSet[n1Key] || nodeFilterSet[n2Key]) pass = true;
                 }
                 if (!pass) continue;
@@ -2151,7 +2297,8 @@ function MapView(props) {
 
             // Fallback: match by WKT line constructed from the two endpoints
             var headers = graphTableData.edges.headers;
-            var n1Wkt = edgeRecord[headers[1]], n2Wkt = edgeRecord[headers[2]];
+            var n1Wkt = edgeRecord[headers[1]] || edgeRecord['NODE1_WKTPOINT'] || edgeRecord['NODE1_NAME'];
+            var n2Wkt = edgeRecord[headers[2]] || edgeRecord['NODE2_WKTPOINT'] || edgeRecord['NODE2_NAME'];
             if (n1Wkt && n2Wkt) {
                 // Probe table for WKT column name
                 var probeRes = await fetch(credentials.url + '/get/records', { method: 'POST', headers: hdrs, body: JSON.stringify({ table_name: tableName, offset: 0, limit: 1, encoding: 'json', options: {} }) });
@@ -2200,6 +2347,13 @@ function MapView(props) {
     // ── Optimized renderCanvas: pre-parsed coords, batched by color, LOD ──
     var renderCanvas = useCallback(function(forceLod) {
         if (!canvasRef.current || !containerRef.current || !parsedEdges || !lodLevels) return;
+        // For very large datasets at default view (zoom~1, no pan), restore the progressive snapshot
+        var v = viewRef.current;
+        if (progressiveSnapshotRef.current && v.zoom <= 1.05 && v.zoom >= 0.95 && Math.abs(v.panX) < 5 && Math.abs(v.panY) < 5) {
+            var ctx = canvasRef.current.getContext('2d');
+            ctx.putImageData(progressiveSnapshotRef.current, 0, 0);
+            return;
+        }
         var canvas = canvasRef.current;
         var cssW = containerRef.current.clientWidth || 800;
         var cssH = containerRef.current.clientHeight || 600;
@@ -2247,8 +2401,43 @@ function MapView(props) {
             lod = typeof forceLod === 'number' ? forceLod : lodRef.current;
         }
         var indices = lodLevels.levels[Math.min(lod, maxLodLevel)];
-        var coords = parsedEdges.coords;
-        var colors = parsedEdges.colors;
+        var isChunked = !!parsedEdges.chunked;
+
+        // For chunked data: build a lookup to map global index → chunk coords offset
+        var chunkStarts, chunkCoords, chunkLblChunks;
+        if (isChunked) {
+            chunkCoords = parsedEdges.coordChunks;
+            chunkLblChunks = parsedEdges.labelIdxChunks;
+            chunkStarts = new Array(chunkCoords.length);
+            var runSum = 0;
+            for (var csi = 0; csi < chunkCoords.length; csi++) {
+                chunkStarts[csi] = runSum;
+                runSum += chunkCoords[csi].length / 4;
+            }
+        }
+
+        // Helper: get coords for global edge index
+        var getCoords;
+        if (isChunked) {
+            // Binary search to find which chunk an index falls in
+            getCoords = function(idx) {
+                // Linear search (chunks are few: ~27 for 27M edges at 1M batch)
+                for (var ci = chunkCoords.length - 1; ci >= 0; ci--) {
+                    if (idx >= chunkStarts[ci]) {
+                        var localOff = (idx - chunkStarts[ci]) * 4;
+                        var c = chunkCoords[ci];
+                        return [c[localOff], c[localOff+1], c[localOff+2], c[localOff+3]];
+                    }
+                }
+                return null;
+            };
+        } else {
+            var flatCoords = parsedEdges.coords;
+            getCoords = function(idx) {
+                var off = idx * 4;
+                return [flatCoords[off], flatCoords[off+1], flatCoords[off+2], flatCoords[off+3]];
+            };
+        }
 
         // ── Optimization 3: batch edges by color, one beginPath/stroke per group ──
         var colorBuckets = {};
@@ -2256,16 +2445,27 @@ function MapView(props) {
         var visibleCount = 0;
         for (var k = 0; k < indices.length; k++) {
             var idx = indices[k];
-            var off = idx * 4;
-            var sx1 = (coords[off] * baseScale + baseOffX) * zm + px;
-            var sy1 = (h - (coords[off+1] * baseScale + baseOffY)) * zm + py;
-            var sx2 = (coords[off+2] * baseScale + baseOffX) * zm + px;
-            var sy2 = (h - (coords[off+3] * baseScale + baseOffY)) * zm + py;
+            var cd = getCoords(idx);
+            if (!cd) continue;
+            var sx1 = (cd[0] * baseScale + baseOffX) * zm + px;
+            var sy1 = (h - (cd[1] * baseScale + baseOffY)) * zm + py;
+            var sx2 = (cd[2] * baseScale + baseOffX) * zm + px;
+            var sy2 = (h - (cd[3] * baseScale + baseOffY)) * zm + py;
             // Viewport culling
             if ((sx1 < -margin && sx2 < -margin) || (sx1 > w+margin && sx2 > w+margin) ||
                 (sy1 < -margin && sy2 < -margin) || (sy1 > h+margin && sy2 > h+margin)) continue;
             visibleCount++;
-            var c = colors[idx];
+            var c;
+            if (isChunked && parsedEdges.labelColorLookup && chunkLblChunks) {
+                // Find label index from chunk
+                var cli = 0;
+                for (var lci = chunkLblChunks.length - 1; lci >= 0; lci--) {
+                    if (idx >= chunkStarts[lci]) { cli = chunkLblChunks[lci][idx - chunkStarts[lci]]; break; }
+                }
+                c = parsedEdges.labelColorLookup[Math.min(cli, parsedEdges.labelColorLookup.length - 1)];
+            } else {
+                c = parsedEdges.colors ? parsedEdges.colors[idx] : '#0984e3';
+            }
             if (!colorBuckets[c]) colorBuckets[c] = [];
             colorBuckets[c].push(sx1, sy1, sx2, sy2);
         }
@@ -2318,6 +2518,7 @@ function MapView(props) {
     // ── Optimization 4: rAF-throttled rendering with LOD settle ──
     var scheduleRender = useCallback(function(interactive) {
         if (interactive) {
+            progressiveValidRef.current = false; // user interaction invalidates progressive canvas
             interactingRef.current = true;
             var zm = viewRef.current.zoom;
             var maxLod = lodLevels ? lodLevels.levels.length - 1 : 4;
@@ -2340,14 +2541,12 @@ function MapView(props) {
                         if (level < maxLod) {
                             settleTimerRef.current = setTimeout(function() { step(level + 1); }, 80);
                         } else {
-                            // Final LOD reached — hide bounding box
                             interactingRef.current = false;
                             renderCanvas(maxLod);
                         }
                     };
                     step(1);
                 } else {
-                    // No LOD was used — just hide bounding box
                     interactingRef.current = false;
                     renderCanvas(maxLod);
                 }
@@ -2412,17 +2611,32 @@ function MapView(props) {
                     var v = viewRef.current;
                     var bsv = bt.baseScale, box = bt.baseOffX, boy = bt.baseOffY, bh = bt.h;
                     var zm = v.zoom, vpx = v.panX, vpy = v.panY;
-                    var cds = parsedEdges.coords;
+                    // Build coord accessor (chunked or flat)
+                    var pickGetCoords;
+                    if (parsedEdges.chunked) {
+                        var pChunks = parsedEdges.coordChunks;
+                        var pStarts = []; var pSum = 0;
+                        for (var psi = 0; psi < pChunks.length; psi++) { pStarts.push(pSum); pSum += pChunks[psi].length / 4; }
+                        pickGetCoords = function(idx) {
+                            for (var ci = pChunks.length - 1; ci >= 0; ci--) {
+                                if (idx >= pStarts[ci]) { var lo = (idx - pStarts[ci]) * 4; var c = pChunks[ci]; return [c[lo], c[lo+1], c[lo+2], c[lo+3]]; }
+                            } return null;
+                        };
+                    } else {
+                        var pFlat = parsedEdges.coords;
+                        pickGetCoords = function(idx) { var o = idx*4; return [pFlat[o], pFlat[o+1], pFlat[o+2], pFlat[o+3]]; };
+                    }
                     var full = lodLevels.full;
                     var bestDist = 20;
                     var bestIdx = -1;
                     for (var i = 0; i < full.length; i++) {
                         var fi = full[i];
-                        var o = fi * 4;
-                        var ax = (cds[o] * bsv + box) * zm + vpx;
-                        var ay = (bh - (cds[o+1] * bsv + boy)) * zm + vpy;
-                        var bx = (cds[o+2] * bsv + box) * zm + vpx;
-                        var by = (bh - (cds[o+3] * bsv + boy)) * zm + vpy;
+                        var pcd = pickGetCoords(fi);
+                        if (!pcd) continue;
+                        var ax = (pcd[0] * bsv + box) * zm + vpx;
+                        var ay = (bh - (pcd[1] * bsv + boy)) * zm + vpy;
+                        var bx = (pcd[2] * bsv + box) * zm + vpx;
+                        var by = (bh - (pcd[3] * bsv + boy)) * zm + vpy;
                         var ddx = bx-ax, ddy = by-ay, len2 = ddx*ddx+ddy*ddy;
                         var t = len2 > 0 ? Math.max(0, Math.min(1, ((mx-ax)*ddx+(my-ay)*ddy)/len2)) : 0;
                         var px = ax+t*ddx, py = ay+t*ddy;
@@ -2430,9 +2644,30 @@ function MapView(props) {
                         if (dist < bestDist) { bestDist = dist; bestIdx = fi; }
                     }
                     if (bestIdx >= 0) {
-                        var bestEdge = graphTableData.edges.records[bestIdx];
-                        var headers = graphTableData.edges.headers;
-                        if (navigator.clipboard) navigator.clipboard.writeText(String(bestEdge['EDGE_ID'] || bestEdge[headers[1]]));
+                        // Build edge record — from pre-parsed coords or from records array
+                        var bestEdge;
+                        if (graphTableData.wktEdges) {
+                            var bcd = pickGetCoords(bestIdx);
+                            // Look up edge ID from chunks
+                            var pickedEdgeId = '';
+                            if (parsedEdges.edgeIdChunks && parsedEdges.edgeIdChunks.length > 0) {
+                                var eidSum = 0;
+                                for (var eci = 0; eci < parsedEdges.edgeIdChunks.length; eci++) {
+                                    if (bestIdx < eidSum + parsedEdges.edgeIdChunks[eci].length) {
+                                        pickedEdgeId = parsedEdges.edgeIdChunks[eci][bestIdx - eidSum];
+                                        break;
+                                    }
+                                    eidSum += parsedEdges.edgeIdChunks[eci].length;
+                                }
+                            }
+                            bestEdge = bcd ? {
+                                'EDGE_ID': pickedEdgeId,
+                                'NODE1_WKTPOINT': 'POINT(' + bcd[0] + ' ' + bcd[1] + ')',
+                                'NODE2_WKTPOINT': 'POINT(' + bcd[2] + ' ' + bcd[3] + ')' } : {};
+                        } else {
+                            bestEdge = graphTableData.edges.records[bestIdx];
+                        }
+                        if (navigator.clipboard) navigator.clipboard.writeText(String(bestEdge['EDGE_ID'] || ''));
                         // Show pick coordinates
                         var geo = screenToGeo(mx, my);
                         var overlay = coordOverlayRef.current;
@@ -2461,14 +2696,18 @@ function MapView(props) {
         };
     }, [scheduleRender, parsedEdges, lodLevels, graphTableData]);
 
-    // Initial render + render on data/filter change (full LOD)
-    useEffect(function() { canvasSizeRef.current = { w: 0, h: 0 }; lodRef.current = lodLevels ? lodLevels.levels.length - 1 : 4; renderCanvas(lodRef.current); }, [renderCanvas]);
+    // Initial render + render on data/filter change — skip while progressive canvas is valid
+    useEffect(function() {
+        if (progressiveValidRef.current) return;
+        canvasSizeRef.current = { w: 0, h: 0 }; lodRef.current = lodLevels ? lodLevels.levels.length - 1 : 4; renderCanvas(lodRef.current);
+    }, [renderCanvas]);
 
     // Resize — invalidate cached size so canvas buffer gets reallocated
     useEffect(function() {
         if (!containerRef.current) return;
         var debounce = null;
         var ro = new ResizeObserver(function() {
+            if (progressiveValidRef.current) return; // progressive canvas still valid
             canvasSizeRef.current = { w: 0, h: 0 };
             clearTimeout(debounce);
             var maxLod = lodLevels ? lodLevels.levels.length - 1 : 4;
@@ -2480,12 +2719,212 @@ function MapView(props) {
 
     var nodeCount = graphTableData ? graphTableData.nodes.total : 0;
     var edgeCount = graphTableData ? graphTableData.edges.total : 0;
+    var wmsMode = graphTableData && graphTableData.wmsMode;
+
+    // ── WMS rendering: fetch PNG tiles from server ──
+    var wmsImgRef = useRef(null);
+    var wmsContainerRef = useRef(null);
+    var wmsViewRef = useRef({ zoom: 1, panX: 0, panY: 0, bbox: null });
+    var wmsDragRef = useRef(null);
+    var wmsDebounceRef = useRef(null);
+    const [wmsLoading, setWmsLoading] = useState(false);
+    const [wmsStyleOverride, setWmsStyleOverride] = useState('auto'); // 'auto', 'heatmap', 'cb_raster', 'raster'
+
+    var fetchWmsTile = useCallback(function() {
+        if (!wmsMode || !credentials || !credentials.url || !wmsContainerRef.current) return;
+        var w = wmsContainerRef.current.clientWidth || 800;
+        var h = wmsContainerRef.current.clientHeight || 600;
+        // Default bbox: full world or use a reasonable default
+        var v = wmsViewRef.current;
+        var bbox = v.bbox || (wmsMode && wmsMode.bbox) || '-180,-90,180,90';
+        // Adjust bbox to match container aspect ratio (prevents skew)
+        var bboxParts = bbox.split(',').map(Number);
+        var bboxW = bboxParts[2] - bboxParts[0], bboxH = bboxParts[3] - bboxParts[1];
+        var containerAspect = w / h, bboxAspect = bboxW / Math.max(bboxH, 0.001);
+        if (containerAspect > bboxAspect) {
+            // Container is wider — expand bbox horizontally
+            var newW = bboxH * containerAspect, cx = (bboxParts[0] + bboxParts[2]) / 2;
+            bboxParts[0] = cx - newW / 2; bboxParts[2] = cx + newW / 2;
+        } else {
+            // Container is taller — expand bbox vertically
+            var newH = bboxW / containerAspect, cy = (bboxParts[1] + bboxParts[3]) / 2;
+            bboxParts[1] = cy - newH / 2; bboxParts[3] = cy + newH / 2;
+        }
+        bbox = bboxParts.join(',');
+        var bboxWidth = Math.abs(bboxParts[2] - bboxParts[0]);
+        var zoomRatio = 360 / Math.max(bboxWidth, 0.001);
+        var pw = Math.round(w * (window.devicePixelRatio || 1));
+        var ph = Math.round(h * (window.devicePixelRatio || 1));
+        var numLabels = wmsMode.edgeLabels ? wmsMode.edgeLabels.length : 0;
+        // Style: override or auto (heatmap at low zoom, cb_raster at deep zoom if labels)
+        var useHeatmap, useCbRaster;
+        if (wmsStyleOverride === 'heatmap') { useHeatmap = true; useCbRaster = false; }
+        else if (wmsStyleOverride === 'cb_raster') { useHeatmap = false; useCbRaster = numLabels > 1 && wmsMode.labelCol; }
+        else if (wmsStyleOverride === 'raster') { useHeatmap = false; useCbRaster = false; }
+        else { useHeatmap = zoomRatio < 30; useCbRaster = !useHeatmap && numLabels > 1 && wmsMode.labelCol; }
+        var params = [
+            'REQUEST=GetMap',
+            'LAYERS=' + encodeURIComponent(wmsMode.table),
+            'GEO_ATTR=' + encodeURIComponent(wmsMode.geoCol),
+            'SRS=EPSG:4326',
+            'BBOX=' + bbox,
+            'WIDTH=' + pw,
+            'HEIGHT=' + ph,
+            'TRANSPARENT=true',
+        ];
+        if (useHeatmap) {
+            params.push('STYLES=heatmap', 'BLUR_RADIUS=3', 'COLORMAP=jet');
+        } else if (useCbRaster) {
+            // Class-break raster: color edges by label (max 24 classes — WMS limit)
+            var MAX_CB = 20;
+            var labels = wmsMode.edgeLabels.slice(0, MAX_CB); // top labels by count (already sorted)
+            var cbNumLabels = labels.length;
+            var isNumeric = labels.every(function(l) { return !isNaN(Number(l)) && l !== ''; });
+            var cbVals = [];
+            if (isNumeric) {
+                var sorted = labels.map(Number).slice().sort(function(a, b) { return a - b; });
+                for (var cbi = 0; cbi < sorted.length; cbi++) {
+                    var lo = cbi === 0 ? (sorted[0] - 1) : ((sorted[cbi - 1] + sorted[cbi]) / 2);
+                    var hi = cbi === sorted.length - 1 ? (sorted[cbi] + 1) : ((sorted[cbi] + sorted[cbi + 1]) / 2);
+                    cbVals.push(lo + ':' + hi);
+                }
+            } else {
+                for (var cbi = 0; cbi < cbNumLabels; cbi++) cbVals.push(labels[cbi]);
+            }
+            cbVals.push('<other>');
+            var cbColors = [];
+            if (isNumeric) {
+                var sorted = labels.map(Number).slice().sort(function(a, b) { return a - b; });
+                for (var cci = 0; cci < sorted.length; cci++) {
+                    var origIdx = wmsMode.edgeLabels.indexOf(String(sorted[cci]));
+                    cbColors.push(PALETTE[(origIdx >= 0 ? origIdx : cci) % PALETTE.length].solid.replace('#', ''));
+                }
+            } else {
+                for (var cci = 0; cci < cbNumLabels; cci++) cbColors.push(PALETTE[cci % PALETTE.length].solid.replace('#', ''));
+            }
+            cbColors.push('636e72');
+            params.push('STYLES=cb_raster',
+                'CB_ATTR=' + encodeURIComponent(wmsMode.labelCol),
+                'CB_VALS=' + encodeURIComponent(cbVals.join(',')),
+                'POINTCOLORS=' + encodeURIComponent(cbColors.join(',')),
+                'POINTSIZES=' + new Array(cbColors.length).fill('3').join(','),
+                'SHAPELINECOLORS=' + encodeURIComponent(cbColors.join(',')),
+                'SHAPELINEWIDTHS=' + new Array(cbColors.length).fill('1').join(','),
+                'DOSHAPES=TRUE', 'DOPOINTS=TRUE', 'DOTRACKS=FALSE');
+        } else {
+            params.push('STYLES=raster', 'DOSHAPES=TRUE', 'DOPOINTS=FALSE', 'DOTRACKS=FALSE',
+                'SHAPELINEWIDTHS=1', 'SHAPELINECOLORS=4A90D9');
+        }
+        params = params.join('&');
+        var url = credentials.url + '/wms?' + params;
+        // Update zoom info in header
+        var zoomEl = document.getElementById('wms-zoom-info');
+        var styleName = useHeatmap ? 'heatmap' : (useCbRaster ? 'cb_raster (' + numLabels + ' labels)' : 'raster');
+        if (zoomEl) zoomEl.textContent = zoomRatio.toFixed(1) + 'x ' + styleName;
+        // Fetch tile
+        if (wmsImgRef.current) {
+            setWmsLoading(true);
+            var img = wmsImgRef.current;
+            img.onload = function() { setWmsLoading(false); };
+            img.onerror = function() { setWmsLoading(false); };
+            img.src = url;
+        }
+    }, [wmsMode, credentials, wmsStyleOverride]);
+
+    // WMS zoom/pan handlers
+    useEffect(function() {
+        if (!wmsMode || !wmsContainerRef.current) return;
+        var container = wmsContainerRef.current;
+        var v = wmsViewRef.current;
+        // Reset bbox to data bounds on mount / data change
+        v.bbox = wmsMode.bbox || '-180,-90,180,90';
+
+        var parseBbox = function() { var p = v.bbox.split(',').map(Number); return { minX: p[0], minY: p[1], maxX: p[2], maxY: p[3] }; };
+        var setBbox = function(b) { v.bbox = b.minX + ',' + b.minY + ',' + b.maxX + ',' + b.maxY; };
+
+        var handleWheel = function(e) {
+            e.preventDefault();
+            var b = parseBbox();
+            var rect = container.getBoundingClientRect();
+            // Mouse position as fraction of container (0-1)
+            var mx = (e.clientX - rect.left) / rect.width;
+            var my = (e.clientY - rect.top) / rect.height;
+            // Geo coords under cursor
+            var geoX = b.minX + mx * (b.maxX - b.minX);
+            var geoY = b.maxY - my * (b.maxY - b.minY); // Y is inverted (top=maxY)
+            var factor = e.deltaY > 0 ? 1.15 : 0.87;
+            // Scale bbox around cursor position
+            var newW = (b.maxX - b.minX) * factor;
+            var newH = (b.maxY - b.minY) * factor;
+            // Keep cursor at same screen fraction
+            setBbox({
+                minX: geoX - mx * newW,
+                maxX: geoX + (1 - mx) * newW,
+                minY: geoY - (1 - my) * newH,
+                maxY: geoY + my * newH
+            });
+            clearTimeout(wmsDebounceRef.current);
+            wmsDebounceRef.current = setTimeout(fetchWmsTile, 200);
+        };
+        var handleMouseDown = function(e) {
+            if (e.button === 0) {
+                wmsDragRef.current = { startX: e.clientX, startY: e.clientY, bbox: v.bbox };
+            }
+        };
+        var handleMouseMove = function(e) {
+            if (!wmsDragRef.current) return;
+            var rect = container.getBoundingClientRect();
+            var b = wmsDragRef.current.bbox.split(',').map(Number);
+            var dxPx = e.clientX - wmsDragRef.current.startX;
+            var dyPx = e.clientY - wmsDragRef.current.startY;
+            var dxGeo = -dxPx / rect.width * (b[2] - b[0]);
+            var dyGeo = dyPx / rect.height * (b[3] - b[1]);
+            setBbox({ minX: b[0] + dxGeo, minY: b[1] + dyGeo, maxX: b[2] + dxGeo, maxY: b[3] + dyGeo });
+            clearTimeout(wmsDebounceRef.current);
+            wmsDebounceRef.current = setTimeout(fetchWmsTile, 150);
+        };
+        var handleMouseUp = function() { wmsDragRef.current = null; };
+
+        container.addEventListener('wheel', handleWheel, { passive: false });
+        container.addEventListener('mousedown', handleMouseDown);
+        window.addEventListener('mousemove', handleMouseMove);
+        window.addEventListener('mouseup', handleMouseUp);
+        // Initial tile fetch
+        fetchWmsTile();
+        return function() {
+            container.removeEventListener('wheel', handleWheel);
+            container.removeEventListener('mousedown', handleMouseDown);
+            window.removeEventListener('mousemove', handleMouseMove);
+            window.removeEventListener('mouseup', handleMouseUp);
+            clearTimeout(wmsDebounceRef.current);
+        };
+    }, [wmsMode, fetchWmsTile]);
+
+    // WMS resize
+    useEffect(function() {
+        if (!wmsMode || !wmsContainerRef.current) return;
+        var debounce = null;
+        var ro = new ResizeObserver(function() { clearTimeout(debounce); debounce = setTimeout(fetchWmsTile, 200); });
+        ro.observe(wmsContainerRef.current);
+        return function() { clearTimeout(debounce); ro.disconnect(); };
+    }, [wmsMode, fetchWmsTile]);
 
     return (
         <div style={{ background:'#fff', borderRadius:12, boxShadow:'0 2px 8px rgba(0,0,0,0.04)', padding:10, borderLeft:'6px solid #e17055', display:'flex', flexDirection:'column', flex:1, minHeight:0, overflow:'hidden' }}>
             <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
                 <h2 style={{ margin:0, fontSize:12, fontWeight:700, color:'#e17055', whiteSpace:'nowrap' }}>Map Visualization</h2>
-                <span style={{ fontSize:10, color:'#b2bec3', whiteSpace:'nowrap' }}>{nodeCount.toLocaleString()}n / {edgeCount.toLocaleString()}e (WKT)</span>
+                <span style={{ fontSize:10, color:'#b2bec3', whiteSpace:'nowrap' }}>{nodeCount.toLocaleString()}n / {edgeCount.toLocaleString()}e {wmsMode ? '(WMS)' : '(WKT)'}</span>
+                {wmsLoading && <span style={{ fontSize:10, color:'#e17055', fontWeight:700 }}>{'\u23F3'}</span>}
+                {wmsMode && <span id="wms-zoom-info" style={{ fontSize:10, color:'#b2bec3', whiteSpace:'nowrap' }}/>}
+                {wmsMode && (
+                    <div style={{ display:'inline-flex', alignItems:'center', gap:2, background:'#f1f2f6', padding:'2px 6px', borderRadius:4 }}>
+                        {['heatmap','cb_raster','auto'].map(function(s) {
+                            var active = wmsStyleOverride === s;
+                            var label = s === 'cb_raster' ? 'CB' : s === 'auto' ? 'Auto' : 'Heatmap';
+                            return <span key={s} onClick={function(){ setWmsStyleOverride(s); }} style={{ fontSize:9, fontWeight:700, cursor:'pointer', padding:'1px 5px', borderRadius:3, color: active ? '#fff' : '#636e72', background: active ? '#e17055' : 'transparent', userSelect:'none' }}>{label}</span>;
+                        })}
+                    </div>
+                )}
                 <span ref={coordOverlayRef} style={{ fontSize:10, color:'#dfe6e9', fontFamily:'monospace', whiteSpace:'nowrap', background:'#2d3436', padding:'1px 6px', borderRadius:3, display:'none' }}/>
                 <span style={{ flex:1 }}/>
                 {onVisualize && <button onClick={onVisualize} disabled={vizLoading} title="Re-fetch graph data" style={{
@@ -2494,9 +2933,15 @@ function MapView(props) {
                 }}>{'\u21BB'} Pull+Visualize</button>}
                 {onToggleMaximize && <button onClick={onToggleMaximize} title={maximized ? 'Restore to split view (Esc)' : 'Maximize to full window'} style={{ padding:'4px 10px', fontSize:10, fontWeight:700, color: maximized ? '#fff' : '#fff', background: maximized ? '#d63031' : '#0984e3', border:'none', borderRadius:4, cursor:'pointer', fontFamily:'inherit', flexShrink:0, transition:'0.2s' }}>{maximized ? '\u25A3 Restore' : '\u2922'}</button>}
             </div>
-            <div ref={containerRef} style={{ flex:1, minHeight:200, borderRadius:8, overflow:'hidden', position:'relative' }}>
-                <canvas ref={canvasRef} style={{ width:'100%', height:'100%', display:'block', cursor:'grab' }}/>
-            </div>
+            {wmsMode ? (
+                <div ref={wmsContainerRef} style={{ flex:1, minHeight:200, borderRadius:8, overflow:'hidden', position:'relative', background:'#1a1a2e', cursor:'grab' }}>
+                    <img ref={wmsImgRef} style={{ width:'100%', height:'100%', objectFit:'fill', display:'block', background:'#1a1a2e' }} alt=""/>
+                </div>
+            ) : (
+                <div ref={containerRef} style={{ flex:1, minHeight:200, borderRadius:8, overflow:'hidden', position:'relative' }}>
+                    <canvas ref={canvasRef} style={{ width:'100%', height:'100%', display:'block', cursor:'grab' }}/>
+                </div>
+            )}
             {/* Node/edge detail table strip */}
             {(nodeDetail || nodeDetailLoading) && (
                 <div style={{ flexShrink:0, maxHeight:140, overflowY:'auto', overflowX:'auto', borderTop:'2px solid #e17055', background:'#fff' }}>
@@ -3089,6 +3534,7 @@ function App() {
 
     // Ref to access OntologyViewer methods (resetView, highlightOnGraph)
     const ontologyApiRef = useRef(null);
+    const mapDrawChunkRef = useRef(null);
     // Ref for the main content div (for ResizeObserver)
     const mainContentRef = useRef(null);
 
@@ -3297,18 +3743,21 @@ function App() {
         setGraphTableError(null);
         setFetchProgress({ edgesDone: 0, edgesTotal: '?', nodesDone: 0, nodesTotal: '?' });
         try {
-            var BATCH = 100000;
             var BATCH_THRESHOLD = 300000;
 
-            // Helper: fetch entities — batch only for large graphs (>500K entities)
+            // Raw fetch helper (bypasses api.request which has single-abort semantics)
+            var authHeaders = { 'Content-Type': 'application/json' };
+            if (credentials.user || credentials.pass) authHeaders['Authorization'] = 'Basic ' + btoa(credentials.user + ':' + credentials.pass);
+            async function rawRequest(body) {
+                var res = await fetch(credentials.url + '/get/graph/entities', { method: 'POST', headers: authHeaders, body: JSON.stringify(body) });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                return await res.json();
+            }
+
+            // Helper: fetch entities — single request for small graphs
             async function fetchEntities(entityType, onProgress) {
-                // Single fetch with limit=-1
                 if (onProgress) onProgress(0, '?');
-                var res = await api.request(credentials.url + '/get/graph/entities', {
-                    graph_name: graphName, offset: 0, limit: -1,
-                    options: { entity_type: entityType }
-                }, credentials);
-                if (res._cancelled) return null;
+                var res = await rawRequest({ graph_name: graphName, offset: 0, limit: -1, options: { entity_type: entityType } });
                 if (res.status === 'ERROR') throw new Error(res.message || 'get/graph/entities failed');
                 var outer = safeParse(res.data_str) || res;
                 var labels = outer.labels || [];
@@ -3320,13 +3769,13 @@ function App() {
                 return { entities: entities, labels: labels, identifierType: identifierType, total: total };
             }
 
-            // Batched version for large graphs
-            async function fetchEntitiesBatched(entityType, onProgress) {
-                var probeRes = await api.request(credentials.url + '/get/graph/entities', {
-                    graph_name: graphName, offset: 0, limit: 0,
-                    options: { entity_type: entityType }
-                }, credentials);
-                if (probeRes._cancelled) return null;
+            // Batched fetch — 1M per batch, offset-based
+            // For WKT: parses WKT→x,y per batch into chunks (progressive rendering)
+            // For non-WKT: collects raw entity chunks and concats at end
+            // Optional progressiveChunks + onDrawChunk for WKT progressive rendering
+            async function fetchEntitiesBatched(entityType, onProgress, progressiveChunks, onDrawChunk) {
+                // Probe for total count + identifier type
+                var probeRes = await rawRequest({ graph_name: graphName, offset: 0, limit: 0, options: { entity_type: entityType } });
                 if (probeRes.status === 'ERROR') throw new Error(probeRes.message || 'get/graph/entities failed');
                 var probeOuter = safeParse(probeRes.data_str) || probeRes;
                 var total = parseInt((probeOuter.info && probeOuter.info.total_count) || '0', 10);
@@ -3334,98 +3783,295 @@ function App() {
                 var identifierType = (probeOuter.info && probeOuter.info.identifier_type) || 'string';
                 if (onProgress) onProgress(0, total);
 
-                var allEntities = [];
-                var offset = 0;
                 var stride = entityType === 'node' ? 2 : 4;
-                while (offset < total) {
-                    var batchLimit = Math.min(BATCH, total - offset);
-                    var res = await api.request(credentials.url + '/get/graph/entities', {
-                        graph_name: graphName, offset: offset, limit: batchLimit,
-                        options: { entity_type: entityType }
-                    }, credentials);
-                    if (res._cancelled) return null;
+                var batchSize = total > 1000000 ? 1000000 : 100000;
+                var isWkt = identifierType === 'wkt';
+                var wktRe = isWkt ? /POINT\s*\(\s*([-\d.eE+]+)\s+([-\d.eE+]+)\s*\)/i : null;
+
+                // For WKT: collect small per-batch typed arrays (no huge upfront allocation)
+                var coordChunks = isWkt ? [] : null;
+                var edgeIdChunks = (isWkt && stride === 4) ? [] : null;
+                var labelIdxChunks = isWkt ? [] : null;
+                var wktBounds = isWkt ? { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity } : null;
+                var wktTotalCount = 0;
+
+                // For non-WKT: collect raw entity chunks
+                var chunks = isWkt ? null : [];
+                var fetched = 0;
+
+                while (fetched < total) {
+                    var batchLimit = Math.min(batchSize, total - fetched);
+                    var res = await rawRequest({ graph_name: graphName, offset: fetched, limit: batchLimit, options: { entity_type: entityType } });
                     if (res.status === 'ERROR') throw new Error(res.message || 'get/graph/entities batch failed');
                     var outer = safeParse(res.data_str) || res;
                     labels = outer.labels || labels;
                     identifierType = (outer.info && outer.info.identifier_type) || identifierType;
                     var arr = identifierType === 'int' ? (outer.entities_int || []) : (outer.entities_string || []);
-                    for (var i = 0; i < arr.length; i++) allEntities.push(arr[i]);
-                    offset += arr.length / stride;
-                    if (onProgress) onProgress(offset, total);
                     if (arr.length === 0) break;
+
+                    if (isWkt && stride === 4) {
+                        // Edge: parse WKT per batch → Float32Array chunk + edge IDs
+                        var maxEdges = arr.length / 4;
+                        var bCoords = new Float32Array(maxEdges * 4);
+                        var bIds = new Array(maxEdges);
+                        var bLabels = new Uint16Array(maxEdges);
+                        var bCount = 0;
+                        for (var ei = 0; ei < arr.length; ei += 4) {
+                            var m1 = arr[ei+1] && arr[ei+1].match(wktRe);
+                            var m2 = arr[ei+2] && arr[ei+2].match(wktRe);
+                            if (m1 && m2) {
+                                var x1 = parseFloat(m1[1]), y1 = parseFloat(m1[2]);
+                                var x2 = parseFloat(m2[1]), y2 = parseFloat(m2[2]);
+                                var co = bCount * 4;
+                                bCoords[co] = x1; bCoords[co+1] = y1; bCoords[co+2] = x2; bCoords[co+3] = y2;
+                                bIds[bCount] = arr[ei];
+                                var li = parseInt(arr[ei+3], 10); bLabels[bCount] = isNaN(li) ? 0 : li;
+                                if (x1 < wktBounds.minX) wktBounds.minX = x1; if (x1 > wktBounds.maxX) wktBounds.maxX = x1;
+                                if (y1 < wktBounds.minY) wktBounds.minY = y1; if (y1 > wktBounds.maxY) wktBounds.maxY = y1;
+                                if (x2 < wktBounds.minX) wktBounds.minX = x2; if (x2 > wktBounds.maxX) wktBounds.maxX = x2;
+                                if (y2 < wktBounds.minY) wktBounds.minY = y2; if (y2 > wktBounds.maxY) wktBounds.maxY = y2;
+                                bCount++;
+                            }
+                        }
+                        var trimCoords = bCoords.subarray(0, bCount * 4);
+                        var trimIds = bIds.slice(0, bCount);
+                        var trimLabels = bLabels.subarray(0, bCount);
+                        coordChunks.push(trimCoords);
+                        edgeIdChunks.push(trimIds);
+                        labelIdxChunks.push(trimLabels);
+                        wktTotalCount += bCount;
+                        // Accumulate + draw progressively
+                        if (progressiveChunks) {
+                            progressiveChunks.coordChunks.push(trimCoords);
+                            progressiveChunks.edgeIdChunks = progressiveChunks.edgeIdChunks || [];
+                            progressiveChunks.edgeIdChunks.push(trimIds);
+                            progressiveChunks.labelIdxChunks.push(trimLabels);
+                            progressiveChunks.bounds = wktBounds;
+                            progressiveChunks.count = wktTotalCount;
+                            progressiveChunks.labels = labels;
+                        }
+                        if (onDrawChunk) onDrawChunk(trimCoords, trimLabels, labels, wktBounds);
+                    } else if (isWkt && stride === 2) {
+                        // Node: [node_wkt, label_idx]
+                        var maxNodes = arr.length / 2;
+                        var nCoords = new Float32Array(maxNodes * 2);
+                        var nLabels = new Uint16Array(maxNodes);
+                        var nCount = 0;
+                        for (var ni = 0; ni < arr.length; ni += 2) {
+                            var mn = arr[ni] && arr[ni].match(wktRe);
+                            if (mn) {
+                                var nco = nCount * 2;
+                                nCoords[nco] = parseFloat(mn[1]); nCoords[nco+1] = parseFloat(mn[2]);
+                                var nli = parseInt(arr[ni+1], 10); nLabels[nCount] = isNaN(nli) ? 0 : nli;
+                                nCount++;
+                            }
+                        }
+                        coordChunks.push(nCoords.subarray(0, nCount * 2));
+                        labelIdxChunks.push(nLabels.subarray(0, nCount));
+                        wktTotalCount += nCount;
+                    } else {
+                        chunks.push(arr);
+                    }
+
+                    fetched += arr.length / stride;
+                    if (onProgress) onProgress(fetched, total);
                 }
-                return { entities: allEntities, labels: labels, identifierType: identifierType, total: total };
+
+                if (isWkt) {
+                    // No concat needed — chunks are stored directly in wktEdges
+                    return { entities: [], labels: labels, identifierType: identifierType, total: wktTotalCount,
+                             wktParsed: { coordChunks: coordChunks, edgeIdChunks: edgeIdChunks, labelIdxChunks: labelIdxChunks, bounds: wktBounds, count: wktTotalCount } };
+                }
+                var allEntities = [].concat.apply([], chunks);
+                return { entities: allEntities, labels: labels, identifierType: identifierType, total: fetched };
             }
 
             // Determine if batching is needed based on edge count from show/graph
             var numEdges = (labelData && (labelData.total_labeled_edges + labelData.total_unlabeled_edges)) || 0;
             var useBatch = numEdges > BATCH_THRESHOLD;
+            var WMS_THRESHOLD = 2000000; // >2M edges → use WMS server-side rendering
 
-            // Fetch nodes
-            var fetchFn = useBatch ? fetchEntitiesBatched : fetchEntities;
-            var nodeResult = await fetchFn('node', function(done, total) {
+            // Early probe: get edge identifier_type and total_count without fetching data
+            var edgeProbe = await rawRequest({ graph_name: graphName, offset: 0, limit: 0, options: { entity_type: 'edge' } });
+            var edgeProbeOuter = safeParse(edgeProbe.data_str) || edgeProbe;
+            var edgeIdType = (edgeProbeOuter.info && edgeProbeOuter.info.identifier_type) || 'string';
+            var edgeTotalCount = parseInt((edgeProbeOuter.info && edgeProbeOuter.info.total_count) || '0', 10);
+
+            // For large WKT graphs: use WMS server-side rendering (no edge data fetch)
+            if (edgeIdType === 'wkt' && edgeTotalCount > WMS_THRESHOLD && edgeSourceTable) {
+                var geoCol = edgeSourceTable.wktCol || edgeSourceTable.idCol;
+                // Query data bounds from the edge source table
+                var wmsBbox = '-125,24,-66,50'; // fallback: continental US
+                try {
+                    var bboxSql = 'SELECT MIN(ST_MINX(' + geoCol + ')), MIN(ST_MINY(' + geoCol + ')), MAX(ST_MAXX(' + geoCol + ')), MAX(ST_MAXY(' + geoCol + ')) FROM ' + edgeSourceTable.table + ' LIMIT 1';
+                    var bboxRes = await fetch(credentials.url + '/execute/sql', { method: 'POST', headers: authHeaders, body: JSON.stringify({ statement: bboxSql, offset: 0, limit: 1, encoding: 'json', options: {} }) });
+                    if (bboxRes.ok) {
+                        var bboxJson = await bboxRes.json();
+                        var bboxOuter = safeParse(bboxJson.data_str) || bboxJson;
+                        var bboxJer = safeParse(bboxOuter.json_encoded_response) || {};
+                        if (bboxJer.column_1 && bboxJer.column_1[0] != null) {
+                            var bPad = 0.5;
+                            wmsBbox = (bboxJer.column_1[0] - bPad) + ',' + (bboxJer.column_2[0] - bPad) + ',' + (bboxJer.column_3[0] + bPad) + ',' + (bboxJer.column_4[0] + bPad);
+                        }
+                    }
+                } catch(bboxErr) { console.log('WMS bbox query failed:', bboxErr.message); }
+                setGraphTableData({
+                    edges: { records: [], headers: [], total: edgeTotalCount },
+                    nodes: { records: [], headers: ['NODE_NAME', 'NODE_LABEL'], total: 0 },
+                    edgeTable: graphName + ' (entities)',
+                    nodeTable: graphName + ' (entities/nodes)',
+                    identifierType: 'wkt',
+                    wmsMode: {
+                        table: edgeSourceTable.table, geoCol: geoCol, totalEdges: edgeTotalCount, bbox: wmsBbox,
+                        labelCol: edgeSourceTable.labelCol || null,
+                        edgeLabels: labelData && labelData.edge_labels ? labelData.edge_labels.map(function(l) { return (l.labels || []).join('|'); }) : [],
+                    },
+                });
+                setFetchProgress(null);
+                return;
+            }
+
+            // Fetch nodes — small graphs use single request, large use batched
+            var nodeFetchFn = useBatch ? fetchEntitiesBatched : fetchEntities;
+            var nodeResult = await nodeFetchFn('node', function(done, total) {
                 setFetchProgress(function(p) { return Object.assign({}, p, { nodesDone: done, nodesTotal: total }); });
             });
             if (!nodeResult) return;
 
-            // Fetch edges
-            var edgeResult = await fetchFn('edge', function(done, total) {
-                setFetchProgress(function(p) { return Object.assign({}, p, { edgesDone: done, edgesTotal: total }); });
-            });
-            if (!edgeResult) return;
-
-            // Helper: resolve label from 1-based index — labels may already be JSON arrays like '["FEMALE","business"]'
+            // Helper: resolve label from 1-based index
             function resolveLabelStr(labelIdx, labels) {
                 var idx = typeof labelIdx === 'string' ? parseInt(labelIdx, 10) : labelIdx;
                 if (idx > 0 && idx <= labels.length) {
                     var lbl = labels[idx - 1];
-                    // If already a JSON array, return as-is; otherwise wrap
                     if (lbl && lbl.charAt(0) === '[') return lbl;
                     return lbl ? '["' + lbl + '"]' : '';
                 }
                 return '';
             }
 
-            // Convert nodes: stride 2 [id, label_idx, ...] → [{NODE_NAME/NODE_ID, NODE_LABEL}, ...]
-            var nodeRecords = [];
-            var nodeIdField = nodeResult.identifierType === 'int' ? 'NODE_ID' : 'NODE_NAME';
-            var ents = nodeResult.entities;
-            for (var ni = 0; ni < ents.length; ni += 2) {
-                var nodeId = ents[ni];
-                var nodeLabelIdx = ents[ni + 1];
-                var nrec = {};
-                nrec[nodeIdField] = nodeId;
-                nrec['NODE_LABEL'] = resolveLabelStr(nodeLabelIdx, nodeResult.labels);
-                nodeRecords.push(nrec);
-            }
-            var nodeHeaders = [nodeIdField, 'NODE_LABEL'];
+            var idType = nodeResult.identifierType || 'string';
 
-            // Convert edges: stride 4 [edge_id, node1, node2, label_idx, ...] → [{EDGE_ID, NODE1_NAME/ID, NODE2_NAME/ID, EDGE_LABEL}, ...]
-            var edgeRecords = [];
-            var edgeNodeField1 = edgeResult.identifierType === 'int' ? 'EDGE_NODE1_ID' : 'NODE1_NAME';
-            var edgeNodeField2 = edgeResult.identifierType === 'int' ? 'EDGE_NODE2_ID' : 'NODE2_NAME';
-            var eents = edgeResult.entities;
-            for (var ei = 0; ei < eents.length; ei += 4) {
-                var edgeId = eents[ei];
-                var node1 = eents[ei + 1];
-                var node2 = eents[ei + 2];
-                var edgeLabelIdx = eents[ei + 3];
-                var erec = {};
-                erec['EDGE_ID'] = edgeId;
-                erec[edgeNodeField1] = node1;
-                erec[edgeNodeField2] = node2;
-                erec['EDGE_LABEL'] = resolveLabelStr(edgeLabelIdx, edgeResult.labels);
-                edgeRecords.push(erec);
-            }
-            var edgeHeaders = ['EDGE_ID', edgeNodeField1, edgeNodeField2, 'EDGE_LABEL'];
+            // For WKT: progressive rendering — publish chunks as they arrive
+            if (nodeResult.identifierType === 'wkt' || (nodeResult.wktParsed)) {
+                // Build node records from pre-parsed or raw entities
+                var nodeRecords = [];
+                var nodeIdField = 'NODE_NAME';
+                if (nodeResult.wktParsed) {
+                    var nLabels = nodeResult.labels;
+                    var nWkt = nodeResult.wktParsed;
+                    // labelIdx is now chunked — iterate chunks
+                    var nGi = 0;
+                    var nLblChunks = nWkt.labelIdxChunks;
+                    for (var nci = 0; nci < nLblChunks.length; nci++) {
+                        var nChunk = nLblChunks[nci];
+                        for (var ncj = 0; ncj < nChunk.length; ncj++) {
+                            var nrec = {}; nrec[nodeIdField] = String(nGi);
+                            nrec['NODE_LABEL'] = resolveLabelStr(nChunk[ncj], nLabels);
+                            nodeRecords.push(nrec);
+                            nGi++;
+                        }
+                    }
+                } else {
+                    var ents = nodeResult.entities;
+                    for (var ni = 0; ni < ents.length; ni += 2) {
+                        var nrec2 = {}; nrec2[nodeIdField] = ents[ni];
+                        nrec2['NODE_LABEL'] = resolveLabelStr(ents[ni+1], nodeResult.labels);
+                        nodeRecords.push(nrec2);
+                    }
+                }
 
-            setGraphTableData({
-                edges: { records: edgeRecords, headers: edgeHeaders, total: edgeResult.total },
-                nodes: { records: nodeRecords, headers: nodeHeaders, total: nodeResult.total },
-                edgeTable: graphName + ' (entities)',
-                nodeTable: graphName + ' (entities/nodes)',
-                identifierType: nodeResult.identifierType || edgeResult.identifierType || 'string',
-            });
+                // Shared chunks state — accumulated during edge fetch
+                var edgeChunks = { coordChunks: [], labelIdxChunks: [], bounds: { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity }, count: 0, labels: [] };
+
+                // Mount MapView with empty data so canvas is ready for progressive drawing
+                setGraphTableData({
+                    edges: { records: [], headers: ['EDGE_ID', 'NODE1_NAME', 'NODE2_NAME', 'EDGE_LABEL'], total: 0 },
+                    nodes: { records: nodeRecords, headers: [nodeIdField, 'NODE_LABEL'], total: nodeResult.total },
+                    edgeTable: graphName + ' (entities)',
+                    nodeTable: graphName + ' (entities/nodes)',
+                    identifierType: 'wkt',
+                    wktEdges: { coordChunks: [], labelIdxChunks: [], bounds: { minX: 0, maxX: 1, minY: 0, maxY: 1 }, count: 0 },
+                    wktEdgeLabels: [],
+                });
+                setShowForceGraph(true);
+                // Wait a tick for MapView to mount and expose drawChunkRef
+                await new Promise(function(r) { setTimeout(r, 50); });
+
+                // Progressive draw callback — draws each batch directly onto MapView canvas
+                var progressiveDraw = function(coords, labelIdx, labels, bounds) {
+                    if (mapDrawChunkRef && mapDrawChunkRef.current) {
+                        if (mapDrawChunkRef.current.setProgressiveValid) mapDrawChunkRef.current.setProgressiveValid(true);
+                        mapDrawChunkRef.current(coords, labelIdx, labels, bounds);
+                    }
+                };
+
+                // Fetch edges with progressive canvas drawing
+                var edgeResult;
+                try {
+                    edgeResult = await fetchEntitiesBatched('edge', function(done, total) {
+                        setFetchProgress(function(p) { return Object.assign({}, p, { edgesDone: done, edgesTotal: total }); });
+                    }, edgeChunks, progressiveDraw);
+                } catch(wktErr) {
+                    console.error('WKT edge fetch error:', wktErr.message, wktErr.stack);
+                    throw wktErr;
+                }
+                if (!edgeResult) return;
+                // Save progressive canvas as snapshot (for restoring at zoom 1.0)
+                if (mapDrawChunkRef.current && mapDrawChunkRef.current.saveSnapshot) mapDrawChunkRef.current.saveSnapshot();
+                // Final publish with complete data — enables zoom/pan/pick on full dataset
+                // progressiveValidRef keeps auto-render suppressed until user interacts
+                edgeChunks.labels = edgeResult.labels;
+                edgeChunks.count = edgeResult.total;
+                setGraphTableData({
+                    edges: { records: [], headers: ['EDGE_ID', 'NODE1_NAME', 'NODE2_NAME', 'EDGE_LABEL'], total: edgeChunks.count },
+                    nodes: { records: nodeRecords, headers: [nodeIdField, 'NODE_LABEL'], total: nodeResult.total },
+                    edgeTable: graphName + ' (entities)',
+                    nodeTable: graphName + ' (entities/nodes)',
+                    identifierType: 'wkt',
+                    wktEdges: { coordChunks: edgeChunks.coordChunks, edgeIdChunks: edgeChunks.edgeIdChunks || [], labelIdxChunks: edgeChunks.labelIdxChunks, bounds: edgeChunks.bounds, count: edgeChunks.count },
+                    wktEdgeLabels: edgeChunks.labels,
+                });
+            } else {
+                // Non-WKT: fetch edges then build records
+                var edgeFetchFn = useBatch ? fetchEntitiesBatched : fetchEntities;
+                var edgeResult = await edgeFetchFn('edge', function(done, total) {
+                    setFetchProgress(function(p) { return Object.assign({}, p, { edgesDone: done, edgesTotal: total }); });
+                });
+                if (!edgeResult) return;
+                idType = nodeResult.identifierType || edgeResult.identifierType || 'string';
+                // Non-WKT: build full record objects as before
+                var nodeRecords = [];
+                var nodeIdField = idType === 'int' ? 'NODE_ID' : 'NODE_NAME';
+                var ents = nodeResult.entities;
+                for (var ni = 0; ni < ents.length; ni += 2) {
+                    var nrec = {}; nrec[nodeIdField] = ents[ni];
+                    nrec['NODE_LABEL'] = resolveLabelStr(ents[ni+1], nodeResult.labels);
+                    nodeRecords.push(nrec);
+                }
+                var nodeHeaders = [nodeIdField, 'NODE_LABEL'];
+
+                var edgeRecords = [];
+                var edgeNodeField1 = idType === 'int' ? 'EDGE_NODE1_ID' : 'NODE1_NAME';
+                var edgeNodeField2 = idType === 'int' ? 'EDGE_NODE2_ID' : 'NODE2_NAME';
+                var eents = edgeResult.entities;
+                for (var ei = 0; ei < eents.length; ei += 4) {
+                    var erec = {};
+                    erec['EDGE_ID'] = eents[ei];
+                    erec[edgeNodeField1] = eents[ei+1];
+                    erec[edgeNodeField2] = eents[ei+2];
+                    erec['EDGE_LABEL'] = resolveLabelStr(eents[ei+3], edgeResult.labels);
+                    edgeRecords.push(erec);
+                }
+                var edgeHeaders = ['EDGE_ID', edgeNodeField1, edgeNodeField2, 'EDGE_LABEL'];
+
+                setGraphTableData({
+                    edges: { records: edgeRecords, headers: edgeHeaders, total: edgeResult.total },
+                    nodes: { records: nodeRecords, headers: nodeHeaders, total: nodeResult.total },
+                    edgeTable: graphName + ' (entities)',
+                    nodeTable: graphName + ' (entities/nodes)',
+                    identifierType: idType,
+                });
+            }
             setFetchProgress(function(p) { return Object.assign({}, p, { nodesDone: p.nodesTotal, edgesDone: p.edgesTotal }); });
             setTimeout(function() { setFetchProgress(null); }, 500);
         } catch(err) {
@@ -3433,7 +4079,7 @@ function App() {
             setFetchProgress(null);
             throw err;
         }
-    }, [activeGraph, credentials, api]);
+    }, [activeGraph, credentials, api, edgeSourceTable]);
 
     /* Fetch graph data: try /get/graph/entities first, fall back to fetchGraphTableData */
     var fetchGraphData = useCallback(async function(overrideGraph) {
@@ -3694,6 +4340,7 @@ function App() {
                                     />
                                     {graphTableData && graphTableData.identifierType === 'wkt' ? (
                                         <MapView data={graphTableData} labelData={labelData} selectedNodeLabels={selectedNodeLabels} selectedEdgeLabels={selectedEdgeLabels} credentials={credentials} nodeSourceTable={nodeSourceTable} edgeSourceTable={edgeSourceTable}
+                                            drawChunkRef={mapDrawChunkRef}
                                             onVisualize={function(){ fetchGraphData(); setShowForceGraph(true); }}
                                             vizLoading={api.loading || !!fetchProgress}
                                             onToggleMaximize={function(){ setMaximizedPanel('canvas'); }}
@@ -3785,6 +4432,7 @@ function App() {
                 <div style={{ position:'fixed', top:0, left:0, width:'100vw', height:'100vh', zIndex:999, display:'flex', flexDirection:'column', background:'#fff' }}>
                     {graphTableData.identifierType === 'wkt' ? (
                         <MapView data={graphTableData} labelData={labelData} selectedNodeLabels={selectedNodeLabels} selectedEdgeLabels={selectedEdgeLabels} credentials={credentials} nodeSourceTable={nodeSourceTable} edgeSourceTable={edgeSourceTable} graphDirected={graphDirected}
+                            drawChunkRef={mapDrawChunkRef}
                             onVisualize={function(){ fetchGraphData(); setShowForceGraph(true); }}
                             vizLoading={api.loading || !!fetchProgress}
                             maximized={true} onToggleMaximize={function(){ setMaximizedPanel(null); }}

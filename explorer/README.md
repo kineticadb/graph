@@ -31,6 +31,9 @@ No build step, no dependencies to install, no server to run.
 ![Graph Explorer — MapView for WKT geospatial graphs](screenshots/explorer_mapview_geo.png)
 *MapView for WKT geospatial graphs: DC road network rendered as canvas lines with zoom/pan, edge picking from original source table, HiDPI rendering.*
 
+![Graph Explorer — WMS class-break raster](screenshots/explorer_wms_cb_raster.png)
+*WMS server-side rendering: 27M US road edges colored by state code using class-break raster. Heatmap/CB/Auto style toggle. Edge label distribution chart with 49 state labels.*
+
 ## Features
 
 ### Graph Overview
@@ -46,7 +49,9 @@ No build step, no dependencies to install, no server to run.
 ### Graph Visualization
 - **`↻ Pull+Visualize`** fetches graph nodes and edges via `/get/graph/entities` (with batching for large graphs >500K edges, fallback to `/get/records`).
 - **CanvasGraph** (non-WKT graphs) — Force-directed visualization with colors matching label charts. Click a node to fetch its full record from the source table. Node/edge limit sliders and viz limit dropdown in the header.
-- **MapView** (WKT geospatial graphs) — Canvas-based renderer auto-selected when `identifier_type` is `wkt`. Optimized for large graphs (~1M edges): pre-parsed WKT coordinates, color-batched drawing, rAF-throttled rendering, adaptive LOD decimation during interaction (targets ~5K edges at coarsest level, disabled at high zoom where viewport culling suffices). Zoom (mouse wheel, cursor-centered), pan (drag), HiDPI rendering. Data bounding box (dashed orange) shown during interaction for spatial context. Edge picking queries the original edge source table by edge ID or WKT match (coordinates shown on pick). Label filtering supported. Info overlay shows visible/total edge count and LOD level.
+- **MapView** (WKT geospatial graphs) — Two rendering modes, auto-selected by edge count:
+  - **Client-side canvas** (<2M edges) — Pre-parsed WKT→Float32Array per batch with progressive rendering (edges draw as batches arrive). Color-batched drawing, rAF-throttled, adaptive LOD. Zoom (cursor-centered), pan, HiDPI, viewport culling, data bounding box on interaction. Edge picking shows edge ID + WKT endpoints + source table lookup. Label filtering supported. Info overlay shows visible/total edge count and LOD level.
+  - **WMS server-side** (>2M edges) — Kinetica `/wms` endpoint renders PNG tiles on the server. Style toggle buttons in header: **Heatmap** (fast overview), **CB** (class-break raster colored by edge label — top 20 labels with PALETTE colors), **Auto** (default — heatmap at low zoom, cb_raster at deep zoom). Zoom/pan with debounced tile fetches. Zero client memory for edge data.
 - Click a node in the visualization to **copy its entity ID** to clipboard (for use in Query Helper or queries).
 - Label selection in the charts filters the visualization to matching subgraphs. Multi-label combos (e.g., `["director","actor"]`) are selected as exact combos — won't match single-label nodes.
 - **`⤢` Maximize** button for full-viewport view (Esc or `▣ Restore` to return).
@@ -120,7 +125,8 @@ The application is a single HTML file containing inline CSS and JSX (transpiled 
 | `POST /show/graph` | List graphs, get label details, and ontology DOT (`export_graph_schema: 'true'`) |
 | `POST /get/graph/entities` | Fetch graph nodes/edges directly with labels and identifier type (int/string/wkt) |
 | `POST /get/records` | Fallback for visualization data; also used for node/edge detail lookup from source tables |
-| `POST /execute/sql` | Run SQL and GQL queries |
+| `POST /execute/sql` | Run SQL and GQL queries; also used for WMS BBOX computation |
+| `GET /wms` | Server-side map tile rendering for large WKT graphs (>2M edges) — heatmap or raster styles |
 
 ### Response Parsing
 
