@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='UTF-8'/>
+<meta name='viewport' content='width=device-width, initial-scale=1.0'/>
+<title>Alter Graph — Kinetica Graph API</title>
+<link rel='icon' type='image/png' href='../favicon.png'/>
+<style>
+:root {
+  --bg: #ffffff; --bg-alt: #f6f8fa; --text: #24292f; --muted: #57606a;
+  --border: #d0d7de; --accent: #2563eb; --code-bg: #eff1f3;
+}
+:root[data-theme="dark"] {
+  --bg: #0d1117; --bg-alt: #161b22; --text: #c9d1d9; --muted: #8b949e;
+  --border: #30363d; --accent: #58a6ff; --code-bg: #21262d;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d1117; --bg-alt: #161b22; --text: #c9d1d9; --muted: #8b949e;
+    --border: #30363d; --accent: #58a6ff; --code-bg: #21262d;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+       background: var(--bg); color: var(--text); line-height: 1.55; }
+.wrap { max-width: 1100px; margin: 0 auto; padding: 32px 28px 80px; }
+h1 { margin: 0 0 4px; font-size: 28px; }
+h2 { margin: 36px 0 12px; font-size: 20px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+.crumbs { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+.crumbs a { color: var(--accent); text-decoration: none; }
+.crumbs a:hover { text-decoration: underline; }
+.endpoint { display: inline-block; background: var(--code-bg); color: var(--accent);
+            padding: 2px 8px; border-radius: 4px; font-family: SFMono-Regular,Consolas,monospace; font-size: 13px; }
+.short { font-size: 16px; color: var(--muted); margin: 4px 0 16px; }
+.intro { background: var(--bg-alt); border: 1px solid var(--border); border-radius: 6px;
+         padding: 12px 14px; margin: 0 0 24px; font-size: 14px; }
+table { width: 100%; border-collapse: collapse; margin: 8px 0 24px; font-size: 14px; }
+th { text-align: left; background: var(--bg-alt); padding: 8px 10px; border-bottom: 1px solid var(--border);
+     position: sticky; top: 0; }
+td { padding: 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+td.fname { white-space: nowrap; min-width: 180px; }
+td.ftype { white-space: nowrap; min-width: 110px; color: var(--muted); }
+td.fdoc { line-height: 1.5; }
+code { background: var(--code-bg); color: var(--text); padding: 1px 5px;
+       border-radius: 3px; font-family: SFMono-Regular,Consolas,monospace; font-size: 92%; }
+.kv { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+.value-block { margin-top: 6px; font-size: 13px; }
+ul.choices { margin: 6px 0 0 16px; padding: 0; }
+ul.choices li { margin: 2px 0; }
+details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.theme-btn { position: fixed; top: 16px; right: 16px; padding: 6px 12px; border: 1px solid var(--border);
+             background: var(--bg-alt); color: var(--text); border-radius: 6px; cursor: pointer; font-size: 13px; }
+</style>
+</head>
+<body>
+<button id='themeBtn' class='theme-btn'>☀ Light</button>
+<div class='wrap'>
+  <div class='crumbs'><a href='../Kinetica_Graph_User_Guide.html'>← Back to User Guide</a> · Graph API Reference</div>
+  <h1>Alter Graph</h1>
+  <div><span class='endpoint'>/alter/graph</span></div>
+  <p class='short'>Admin graph server commands.</p>
+  
+    <h2>Request</h2>
+    <div class='intro'>For internal use only: Graph server admin command.</div>
+    <table>
+      <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+      <tbody>
+    <tr>
+      <td class='fname'><code>graph_name</code></td>
+      <td class='ftype'><code>string</code></td>
+      <td class='fdoc'>Graph on which the operation should be applied.<br>If empty, then it will apply to all graphs.<br>This request can be sent from the graph server to the graph client, or from the<br>client to the server depending on the type of operation.</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>action</code></td>
+      <td class='ftype'><code>string</code></td>
+      <td class='fdoc'>Operation to be applied<div class='value-block'><details><summary><span class='kv'>valid_choices</span></summary><ul class='choices'><li><code>add_table_monitor</code> — Add a table monitor to a graph. The table name is specified as the action argment.</li><li><code>reset_client</code> — Reset all current operations on the client side. Used when the graph server is restarted to recover from a failure.</li><li><code>reset_server</code> — Reset all current operations on the server side. This is also sent on (re)start.</li><li><code>cancel_task</code> — Cancel a specific task on the graph server.</li><li><code>alter_logger</code> — Change the server side log level; e.g., 'GraphServer.GraphSolver=DEBUG'</li><li><code>delete_all</code> — Delete all graphs, and remove any persistence info.</li><li><code>status</code> — Current status of the graph client (db side).</li><li><code>collect_graphs</code> — Get the create command for all persisted graphs.</li><li><code>restore_graphs</code> — Re-creates all graphs from persist info on rank0.</li></ul></details></div></td>
+    </tr>
+    <tr>
+      <td class='fname'><code>action_arg</code></td>
+      <td class='ftype'><code>string</code></td>
+      <td class='fdoc'>Action specific argument.</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>options</code></td>
+      <td class='ftype'>map&lt;string,<code>string</code>&gt;</td>
+      <td class='fdoc'>Optional parameters.<div class='value-block'><span class='kv'>default:</span> <code>{}</code></div></td>
+    </tr></tbody>
+    </table>
+    <h2>Response</h2>
+    <div class='intro'>For internal use only: Graph server admin command.</div>
+    <table>
+      <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+      <tbody>
+    <tr>
+      <td class='fname'><code>action</code></td>
+      <td class='ftype'><code>string</code></td>
+      <td class='fdoc'>Context specific feedback or action to be taken by the client</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>action_arg</code></td>
+      <td class='ftype'><code>string</code></td>
+      <td class='fdoc'>Action specific argument.</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>info</code></td>
+      <td class='ftype'>map&lt;string,<code>string</code>&gt;</td>
+      <td class='fdoc'>Additional information.</td>
+    </tr></tbody>
+    </table>
+</div>
+<script>
+(function(){
+  const saved = localStorage.getItem('schema-theme');
+  const theme = saved || 'dark';
+  document.documentElement.setAttribute('data-theme', theme);
+  document.addEventListener('DOMContentLoaded', () => {
+    const btn = document.getElementById('themeBtn');
+    function update() {
+      const t = document.documentElement.getAttribute('data-theme');
+      btn.textContent = t === 'dark' ? '☀ Light' : '☾ Dark';
+    }
+    update();
+    btn.addEventListener('click', () => {
+      const t = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+      localStorage.setItem('schema-theme', t);
+      update();
+    });
+  });
+})();
+</script>
+</body>
+</html>

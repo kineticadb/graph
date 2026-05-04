@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='UTF-8'/>
+<meta name='viewport' content='width=device-width, initial-scale=1.0'/>
+<title>Create Graph — Kinetica Graph API</title>
+<link rel='icon' type='image/png' href='../favicon.png'/>
+<style>
+:root {
+  --bg: #ffffff; --bg-alt: #f6f8fa; --text: #24292f; --muted: #57606a;
+  --border: #d0d7de; --accent: #2563eb; --code-bg: #eff1f3;
+}
+:root[data-theme="dark"] {
+  --bg: #0d1117; --bg-alt: #161b22; --text: #c9d1d9; --muted: #8b949e;
+  --border: #30363d; --accent: #58a6ff; --code-bg: #21262d;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d1117; --bg-alt: #161b22; --text: #c9d1d9; --muted: #8b949e;
+    --border: #30363d; --accent: #58a6ff; --code-bg: #21262d;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+       background: var(--bg); color: var(--text); line-height: 1.55; }
+.wrap { max-width: 1100px; margin: 0 auto; padding: 32px 28px 80px; }
+h1 { margin: 0 0 4px; font-size: 28px; }
+h2 { margin: 36px 0 12px; font-size: 20px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+.crumbs { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+.crumbs a { color: var(--accent); text-decoration: none; }
+.crumbs a:hover { text-decoration: underline; }
+.endpoint { display: inline-block; background: var(--code-bg); color: var(--accent);
+            padding: 2px 8px; border-radius: 4px; font-family: SFMono-Regular,Consolas,monospace; font-size: 13px; }
+.short { font-size: 16px; color: var(--muted); margin: 4px 0 16px; }
+.intro { background: var(--bg-alt); border: 1px solid var(--border); border-radius: 6px;
+         padding: 12px 14px; margin: 0 0 24px; font-size: 14px; }
+table { width: 100%; border-collapse: collapse; margin: 8px 0 24px; font-size: 14px; }
+th { text-align: left; background: var(--bg-alt); padding: 8px 10px; border-bottom: 1px solid var(--border);
+     position: sticky; top: 0; }
+td { padding: 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+td.fname { white-space: nowrap; min-width: 180px; }
+td.ftype { white-space: nowrap; min-width: 110px; color: var(--muted); }
+td.fdoc { line-height: 1.5; }
+code { background: var(--code-bg); color: var(--text); padding: 1px 5px;
+       border-radius: 3px; font-family: SFMono-Regular,Consolas,monospace; font-size: 92%; }
+.kv { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+.value-block { margin-top: 6px; font-size: 13px; }
+ul.choices { margin: 6px 0 0 16px; padding: 0; }
+ul.choices li { margin: 2px 0; }
+details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.theme-btn { position: fixed; top: 16px; right: 16px; padding: 6px 12px; border: 1px solid var(--border);
+             background: var(--bg-alt); color: var(--text); border-radius: 6px; cursor: pointer; font-size: 13px; }
+</style>
+</head>
+<body>
+<button id='themeBtn' class='theme-btn'>☀ Light</button>
+<div class='wrap'>
+  <div class='crumbs'><a href='../Kinetica_Graph_User_Guide.html'>← Back to User Guide</a> · Graph API Reference</div>
+  <h1>Create Graph</h1>
+  <div><span class='endpoint'>/create/graph</span></div>
+  <p class='short'>Create a new graph network.</p>
+  
+    <h2>Request</h2>
+    <div class='intro'>Creates a new graph network using given nodes, edges, weights, and<br>restrictions.<br>IMPORTANT: It's highly recommended that you review the<br><code>Graphs and Solvers</code><br>concepts documentation, the<br><code>Graph REST Tutorial</code>,<br>and/or some <code>graph examples</code> before<br>using this endpoint.</div>
+    <table>
+      <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+      <tbody>
+    <tr>
+      <td class='fname'><code>graph_name</code></td>
+      <td class='ftype'><code>string</code></td>
+      <td class='fdoc'>Name of the graph resource to generate.</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>directed_graph</code></td>
+      <td class='ftype'><code>boolean</code></td>
+      <td class='fdoc'>If set to <code>true</code>, the graph will be directed. If set to <code>false</code>, the graph will not be directed. Consult <code>Directed Graphs</code> for more details.<div class='value-block'><span class='kv'>default:</span> <code>true</code><br><details><summary><span class='kv'>valid_choices</span></summary><ul class='choices'><li><code>true</code></li><li><code>false</code></li></ul></details></div></td>
+    </tr>
+    <tr>
+      <td class='fname'><code>nodes</code></td>
+      <td class='ftype'>array&lt;<code>string</code>&gt;</td>
+      <td class='fdoc'>Nodes represent fundamental topological units of a graph.<br>Nodes must be specified using<br><code>identifiers</code>;<br>identifiers are grouped as<br><code>combinations</code>.<br>Identifiers can be used with existing column names, e.g.,<br>'table.column AS NODE_ID', expressions, e.g.,<br>'ST_MAKEPOINT(column1, column2) AS NODE_WKTPOINT', or constant values, e.g.,<br>'<code>9, 10, 11</code> AS NODE_ID'.<br>If using constant values in an identifier combination, the number of values<br>specified must match across the combination.</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>edges</code></td>
+      <td class='ftype'>array&lt;<code>string</code>&gt;</td>
+      <td class='fdoc'>Edges represent the required fundamental topological unit of<br>a graph that typically connect nodes. Edges must be specified using<br><code>identifiers</code>;<br>identifiers are grouped as<br><code>combinations</code>.<br>Identifiers can be used with existing column names, e.g.,<br>'table.column AS EDGE_ID', expressions, e.g.,<br>'SUBSTR(column, 1, 6) AS EDGE_NODE1_NAME', or constant values, e.g.,<br>&quot;<code>'family', 'coworker'</code> AS EDGE_LABEL&quot;.<br>If using constant values in an identifier combination, the number of values<br>specified must match across the combination.</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>weights</code></td>
+      <td class='ftype'>array&lt;<code>string</code>&gt;</td>
+      <td class='fdoc'>Weights represent a method of informing the graph solver of<br>the cost of including a given edge in a solution. Weights must be specified<br>using<br><code>identifiers</code>;<br>identifiers are grouped as<br><code>combinations</code>.<br>Identifiers can be used with existing column names, e.g.,<br>'table.column AS WEIGHTS_EDGE_ID', expressions, e.g.,<br>'ST_LENGTH(wkt) AS WEIGHTS_VALUESPECIFIED', or constant values, e.g.,<br>'<code>4, 15</code> AS WEIGHTS_VALUESPECIFIED'.<br>If using constant values in an identifier combination, the number of values specified<br>must match across the combination.</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>restrictions</code></td>
+      <td class='ftype'>array&lt;<code>string</code>&gt;</td>
+      <td class='fdoc'>Restrictions represent a method of informing the graph<br>solver which edges and/or nodes should be ignored for the solution. Restrictions<br>must be specified using<br><code>identifiers</code>;<br>identifiers are grouped as<br><code>combinations</code>.<br>Identifiers can be used with existing column names, e.g.,<br>'table.column AS RESTRICTIONS_EDGE_ID', expressions, e.g.,<br>'column/2 AS RESTRICTIONS_VALUECOMPARED', or constant values, e.g.,<br>'<code>0, 0, 0, 1</code> AS RESTRICTIONS_ONOFFCOMPARED'.<br>If using constant values in an identifier combination, the number of values<br>specified must match across the combination.</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>options</code></td>
+      <td class='ftype'>map&lt;string,<code>string</code>&gt;</td>
+      <td class='fdoc'>Optional parameters.<div class='value-block'><span class='kv'>default:</span> <code>{}</code></div></td>
+    </tr></tbody>
+    </table>
+    <h2>Response</h2>
+    <div class='intro'></div>
+    <table>
+      <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+      <tbody>
+    <tr>
+      <td class='fname'><code>result</code></td>
+      <td class='ftype'><code>boolean</code></td>
+      <td class='fdoc'>Indicates a successful creation on all servers.</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>num_nodes</code></td>
+      <td class='ftype'><code>long</code></td>
+      <td class='fdoc'>Total number of nodes created.</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>num_edges</code></td>
+      <td class='ftype'><code>long</code></td>
+      <td class='fdoc'>Total number of edges created.</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>edges_ids</code></td>
+      <td class='ftype'>array&lt;<code>long</code>&gt;</td>
+      <td class='fdoc'>[Deprecated] Edges given as pairs of node indices. Only populated if export_create_results internal option is set to true.</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>info</code></td>
+      <td class='ftype'>map&lt;string,<code>string</code>&gt;</td>
+      <td class='fdoc'>Additional information.</td>
+    </tr></tbody>
+    </table>
+</div>
+<script>
+(function(){
+  const saved = localStorage.getItem('schema-theme');
+  const theme = saved || 'dark';
+  document.documentElement.setAttribute('data-theme', theme);
+  document.addEventListener('DOMContentLoaded', () => {
+    const btn = document.getElementById('themeBtn');
+    function update() {
+      const t = document.documentElement.getAttribute('data-theme');
+      btn.textContent = t === 'dark' ? '☀ Light' : '☾ Dark';
+    }
+    update();
+    btn.addEventListener('click', () => {
+      const t = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+      localStorage.setItem('schema-theme', t);
+      update();
+    });
+  });
+})();
+</script>
+</body>
+</html>

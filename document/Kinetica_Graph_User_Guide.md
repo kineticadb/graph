@@ -1,0 +1,1760 @@
+# Kinetica Graph User Guide
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/kineticadb/graph/master/title_image.png" alt="Kinetica Graph" width="900"/>
+</p>
+
+<p align="center">
+  <img src="images/explorer/explorer_head.png" alt="Kinetica Graph Explorer" width="900"/>
+  <br/><em>Kinetica Graph Explorer — ontology, label distribution, and force-directed visualization of a knowledge graph, all in a single browser tab.</em>
+</p>
+
+> A comprehensive guide to building, querying, solving, and visualizing property graphs in Kinetica's GPU-accelerated database.
+>
+> For an in-depth presentation on Kinetica Graph analytics, see the [Kinetica Graph Analytics Slide Deck](https://docs.google.com/presentation/d/1Rh5tHXww_0_GCv74w1RaiF3FIw_Ku5fQ5-CM06TIlBg/edit).
+
+---
+
+## Table of Contents
+
+1. [Overview](#1-overview)
+2. [Core Concepts](#2-core-concepts)
+3. [Table Design for Graphs](#3-table-design-for-graphs)
+4. [Creating Graphs](#4-creating-graphs)
+5. [Ontology and Label Grouping](#5-ontology-and-label-grouping)
+6. [Cypher Query Language](#6-cypher-query-language)
+7. [GRAPH_TABLE — SQL Aggregation on Traversals](#7-graph_table--sql-aggregation-on-traversals)
+8. [SOLVE_GRAPH — Graph Algorithms](#8-solve_graph--graph-algorithms)
+9. [MATCH_GRAPH — Logistics, GPS, and Optimization](#9-match_graph--logistics-gps-and-optimization)
+10. [ALTER GRAPH — Modifying Existing Graphs](#10-alter-graph--modifying-existing-graphs)
+11. [Graph Lifecycle Management](#11-graph-lifecycle-management)
+12. [REST API Reference](#12-rest-api-reference)
+13. [Graph Explorer](#13-graph-explorer)
+14. [Use Cases and Examples](#14-use-cases-and-examples)
+15. [Best Practices](#15-best-practices)
+16. [Troubleshooting](#16-troubleshooting)
+
+---
+
+## 1. Overview
+
+Kinetica Graph is a distributed, hybrid graph database engineered to work in tandem with Kinetica's GPU-accelerated relational engine. By bridging property graphs and **OLAP expression support**, it delivers high-performance analytics within a unified ecosystem (SQL / Python / C++ / Java) that is **GQL-compliant** and fully supports **Cypher** query syntax.
+
+### Core Technical Advantages
+
+- **Predictable memory management** — Unlike databases that struggle with unstructured vertex valences, Kinetica uses fixed, calculable storage. The memory footprint is roughly twice the size of a bare-minimum CSR format, computed from the table's row count and label cardinality, so you can size a cluster from the schema alone.
+- **True dynamic topology** — A custom **in-place doubly-linked** node/edge structure supports constant-time insertions and deletions. The graph is **not** stored as CSR — that's the trade-off CSR-based engines like Neo4j and TigerGraph make, where any modification rebuilds the topology. In Kinetica, `INSERT` / `UPDATE` / `DELETE` against the underlying tables propagate to the graph in O(1) per change.
+- **Unified SQL + OLAP integration** — Every graph endpoint accepts OLAP expressions. Graph outputs behave as table-valued functions, so joins, `GROUP BY`, window functions, and analytic aggregates compose with Cypher results in a single SQL statement.
+- **Efficient sharding and distribution** — The topology is distributed across cluster ranks; only nodes that sit on inter-shard boundaries are duplicated. Partitioned graphs remain independent locally while solvers iterate seamlessly across the cluster.
+- **Cypher / GQL compliance** — Multi-hop, many-to-many property-graph queries are expressed in Cypher. The query planner bridges relational and graph access in a single plan, choosing column scans, index lookups, or graph traversal as appropriate.
+
+### Key Capabilities
+
+| Category | Features |
+|----------|----------|
+| **Graph Types** | Directed, undirected, weighted, geospatial (WKT), multi-labeled |
+| **Query Language** | Cypher (PGQL-compliant), integrated with SQL via `GRAPH_TABLE()` |
+| **Solvers** | Shortest path, PageRank, centrality, closeness, TSP, backhaul routing, all-paths |
+| **Optimization** | Supply-demand (MSDO via MIP), GPS snap-to-road, isochrones, EV charging |
+| **Architecture** | In-place doubly-linked topology (constant-time updates), distributed sharding with boundary-only duplication, OLAP-integrated query planner |
+| **Visualization** | Graph Explorer UI (Deck.gl / Canvas / WMS / Carto basemap), Workbench SQL blocks |
+
+### How It Works
+
+Graphs in Kinetica are built **from existing relational tables** — no ETL or data duplication needed. You annotate columns with a grammar (e.g., `NODE`, `NODE1`, `NODE2`, `LABEL`) and the engine constructs an in-memory graph topology. Non-graph columns remain available for OLAP joins during Cypher queries.
+
+### Journal Papers
+
+For a deeper dive into the algorithms and data structures behind Kinetica Graph:
+
+- [Kinetica-Graph Design — technical journal paper](https://arxiv.org/abs/2201.02136)
+- [Novel data structures for labeled queries on billion+ graphs](https://arxiv.org/abs/2311.03631)
+- [Graph embedding algorithm using Kinetica-Graph](https://arxiv.org/abs/2407.15906)
+- [Patented adapted Markov-chain solver for map matching](https://www.tandfonline.com/doi/pdf/10.1080/10095020.2020.1866956)
+- [Optimal routing for trips involving thousands of EV-charging stations](https://arxiv.org/abs/2206.06241)
+
+---
+
+## 2. Core Concepts
+
+### Graph Components
+
+| Component | Grammar Identifiers | Description |
+|-----------|-------------------|-------------|
+| **Nodes** | `NODE`, `LABEL`, `LABEL_KEY` | Vertices with identifiers and classifications |
+| **Edges** | `NODE1`, `NODE2`, `LABEL` | Relationships between nodes with optional labels |
+| **Weights** | `WEIGHT_VALUESPECIFIED` | Edge costs for solver algorithms (numeric) |
+| **Restrictions** | `RESTRICTIONS_VALUECOMPARED` | Constraints that exclude edges from traversal |
+
+### Node Identifier Types
+
+Node identifiers can be:
+- **Integer** (`INT`, `LONG`) — numeric IDs
+- **String** (`CHAR`, `VARCHAR`) — named entities
+- **WKT Geometry** — geospatial points for road networks
+
+All node/edge tables in a graph must use **the same data type** for identifiers.
+
+### Polymorphic Labels
+
+The `LABEL` alias is **context-aware**:
+- In a **Node** section → maps to `NODE_LABEL`
+- In an **Edge** section → maps to `EDGE_LABEL`
+
+Labels support multi-values via `VARCHAR[]` arrays.
+
+### Grammar Auto-Mapping
+
+When table columns match the grammar names, annotation is automatic. `NODE` is a **generic identifier** — the engine resolves it to the appropriate concrete form (`NODE_ID`, `NODE_NAME`, or `NODE_WKTPOINT`) based on the column's type, so you don't have to pick one explicitly.
+
+| Column Name | Auto-Maps To | Section |
+|-------------|-------------|---------|
+| `node` | `NODE` (generic — resolves to `NODE_ID` \| `NODE_NAME` \| `NODE_WKTPOINT`) | Nodes |
+| `label` | `NODE_LABEL` or `EDGE_LABEL` | Both |
+| `node1` | `EDGE_NODE1` (generic — resolves to `EDGE_NODE1_ID` \| `EDGE_NODE1_NAME` \| `EDGE_NODE1_WKTPOINT`) | Edges |
+| `node2` | `EDGE_NODE2` (generic — resolves to `EDGE_NODE2_ID` \| `EDGE_NODE2_NAME` \| `EDGE_NODE2_WKTPOINT`) | Edges |
+
+> **Tip:** Use the generic `NODE` / `EDGE_NODE1` / `EDGE_NODE2` forms unless you have a reason to lock in a specific concrete identifier. The full list of valid identifier combinations is captured in the live [**`/show/graph/grammar` response**](schemas/show_graph_grammar.html) — an interactive collapsible JSON tree with search.
+
+---
+
+## 3. Table Design for Graphs
+
+### Standard Grammar Columns (Recommended)
+
+Use grammar-matching column names so `SELECT *` works without explicit `AS` annotation:
+
+```sql
+-- Node table
+CREATE OR REPLACE TABLE wiki_graph_nodes (
+    node   CHAR(64)   NOT NULL,     -- matches NODE identifier
+    label  VARCHAR[]  NOT NULL,     -- matches LABEL identifier (multi-label)
+    age    INT                      -- non-graph column (available in Cypher WHERE)
+);
+
+-- Edge table
+CREATE OR REPLACE TABLE wiki_graph_edges (
+    node1     CHAR(64)   NOT NULL,  -- matches NODE1 identifier
+    node2     CHAR(64)   NOT NULL,  -- matches NODE2 identifier
+    label     VARCHAR[]  NOT NULL,  -- matches LABEL identifier
+    met_time  DATE                  -- non-graph column
+);
+```
+
+### Multi-Label Support
+
+Use `string_to_array()` or `ARRAY[...]` for `VARCHAR[]` label columns:
+
+```sql
+INSERT INTO wiki_graph_nodes(node, label, age) VALUES
+('Jane',  string_to_array('FEMALE,business', ','), 29),
+('Bill',  string_to_array('MALE,golf', ','), 58),
+('Susan', string_to_array('FEMALE,dance', ','), 24),
+('Alex',  string_to_array('MALE,chess', ','), 23),
+('Tom',   string_to_array('MALE,chess', ','), 42);
+
+INSERT INTO wiki_graph_edges(node1, node2, label, met_time) VALUES
+('Jane', 'Bill',  string_to_array('Friend', ','), '1997-09-15'),
+('Bill', 'Alex',  string_to_array('Family', ','), '1991-02-26'),
+('Bill', 'Susan', string_to_array('Friend', ','), '2001-01-30'),
+('Susan','Alex',  string_to_array('Friend', ','), '2010-04-19'),
+('Alex', 'Tom',   string_to_array('Friend', ','), '2024-10-07');
+```
+
+### Weighted Edge Table (For Solvers)
+
+Add a `WEIGHT_VALUESPECIFIED` column for solver algorithms:
+
+```sql
+CREATE OR REPLACE TABLE routes (
+    node1   CHAR(64)  NOT NULL,
+    node2   CHAR(64)  NOT NULL,
+    label   VARCHAR[] NOT NULL,
+    cost    FLOAT     NOT NULL      -- will be mapped to WEIGHT_VALUESPECIFIED
+);
+```
+
+### Geospatial Tables (Road Networks)
+
+For geospatial graphs, edges are defined by WKT linestrings:
+
+```sql
+CREATE TABLE road_edges (
+    link_id    INT     NOT NULL,
+    shape      GEOMETRY NOT NULL,   -- LINESTRING WKT
+    direction  INT,                 -- 0=bidirectional, 1=forward, 2=backward
+    time       FLOAT               -- travel time weight
+);
+```
+
+### Non-Standard Column Names
+
+If your columns don't match grammar names, use explicit `AS` annotation during graph creation:
+
+```sql
+-- Example: table uses "person_id" instead of "node"
+NODES => INPUT_TABLES(
+    (SELECT person_id AS NODE, gender AS LABEL FROM persons)
+)
+```
+
+---
+
+## 4. Creating Graphs
+
+### Basic Syntax
+
+```sql
+CREATE [OR REPLACE] [DIRECTED] GRAPH graph_name (
+    NODES => INPUT_TABLES( ... ),
+    EDGES => INPUT_TABLES( ... ),
+    [WEIGHTS => INPUT_TABLES( ... ),]
+    [RESTRICTIONS => INPUT_TABLES( ... ),]
+    OPTIONS => KV_PAIRS( ... )
+)
+```
+
+### Example: Social Network (Auto-Annotated)
+
+When table columns match grammar names, use `SELECT *`:
+
+```sql
+CREATE OR REPLACE DIRECTED GRAPH wiki_graph (
+    NODES => INPUT_TABLES(
+        (SELECT 'Gender' AS LABEL_KEY, string_to_array('MALE,FEMALE', ',') AS LABEL),
+        (SELECT 'Interest' AS LABEL_KEY, string_to_array('golf,business,dance,chess', ',') AS LABEL),
+        (SELECT * FROM wiki_graph_nodes)
+    ),
+    EDGES => INPUT_TABLES(
+        (SELECT 'Relations' AS LABEL_KEY, string_to_array('Family,Friend', ',') AS LABEL),
+        (SELECT * FROM wiki_graph_edges)
+    ),
+    OPTIONS => KV_PAIRS(graph_table = 'wiki_graph_table')
+);
+```
+
+### Example: Banking Graph (Explicit Annotation)
+
+When columns don't match grammar, map them with `AS`:
+
+```sql
+CREATE OR REPLACE DIRECTED GRAPH expero.banking_graph (
+    NODES => INPUT_TABLES(
+        (SELECT id AS NODE, label AS LABEL,
+         "banking_transaction:amount" AS banking_transaction_amount,
+         "wire_message:risk_score" AS wire_message_risk_score,
+         "party:risk_score" AS party_risk_score,
+         "party:party_name" AS party_name,
+         "bank:bank_name" AS bank_name,
+         "bank:risk_score" AS bank_risk_score
+         FROM expero.vertexes)
+    ),
+    EDGES => INPUT_TABLES(
+        (SELECT id AS ID, source_name AS NODE1, target_name AS NODE2, label AS LABEL
+         FROM expero.edges)
+    ),
+    OPTIONS => KV_PAIRS(is_partitioned = 'false')
+);
+```
+
+### Example: Geospatial Road Network
+
+```sql
+CREATE OR REPLACE DIRECTED GRAPH road_network (
+    EDGES => INPUT_TABLES(
+        (SELECT link_id AS ID,
+                shape AS WKTLINE,
+                direction AS DIRECTION,
+                time AS WEIGHT_VALUESPECIFIED
+         FROM road_shape_table)
+    ),
+    OPTIONS => KV_PAIRS(merge_tolerance = '1.e-4')
+);
+```
+
+### Example: Multi-Modal Logistics Graph
+
+```sql
+CREATE OR REPLACE TABLE rearm_graph_nodes (
+    node     INT      NOT NULL,
+    wktpoint GEOMETRY NOT NULL,
+    label    VARCHAR[] NOT NULL
+);
+CREATE OR REPLACE TABLE rearm_graph_edges (
+    node1  INT      NOT NULL,
+    node2  INT      NOT NULL,
+    weight FLOAT    NOT NULL,
+    label  VARCHAR[] NOT NULL
+);
+
+-- Insert hub/spoke network nodes
+INSERT INTO rearm_graph_nodes(node, wktpoint, label) VALUES
+(1, ST_GEOMFROMTEXT('POINT(1 1)'), string_to_array('MAINHUB', ',')),
+(2, ST_GEOMFROMTEXT('POINT(2 1)'), string_to_array('USHUB', ',')),
+(3, ST_GEOMFROMTEXT('POINT(3 1)'), string_to_array('USHUB', ',')),
+(4, ST_GEOMFROMTEXT('POINT(2 2)'), string_to_array('SEAHUB', ',')),
+(5, ST_GEOMFROMTEXT('POINT(1 2)'), string_to_array('LANDHUB', ',')),
+(6, ST_GEOMFROMTEXT('POINT(2 3)'), string_to_array('LANDHUB', ',')),
+(7, ST_GEOMFROMTEXT('POINT(1 3)'), string_to_array('SPOKE', ','));
+
+-- Insert multi-modal edges (AIR → SEA → LAND)
+INSERT INTO rearm_graph_edges(node1, node2, weight, label) VALUES
+(1, 2, 3, string_to_array('AIR', ',')),
+(1, 3, 5, string_to_array('AIR', ',')),
+(2, 4, 4, string_to_array('AIR', ',')),
+(3, 4, 3, string_to_array('AIR', ',')),
+(4, 5, 8, string_to_array('SEA', ',')),
+(4, 6, 9, string_to_array('SEA', ',')),
+(5, 7, 5, string_to_array('LAND', ',')),
+(6, 7, 7, string_to_array('LAND', ','));
+
+CREATE OR REPLACE DIRECTED GRAPH rearm (
+    NODES => INPUT_TABLES((SELECT * FROM rearm_graph_nodes)),
+    EDGES => INPUT_TABLES(
+        (SELECT node1, node2, weight AS WEIGHT_VALUESPECIFIED, label FROM rearm_graph_edges)
+    ),
+    OPTIONS => KV_PAIRS(graph_table = 'rearm_graph_table')
+);
+```
+
+### CREATE GRAPH Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `graph_table` | (none) | Creates relational tables mirroring the graph for debugging/visualization |
+| `directed` | `true` | If `true`, edges are directional |
+| `recreate` | `false` | Deletes and recreates if graph already exists |
+| `save_persist` | `false` | Saves graph to persist directory (survives server restart) |
+| `add_table_monitor` | `false` | Graph auto-updates when source tables change |
+| `merge_tolerance` | `1.0E-5` | Min separation between unique geospatial nodes |
+| `label_delimiter` | `:` | Delimiter for label strings |
+| `is_partitioned` | `false` | Whether graph is partitioned across ranks |
+| `schema_node_labelkeys` | `true` | Enable label key groupings for node ontology |
+| `schema_edge_labelkeys` | `true` | Enable label key groupings for edge ontology |
+
+> **Performance Warning:** Avoid `graph_table` for graphs larger than **1,000 elements** — it materializes a copy of the graph data with significant overhead. Use it only for debugging or when you need `GRAPH_TABLE()` SQL aggregation.
+
+---
+
+## 5. Ontology and Label Grouping
+
+Every node and edge in a Kinetica graph can carry one or more **labels**. The ontology is the label-level schema: which label types exist, how they co-occur, and which edge labels connect which node labels. Kinetica exposes two ways to summarize it — a **flat** view that keeps every individual label, and a **grouped** view that rolls labels up under `LABEL_KEY` categories.
+
+### Label keys are optional
+
+You don't have to use label keys. A graph with just raw labels (e.g. `MALE`, `FEMALE`, `chess`, `golf`, `Friend`, `Family`) is a perfectly valid Kinetica graph and queryable with Cypher exactly the same way. Label keys are a **presentation-layer grouping** — they let you collapse many individual labels under a single category name (e.g. `Gender`, `Interest`, `Relations`) so that large ontologies remain readable. They do not change the underlying data model.
+
+The `wiki_graph` from Section 4 illustrates both views:
+
+<p align="center">
+  <img src="images/explorer/wiki_ontology_flat.png" alt="Wiki graph ontology — flat labels" width="480"/>
+  <br/><em>Flat ontology — each raw label is its own node (<code>MALE:chess</code>, <code>FEMALE:dance</code>, …) connected by the actual edge labels <code>Friend</code> and <code>Family</code>. Percentages show the share of each label combination.</em>
+</p>
+
+<p align="center">
+  <img src="images/explorer/wiki_ontology_labelkeys.png" alt="Wiki graph ontology — grouped by label keys" width="480"/>
+  <br/><em>Same graph with label keys enabled — all person nodes collapse into a single <code>Gender:Interest</code> category and all edges into <code>Relations</code>. One self-loop summarizes the whole schema.</em>
+</p>
+
+### Defining label keys
+
+If you do want the grouped view, declare label keys alongside the node/edge data at graph creation:
+
+```sql
+NODES => INPUT_TABLES(
+    (SELECT 'Gender'   AS LABEL_KEY, string_to_array('MALE,FEMALE', ',')               AS LABEL),
+    (SELECT 'Interest' AS LABEL_KEY, string_to_array('golf,business,dance,chess', ',') AS LABEL),
+    (SELECT * FROM wiki_graph_nodes)
+),
+EDGES => INPUT_TABLES(
+    (SELECT 'Relations' AS LABEL_KEY, string_to_array('Family,Friend', ',') AS LABEL),
+    (SELECT * FROM wiki_graph_edges)
+)
+```
+
+This tells the engine that `MALE`/`FEMALE` are values of the `Gender` key, that the four interests share the `Interest` key, and that `Family`/`Friend` are both `Relations`.
+
+### Inspecting the ontology — `/show/graph` API
+
+The ontology is computed on demand by the `/show/graph` endpoint. With `export_graph_schema=true` the response includes a Graphviz DOT string (`info.dot`) and a per-label JSON breakdown (`info.labeljson`) that Graph Explorer uses to draw the ontology panel and its label-count bar charts.
+
+| Option | Default | Effect |
+|--------|---------|--------|
+| `export_graph_schema` | `false` | Must be `true` to include `dot` and `labeljson` in the response |
+| `schema_node_labelkeys` | `true` | `true` → collapse nodes under their `LABEL_KEY`; `false` → keep individual node labels |
+| `schema_edge_labelkeys` | `true` | Same, for edges |
+| `schema_full_search` | `false` | `true` → scan the full graph for rare edge/node combinations; `false` → sample-based summary (fast, may omit low-frequency combinations) |
+
+From Python:
+
+```python
+from gpudb import GPUdb
+db = GPUdb(host="http://127.0.0.1:9191", username="admin", password="...")
+r = db.show_graph(
+    graph_name="ki_home.wiki_graph",
+    options={
+        "export_graph_schema":    "true",
+        "schema_node_labelkeys":  "false",   # flat node labels
+        "schema_edge_labelkeys":  "false",   # flat edge labels
+        "schema_full_search":     "true",    # include every edge combination
+    },
+)
+dot = r["info"]["dot"]           # Graphviz source
+label_stats = r["info"]["labeljson"]  # per-label counts / percentages
+```
+
+Render the DOT with any Graphviz tool (`dot -Tpng`, the Python `graphviz` package, or the in-browser graphviz-wasm used by Graph Explorer). A SQL-facing equivalent, `DESCRIBE GRAPH <name> WITH OPTIONS(...)`, is on the roadmap so the same label counts and ontology DOT can be obtained from a query tool; until it ships, use the `/show/graph` API directly.
+
+### Worked example — banking ontology with full search
+
+The banking graph (`expero.banking_graph`) has 17 node labels and more than 20 edge labels. A sample-based summary misses the long tail of low-frequency `exp_has_comment` edges, so `schema_full_search=true` is the right setting for this graph:
+
+<p align="center">
+  <img src="images/explorer/banking_ontology_fullsearch.png" alt="Banking graph ontology — full search" width="800"/>
+  <br/><em>Banking ontology rendered from <code>/show/graph</code> with <code>export_graph_schema=true</code> and <code>schema_full_search=true</code>. Every node label (with its percentage of total nodes) and every edge label (with its percentage of total edges) is present.</em>
+</p>
+
+The same session view in Graph Explorer pairs this ontology with the bar-chart breakdown from `labeljson`, giving a per-label population at a glance:
+
+<p align="center">
+  <img src="images/explorer/banking_session.png" alt="Banking session with ontology and label charts" width="800"/>
+  <br/><em>Graph Explorer banking session — ontology graph on the left, per-label bar charts on the right, both driven by the same <code>/show/graph</code> response.</em>
+</p>
+
+### Disabling label key grouping on an existing graph
+
+To flip an existing graph's default ontology view without recreating it:
+
+```sql
+ALTER GRAPH wiki_graph MODIFY (
+    OPTIONS => KV_PAIRS(
+        schema_node_labelkeys = 'false',
+        schema_edge_labelkeys = 'false'
+    )
+);
+```
+
+Subsequent `/show/graph` calls (and any UI that consumes them) will return the flat ontology by default; individual calls can still override with their own `schema_*_labelkeys` option.
+
+---
+
+## 6. Cypher Query Language
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/kineticadb/graph/master/cypherquery.png" alt="Cypher Query Example" width="700"/>
+  <br/><em>Cypher query with multi-hop traversal and visualization in Kinetica Workbench</em>
+</p>
+
+Kinetica implements **PGQL-compliant Cypher** for graph pattern matching. Every Cypher query must be prefixed with `GRAPH "graph_name"`.
+
+### Basic Syntax
+
+```sql
+GRAPH "graph_name"
+MATCH (n1:Label1 WHERE condition)-[e1:EdgeLabel]->(n2:Label2)
+RETURN n1.node AS source, e1.LABEL AS relationship, n2.node AS target
+```
+
+### Pattern Elements
+
+| Syntax | Meaning |
+|--------|---------|
+| `(n)` | Any node |
+| `(n:MALE)` | Node with label `MALE` |
+| `(n:MALE WHERE n.age < 40)` | Node with label and attribute filter |
+| `-[e]->` | Directed edge (outgoing) |
+| `<-[e]-` | Directed edge (incoming) |
+| `-[e]-` | Undirected edge |
+| `-[e:KNOWS]->` | Edge with label `KNOWS` |
+| `-[e]->{1,4}` | Variable-length path (1 to 4 hops) |
+| `-[e WHERE e.met_time > '2000-01-01']->` | Edge with attribute filter |
+
+### Query Hints
+
+Add as SQL comments anywhere in the query:
+
+| Hint | Syntax |
+|------|--------|
+| Force undirected | `/* KI_HINT_QUERY_GRAPH_ENDPOINT_OPTIONS (force_undirected, true) */` |
+| Multi-paths | `/* KI_HINT_QUERY_GRAPH_ENDPOINT_OPTIONS (multi_paths, true) */` |
+| Merge inputs | `/* KI_HINT_MERGE_GRAPH_INPUTS */` |
+
+### Example: Friends of Friends
+
+```sql
+GRAPH wiki_graph
+MATCH (a:MALE WHERE (node = 'Tom'))<-[b:Friend]-(c)<-[d]-(e)
+RETURN a.node AS originator, c.node AS friend, e.node AS target
+```
+
+### Example: Variable-Length Paths
+
+```sql
+-- Find all females within 4 hops of a chess player under 40
+GRAPH wiki_graph
+MATCH (a:FEMALE)-[b]->{1,4}(c:chess WHERE c.age < 40)
+RETURN DISTINCT a.NODE AS source, c.NODE AS target
+```
+
+### Example: Edge Attribute Filtering
+
+```sql
+/* KI_HINT_QUERY_GRAPH_ENDPOINT_OPTIONS (force_undirected, true) */
+GRAPH wiki_graph
+MATCH (a:MALE WHERE (node = 'Tom'))<-[b:Friend]-(c)<-[d WHERE (d.met_time > '1990-01-01')]-(e)
+RETURN a.node AS source, e.node AS target
+```
+
+### Example: Fuzzy Text Search
+
+```sql
+-- Find all females whose names contain 'su'
+/* KI_HINT_QUERY_GRAPH_ENDPOINT_OPTIONS (force_undirected, true) */
+GRAPH wiki_graph
+MATCH (a:FEMALE WHERE (LOWER(a.node) LIKE '%su%'))-[b]->(c)
+RETURN a.NODE AS source, c.NODE AS target
+```
+
+### Example: CONTAINS Function
+
+```sql
+GRAPH bluesky
+MATCH (a:user WHERE a.NODE = 'tan')-[ab:liked]-(b:post)
+      -[bc:posted]-(c:user)-[cd:liked]-
+      (d:post WHERE CONTAINS('distributed', d.user_text) = 1)
+      -[de:posted]-(e:user WHERE e.NODE = 'tan')
+RETURN DISTINCT c.NODE AS poster, d.user_text AS original
+```
+
+### Example: Social Network — Mutual Likes
+
+```sql
+-- Find users who like each other's posts back
+GRAPH bluesky
+MATCH (a WHERE a.node = 'tan')-[e1:liked]->(p1:post)
+      <-[e2:posted]-(other)-[e3:liked]->(p2:post)
+      <-[e4:posted]-(b WHERE b.node = 'tan')
+RETURN DISTINCT other.node AS user, p1.node AS liked_post, p2.node AS liked_back_post
+```
+
+### Example: Geospatial Cypher
+
+```sql
+GRAPH rearm
+MATCH (n1 WHERE wktpoint = ST_GEOMFROMTEXT('POINT(3 1)'))
+      -[e1]->(n2)-[e2]->(n3)-[e3]->(n4:SPOKE)
+RETURN n1.node AS n1_node, n2.node AS n2_node, n3.node AS n3_node, n4.node AS n4_node
+```
+
+### Cypher Rules (Must-Follow)
+
+1. **Always prefix with `GRAPH "name"`** — omitting causes parse errors
+2. **Single continuous path** — MATCH requires one linear chain: `(a)-[e1]->(b)-[e2]->(c)` not `(a)-[e1]->(b), (b)-[e2]->(c)`
+3. **Return aliases must be unique** — use `a.node AS source, b.node AS target`
+4. **WHERE filters only reference source table columns** — the column must exist in the CREATE GRAPH definition
+5. **Arrow direction matters** — flip with `<-[]-` if edges go the other way
+6. **CONTAINS syntax** — `CONTAINS('search_term', column_name) = 1` (note argument order)
+7. **Filter during traversal, not after** — apply `WHERE` inline at each hop to prune paths early
+8. **Variable-length path limits** — start with `{1,3}`; combine with inline label/attribute filters
+
+### Common Mistakes
+
+| Mistake | Fix |
+|---------|-----|
+| Missing `GRAPH "name"` prefix | Always start query with `GRAPH "name"` |
+| Duplicate return aliases | Give every RETURN expression a unique alias |
+| Wrong arrow direction | Flip arrow or add `force_undirected` hint |
+| Wide variable-length range `{1,30}` | Start with `{1,3}` and add filters |
+| GROUP BY without GRAPH_TABLE() | Wrap in `SELECT ... FROM GRAPH_TABLE(...)` |
+| Post-MATCH WHERE on large graph | Move filters inline: `(n:Label WHERE ...)` |
+| Reusing same variable at both ends of path | Use separate variables with WHERE: `(a WHERE a.node = 'X')...(b WHERE b.node = 'X')` |
+
+---
+
+## 7. GRAPH_TABLE — SQL Aggregation on Traversals
+
+Bare Cypher returns flat rows and cannot use `GROUP BY`. Wrap Cypher results in `GRAPH_TABLE()` to apply standard SQL aggregation:
+
+```sql
+SELECT column1, COUNT(*), SUM(amount)
+FROM GRAPH_TABLE(
+    GRAPH "graph_name"
+    MATCH (a:Label1)-[e:EdgeType]->(b:Label2)
+    RETURN a.node AS column1, b.amount AS amount
+)
+GROUP BY 1 ORDER BY 2 DESC
+```
+
+### Example: Banking Risk Aggregation
+
+```sql
+SELECT person, bank, COUNT(DISTINCT device_id) AS devices,
+       MAX(risk_score) AS max_risk, ROUND(SUM(amount), 2) AS total
+FROM GRAPH_TABLE(
+    GRAPH expero.banking_graph
+    MATCH (a:bank)-[ab:performed]->(b:wire_message WHERE b.wire_message_risk_score > 20)
+          -[bc:is_for_transaction]->(c:banking_transaction)
+          -[d:involved]->(e:internal_account)<-[f:manages]-(g:party)<-[h]-(i)-[]->(j)
+    RETURN g.party_name AS person, a.bank_name AS bank,
+           g.party_risk_score AS risk_score,
+           c.banking_transaction_amount AS amount, j.NODE AS device_id
+)
+GROUP BY 1, 2 ORDER BY 4 DESC
+```
+
+### Example: Logistics Minimum-Cost Path
+
+```sql
+SELECT n1_node, n2_node, n3_node, n4_node, w1 + w2 + w3 AS cost
+FROM GRAPH_TABLE(
+    GRAPH rearm
+    MATCH (n1:USHUB)-[e1]->(n2)-[e2]->(n3)-[e3]->(n4:SPOKE)
+    RETURN n1.node AS n1_node, e1.weight AS w1, n2.node AS n2_node,
+           e2.weight AS w2, n3.node AS n3_node, e3.weight AS w3, n4.node AS n4_node
+)
+ORDER BY cost ASC LIMIT 1
+```
+
+### Example: Top-Exposure Wires from a Single Bank
+
+A common AML pattern: for a specific originating bank, rank its outbound wire messages by total transaction dollars, keeping only wires above a risk threshold. The traversal crosses two edge types (`performed` then `is_for_transaction`), and the outer SQL rolls the per-transaction rows up per wire.
+
+```sql
+SELECT wire, risk, ROUND(SUM(amount), 0) AS total
+FROM GRAPH_TABLE (
+  GRAPH expero.banking_graph
+  MATCH (a:bank WHERE a.bank_name = 'Harvey Group')
+        -[:performed]->
+        (b:wire_message WHERE b.wire_message_risk_score > 20)
+        -[:is_for_transaction]->
+        (c:banking_transaction)
+  RETURN b.NODE                        AS wire,
+         b.wire_message_risk_score     AS risk,
+         c.banking_transaction_amount  AS amount
+)
+GROUP BY wire, risk
+ORDER BY total DESC
+LIMIT 10;
+```
+
+How this composes:
+
+| Layer | Role |
+|-------|------|
+| Cypher `MATCH` | Graph traversal — anchors on one bank, filters wires, fans out to transactions |
+| `RETURN` | Projects a flat rowset — one row per `(wire, transaction)` pair |
+| Outer `SELECT` | Plain SQL — `SUM`, `GROUP BY`, `ORDER BY`, `LIMIT` over that rowset |
+
+Only columns referenced by the outer query need to appear in `RETURN`. Emitting extra labels or node IDs bloats materialization for no gain.
+
+`risk` is functionally dependent on `wire` (one risk score per wire message), so including it in the `GROUP BY` is safe — it just carries the value through to the output.
+
+### Example: Social Network Mean Engagement
+
+```sql
+/* KI_HINT_QUERY_GRAPH_ENDPOINT_OPTIONS (multi_paths, true) */
+SELECT FLOAT(SUM(total)) / COUNT(user) AS mean_like_back FROM (
+    SELECT originator AS user, COUNT(*) AS total
+    FROM GRAPH_TABLE(
+        GRAPH bluesky
+        MATCH (a:user)-[ab:liked]-(b:post)-[bc:posted]-(c:user)
+              -[cd:liked]-(d:post)-[de:posted]-(e:user)
+        WHERE e.NODE = a.NODE
+        RETURN DISTINCT a.NODE AS originator, d.user_age AS post_length
+    )
+    GROUP BY 1
+)
+```
+
+---
+
+## 8. SOLVE_GRAPH — Graph Algorithms
+
+Run graph algorithms directly in SQL using the `SOLVE_GRAPH` table function.
+
+### Basic Syntax
+
+```sql
+SELECT * FROM TABLE(
+    SOLVE_GRAPH(
+        GRAPH => 'graph_name',
+        SOLVER_TYPE => 'SHORTEST_PATH',
+        SOURCE_NODES => INPUT_TABLE((SELECT 'nodeA' AS NODE)),
+        DESTINATION_NODES => INPUT_TABLE((SELECT 'nodeB' AS NODE)),
+        SOLUTION_TABLE => 'result_table',
+        OPTIONS => KV_PAIRS(option_key = 'value')
+    )
+)
+```
+
+### Complete Solver Types
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/kineticadb/graph/master/solvers.png" alt="Kinetica Graph Solvers" width="800"/>
+  <br/><em>Complete solver matrix across /solve/graph, /query/graph, and /match/graph endpoints</em>
+</p>
+
+> For a deeper dive into solver algorithms and parallelism strategies, see the [Kinetica Graph Analytics Slide Deck](https://docs.google.com/presentation/d/1Rh5tHXww_0_GCv74w1RaiF3FIw_Ku5fQ5-CM06TIlBg/edit).
+
+The `/solve/graph` endpoint supports the following solver types:
+
+| Solver | Description | Requires Weights | Source/Dest |
+|--------|-------------|:---:|:---:|
+| `SHORTEST_PATH` | Optimal path via Dijkstra. Supports upstream, batch solve, many-to-many, single source routing, and A* heuristics with min/max cost filters | Yes | Both |
+| `PAGE_RANK` | Google's PageRank algorithm — probability of each node being visited based on graph topology | No | Source only (empty) |
+| `PROBABILITY_RANK` | Transitional probability (Hidden Markov) for each node based on edge weights as probabilities | Yes | Source only |
+| `CENTRALITY` | Betweenness centrality — measures how many shortest paths pass through a node | No | Source only (empty) |
+| `CLOSENESS` | Closeness centrality — sum of inverse shortest path costs from a node to all others | No | Source only (empty) |
+| `MULTIPLE_ROUTING` | Traveling Salesman Problem (TSP) — round-trip minimum cost visiting all waypoints | Yes | Both |
+| `INVERSE_SHORTEST_PATH` | Finds optimal path cost for each destination to route back to source. Also known as the service man routing problem (downstream) | Yes | Source only |
+| `BACKHAUL_ROUTING` | Connects remote asset nodes to fixed backbone nodes — optimizes return logistics | Yes | Both |
+| `ALLPATHS` | Finds all reasonable (probable) paths between source-destination pairs within cost radius bounds | Optional | Both |
+| `STATS_ALL` | Computes graph statistics: diameter, longest pairs, vertex valences, topology numbers, average/max cluster sizes, weakly connected components (`STATS_CLUSTERS`), zero-degree nodes | No | None |
+
+All solvers run with **horizontal (multi-threaded) and vertical (multi-server) parallelism** at scale.
+
+### Solution Table Columns
+
+| Solver Type | Key Columns |
+|-------------|-------------|
+| `SHORTEST_PATH` | `SOLVERS_NODE_ID`, `SOLVERS_EDGE_ID`, `SOLVERS_EDGE_COSTS`, `WKTROUTE` |
+| `PAGE_RANK` | `SOLVERS_NODE_ID`, `SOLVERS_NODE_COSTS` (rank score) |
+| `CENTRALITY` | `SOLVERS_NODE_ID`, `SOLVERS_NODE_COSTS` (betweenness score) |
+| `CLOSENESS` | `SOLVERS_NODE_ID`, `SOLVERS_NODE_COSTS` (closeness score) |
+| `MULTIPLE_ROUTING` | `SOLVERS_NODE_ID`, `SOLVERS_EDGE_COSTS`, `SOLVERS_ROUTE_ID` |
+| `ALLPATHS` | `SOLVERS_NODE_ID`, `SOLVERS_PATH_ID`, `SOLVERS_RING_ID` |
+
+### Example: Shortest Path
+
+```sql
+SELECT * FROM TABLE(
+    SOLVE_GRAPH(
+        GRAPH => 'road_network',
+        SOLVER_TYPE => 'SHORTEST_PATH',
+        SOURCE_NODES => INPUT_TABLE((SELECT 'nodeA' AS NODE)),
+        DESTINATION_NODES => INPUT_TABLE((SELECT 'nodeB' AS NODE)),
+        SOLUTION_TABLE => 'shortest_path_result',
+        OPTIONS => KV_PAIRS(output_edge_path = 'true')
+    )
+)
+```
+
+### Example: PageRank
+
+```sql
+SELECT * FROM TABLE(
+    SOLVE_GRAPH(
+        GRAPH => 'my_graph',
+        SOLVER_TYPE => 'PAGE_RANK',
+        SOURCE_NODES => INPUT_TABLE((SELECT '' AS NODE))
+    )
+)
+```
+
+### Example: Betweenness Centrality
+
+```sql
+SELECT * FROM TABLE(
+    SOLVE_GRAPH(
+        GRAPH => 'my_graph',
+        SOLVER_TYPE => 'CENTRALITY',
+        SOURCE_NODES => INPUT_TABLE((SELECT '' AS NODE))
+    )
+)
+```
+
+### Example: Traveling Salesman (TSP)
+
+```sql
+SELECT * FROM TABLE(
+    SOLVE_GRAPH(
+        GRAPH => 'road_network',
+        SOLVER_TYPE => 'MULTIPLE_ROUTING',
+        SOURCE_NODES => INPUT_TABLE((SELECT 'depot' AS NODE)),
+        DESTINATION_NODES => INPUT_TABLE(
+            (SELECT 'stop_A' AS NODE
+             UNION ALL SELECT 'stop_B' AS NODE
+             UNION ALL SELECT 'stop_C' AS NODE)
+        )
+    )
+)
+```
+
+### Example: All Paths
+
+```sql
+SELECT * FROM TABLE(
+    SOLVE_GRAPH(
+        GRAPH => 'rearm',
+        SOLVER_TYPE => 'ALLPATHS',
+        SOURCE_NODES => INPUT_TABLE((SELECT 2 AS NODE)),
+        DESTINATION_NODES => INPUT_TABLE((SELECT 7 AS NODE)),
+        OPTIONS => KV_PAIRS(uniform_weights = '0')
+    )
+)
+```
+
+### Example: Inverse Shortest Path (Reachability)
+
+```sql
+SELECT * FROM TABLE(
+    SOLVE_GRAPH(
+        GRAPH => 'road_network',
+        SOLVER_TYPE => 'INVERSE_SHORTEST_PATH',
+        SOURCE_NODES => INPUT_TABLE((SELECT 'warehouse' AS NODE)),
+        OPTIONS => KV_PAIRS(max_solution_radius = '500')
+    )
+)
+```
+
+---
+
+## 9. MATCH_GRAPH — Logistics, GPS, and Optimization
+
+`MATCH_GRAPH` provides advanced optimization capabilities including supply-demand matching, GPS snap-to-road, isochrone analysis, and EV routing.
+
+### Complete Solve Methods
+
+The `/match/graph` endpoint supports 13 solve methods covering logistics, optimization, clustering, and graph analytics:
+
+| Method | Description | Key Application |
+|--------|-------------|-----------------|
+| `markov_chain` | GPS snap-to-road using Hidden Markov Model (HMM) with adaptive kernel. **Patented.** Range-tree closest-edge search finds best road segment combinations | Vehicle GPS tracking, fleet management |
+| `match_od_pairs` | Finds probable paths between origin-destination pairs under cost constraints | Route planning with cost bounds |
+| `match_batch_solves` | Batch shortest path solves for large numbers of source-destination pairs | Amazon-like delivery routing |
+| `match_supply_demand` | Multi-step minimum-cost demand-supply optimization (MSDO) via mixed-integer linear programming. **Patented.** Supports multi-modal transport, spec matching, partial loading | Supply chain logistics, fleet dispatch |
+| `match_loops` | Finds closed Eulerian loops (paths) per graph node with unlimited number of hops. **Patented.** | Money laundering ring detection, circuit analysis |
+| `match_charging_stations` | Finds optimal path across EV charging stations between source and target with range constraints | EV route planning, infrastructure optimization |
+| `match_isochrone` | Solves for reachability limits (isochrone contours) from source nodes within cost thresholds | Coverage analysis, service area planning |
+| `match_similarity` | Computes Jaccard similarity scores between vertex pairs and n-level intersections within m hops | Community detection, recommendation systems |
+| `match_pickup_dropoff` | Optimal scheduling for pick-up and drop-off operations | Uber-like ride scheduling, last-mile delivery |
+| `match_clusters` | Optimal clustering using **Louvain modularity** algorithm. Also supports **Recursive Spectral Bisection (RSB)** (scheduled) | Community detection, network segmentation |
+| `match_pattern` | Finds topological patterns in the graph | Fraud detection, structural analysis |
+| `match_embedding` | Creates vector node embeddings for graph ML | Graph neural networks, node2vec, link prediction |
+| `match_route_detour` | Computes detour costs for nearby stations at a mark point along each source-target route | Fuel station planning, amenity routing |
+
+> **Note:** `match_supply_demand` also supports **batch TSP mode** for solving crowd-sourcing problems with embedded clustering.
+
+### GPS Snap-to-Road (Markov Chain)
+
+GPS samples must include a coordinate (`X`/`Y` or `WKTPOINT`), a `TIME` value, and optionally a `TRIPID` to keep multi-trip data separated. From `~/demos/markov/map_matching.json`:
+
+```sql
+DROP TABLE IF EXISTS ki_home.mm_lakes_markov;
+-- Generates three output tables: mm_lakes_markov, mm_lakes_markov_details, mm_lakes_markov_details_edge
+EXECUTE FUNCTION MATCH_GRAPH(
+    GRAPH => 'ki_home.mm_lakes',
+    SAMPLE_POINTS => INPUT_TABLE(
+        SELECT longitude AS X,
+               latitude  AS Y,
+               timestamp AS TIME,
+               trip_id   AS TRIPID
+        FROM ki_home.bluezone WHERE trip_id = 685605019
+    ),
+    SOLVE_METHOD   => 'markov_chain',
+    SOLUTION_TABLE => 'ki_home.mm_lakes_markov',
+    OPTIONS => KV_PAIRS(
+        gps_noise       = '10',
+        chain_width     = '5',
+        search_radius   = '0.0001',
+        num_segments    = '4',
+        max_num_threads = '0',
+        output_tracks   = 'true'   -- emits an animated track table
+    )
+);
+```
+
+### Batch OD Shortest Paths
+
+```sql
+DROP TABLE IF EXISTS batch_result;
+EXECUTE FUNCTION MATCH_GRAPH(
+    GRAPH => 'road_network',
+    SAMPLE_POINTS => INPUT_TABLES(
+        (SELECT 1 AS OD_ID,
+                ST_GEOMFROMTEXT('POINT(-89.155 42.212)') AS ORIGIN_WKTPOINT,
+                ST_GEOMFROMTEXT('POINT(-82.539 42.890)') AS DESTINATION_WKTPOINT)
+    ),
+    SOLVE_METHOD => 'match_batch_solves',
+    SOLUTION_TABLE => 'batch_result'
+)
+```
+
+**Key identifiers for `match_batch_solves`:**
+- `OD_ID` — pair identifier (not `ID`)
+- `ORIGIN_WKTPOINT` — origin geometry (use `ST_GEOMFROMTEXT()`)
+- `DESTINATION_WKTPOINT` — destination geometry
+
+**Solution table columns:** `INDEX`, `SOURCE`, `TARGET`, `COST`, `PATH` (LINESTRING)
+
+> **Important:** Always `DROP TABLE IF EXISTS` the solution table before re-running — MATCH_GRAPH does not auto-replace existing tables.
+
+#### Emergency Response — Closest Fire Station to a Disaster (Seattle)
+
+A real-world `match_batch_solves` pattern: given a disaster location and 1,700+ fire stations sourced from the public Foursquare Open Places (FSQ) dataset, find which station can reach the disaster fastest over the live Seattle road graph — and animate every candidate route in real time.
+
+The setup builds an `osm_seattle` road-network graph from OSM, then filters the FSQ places table to "Fire Station" category labels within a Seattle-area polygon. Each station becomes a destination paired with the single disaster origin; `inverse_solve = 'true'` flips the solver so all fire stations race **toward** the disaster point.
+
+<p align="center">
+  <img src="images/emergency/seattle_road_graph.png" alt="osm_seattle road graph — every drivable edge in the Seattle metro region rendered from the OSM-derived edge table" width="700"/>
+</p>
+
+*Seattle road network graph (`osm_seattle`) built from OSM via `CREATE GRAPH ... WITH OPTIONS (graph_table = ...)`. Roughly 1.5 M edges in the Seattle-area bounding polygon shown.*
+
+<p align="center">
+  <img src="images/emergency/fsq_fire_stations.png" alt="FSQ public-places dataset filtered to Fire Stations within the Seattle bounding box — ~1700 candidate origins" width="700"/>
+</p>
+
+*Foursquare Open Places (FSQ) filtered to fire stations within the bounding polygon — ~1,700 destinations to race toward the disaster point.*
+
+```sql
+-- Find the fastest fire station to reach a particular disaster x,y location
+-- among all 1,700+ stations in Seattle's road network.
+-- Simulate every candidate path via real-time SVG animation.
+DROP TABLE IF EXISTS batch_sssp;
+EXECUTE FUNCTION MATCH_GRAPH(
+    GRAPH => 'osm_seattle',
+    SAMPLE_POINTS => INPUT_TABLES(
+        (SELECT ROW_NUMBER() OVER (PARTITION BY NULL ORDER BY fsq_place_id) AS OD_ID,
+                ST_GEOMFROMTEXT('POINT(-121.958755 47.177694)')             AS ORIGIN_WKTPOINT,
+                geom                                                        AS DESTINATION_WKTPOINT
+         FROM   fsq_places
+         WHERE  STXY_INTERSECTS(longitude, latitude,
+                    'POLYGON ((-124.7228 47.03614, -121.16819 47.03614,
+                                -121.16819 48.578765, -124.72282 48.57876,
+                                -124.72282 47.03614))')
+                AND STRING(fsq_category_labels) LIKE '%Fire Station%')
+    ),
+    SOLVE_METHOD   => 'match_batch_solves',
+    SOLUTION_TABLE => 'batch_sssp',
+    OPTIONS => KV_PAIRS(
+        inverse_solve = 'true',    -- all stations race toward the single ORIGIN point
+        output_tracks = 'true',    -- emit animated per-route track table
+        svg_speed     = '500',
+        svg_basemap   = 'true'
+    )
+);
+```
+
+<p align="center">
+  <img src="images/emergency/emergency_response.gif" alt="Real-time SVG simulation: every fire station's shortest path to the disaster animates simultaneously over the basemap, the fastest converging first" width="800"/>
+</p>
+
+*Real-time `match_batch_solves` simulation. Each red dot is one of the 1,700+ fire stations launching its shortest path toward the disaster origin; the routes light up in parallel and the basemap underlay (`svg_basemap = 'true'`) provides geographic context. Sort the resulting `batch_sssp` table by `COST` ascending to see which station arrives first.*
+
+> **`inverse_solve` flag:** When you have many origins and a single destination (or the reverse), setting `inverse_solve = 'true'` lets the solver share work across all OD pairs by running one many-to-one Dijkstra instead of N independent solves — a major speedup for emergency-response and last-mile-coverage problems.
+
+#### Reachability Coverage — Fire-Station 2-Minute Isochrones (Seattle)
+
+The same fire-station dataset answers a different question with `match_isochrone`: **what area can the city's fire stations collectively reach within 2 minutes?** Each station emits an isochrone polygon; dissolving overlaps yields one continuous coverage footprint that we can measure in square miles.
+
+`match_isochrone` takes a `WKTPOINT + ID` sample shape and a `max_radius` cost threshold (in edge-weight units — for `osm_seattle` that's seconds). Output `result_table_index = '2'` returns the isochrone polygons table directly.
+
+```sql
+-- Aggregated fire-station coverage: every polygon any station can reach in 2 min,
+-- dissolved to remove overlaps, and reported as total square miles covered.
+CREATE OR REPLACE TABLE fire_coverage AS
+SELECT ST_AREA(WKT, 1) / 2.59e+6 AS coverage_in_sqmiles, WKT AS total_polygon
+FROM (
+    SELECT ST_DISSOLVEOVERLAPPING(POLYGON) AS WKT
+    FROM MATCH_GRAPH(
+        GRAPH => 'osm_seattle',
+        SOLVE_METHOD => 'match_isochrone',
+        SAMPLE_POINTS => INPUT_TABLES(
+            (SELECT ROW_NUMBER() OVER (PARTITION BY NULL ORDER BY fsq_place_id) AS ID,
+                    geom AS WKTPOINT
+             FROM   fsq_places
+             WHERE  STXY_INTERSECTS(longitude, latitude,
+                        'POLYGON ((-124.7228 47.03614, -121.16819 47.03614,
+                                    -121.16819 48.578765, -124.72282 48.57876,
+                                    -124.72282 47.03614))')
+                    AND STRING(fsq_category_labels) LIKE '%Fire Station%')
+        ),
+        OPTIONS => KV_PAIRS(
+            max_radius         = '120',     -- 2 minutes (seconds, matching edge weights)
+            result_table_index = '2',       -- return polygons table
+            inverse_solve      = 'false'    -- outbound from each station
+        )
+    )
+);
+```
+
+**Key identifiers for `match_isochrone`:**
+- `ID` — unique sample-point identifier
+- `WKTPOINT` — source (or sink, with `inverse_solve='true'`) geometry
+
+**Variants on the same pattern:**
+- Swap `'%Fire Station%'` → `'%Hospital%'` to compute hospital coverage.
+- Swap → `'%Clothing%'` for retail catchment, `'%Cafe%' AND LOWER(name) LIKE '%starbucks%'` for branded reachability.
+- Set `inverse_solve = 'true'` to compute polygons of areas that can reach **toward** each point — useful when the point is a bottleneck (ER, evacuation site).
+
+**Pair with `INNER JOIN`** to count POIs inside each isochrone — the all-in-one query below finds every grocery store reachable within 10 minutes from each of 10 random origins across the Seattle road network:
+
+```sql
+-- All in one query: Find all groceries that are within 10 min access
+-- from the 10 random locations over the seattle road network
+SELECT polys.SOURCE, COUNT(places.name) AS num_groceries, polys.POLYGON
+FROM   MATCH_GRAPH(
+           GRAPH => 'osm_seattle',
+           SOLVE_METHOD => 'match_isochrone',
+           SAMPLE_POINTS => INPUT_TABLES(
+               (SELECT  1 AS ID, ST_GEOMFROMTEXT('POINT(-122.303426 47.555293)') AS WKTPOINT),
+               (SELECT  2 AS ID, ST_GEOMFROMTEXT('POINT(-122.379273 47.515505)') AS WKTPOINT),
+               (SELECT  3 AS ID, ST_GEOMFROMTEXT('POINT(-122.119785 47.358027)') AS WKTPOINT),
+               (SELECT  4 AS ID, ST_GEOMFROMTEXT('POINT(-122.088521 47.978087)') AS WKTPOINT),
+               (SELECT  5 AS ID, ST_GEOMFROMTEXT('POINT(-122.029158 47.991328)') AS WKTPOINT),
+               (SELECT  6 AS ID, ST_GEOMFROMTEXT('POINT(-122.167888 48.093946)') AS WKTPOINT),
+               (SELECT  7 AS ID, ST_GEOMFROMTEXT('POINT(-122.258118 47.868229)') AS WKTPOINT),
+               (SELECT  8 AS ID, ST_GEOMFROMTEXT('POINT(-123.015029 47.444572)') AS WKTPOINT),
+               (SELECT  9 AS ID, ST_GEOMFROMTEXT('POINT(-123.414615 47.169875)') AS WKTPOINT),
+               (SELECT 10 AS ID, ST_GEOMFROMTEXT('POINT(-121.958755 47.177694)') AS WKTPOINT)
+           ),
+           OPTIONS => KV_PAIRS(max_radius = '600', result_table_index = '2')
+       ) AS polys
+INNER JOIN fsq_places AS places
+    ON STXY_INTERSECTS(places.longitude, places.latitude, polys.POLYGON)
+   AND STRING(places.fsq_category_labels) LIKE '%Grocery%'
+GROUP BY SOURCE, POLYGON
+ORDER BY num_groceries ASC;
+```
+
+<p align="center">
+  <img src="images/isochrone/grocery_access_table.png" alt="Result table — per-origin grocery counts within 10-minute isochrones, ranging from 27 (rural source 5) to 600 (urban source 1)" width="700"/>
+</p>
+
+*Per-origin grocery counts from the all-in-one query. Source 5 (rural) reaches just 27 groceries within 10 minutes; source 1 (downtown Seattle) reaches 600. The `POLYGON` column is the isochrone WKT used in the spatial join.*
+
+<p align="center">
+  <img src="images/isochrone/grocery_access_map.png" alt="Map view of the 10 isochrone polygons over the Seattle region, each colored by origin and sized by road-network reachability within 600s" width="700"/>
+</p>
+
+*Workbench map view of the same 10 isochrone polygons rendered over the Seattle basemap. Each color is one of the 10 origins; polygon area reflects how much road network is reachable in 10 minutes from that point — dense urban origins yield compact, dense polygons; rural ones spread further along sparse highways.*
+
+### Supply-Demand Optimization (MSDO)
+
+The MSDO solver uses mixed-integer linear programming to optimize multi-step supply chain logistics:
+
+```sql
+DROP TABLE IF EXISTS rearm_msdo;
+EXECUTE FUNCTION MATCH_GRAPH(
+    GRAPH => 'rearm',
+    SAMPLE_POINTS => INPUT_TABLES(
+        -- Supplies (sources)
+        (SELECT 1 AS SUPPLY_NODE, 101 AS SUPPLY_ID, 10 AS SUPPLY_SIZE,
+         'AIR' AS SUPPLY_EDGELABEL, 1 AS SUPPLY_REGION_ID,
+         8 AS SUPPLY_ORDER, 1 AS SUPPLY_MAIN,
+         string_to_array('pharmacy,food', ',') AS SUPPLY_SPECS),
+        -- Demands (sinks)
+        (SELECT 7 AS DEMAND_NODE, 70 AS DEMAND_ID, 16 AS DEMAND_SIZE,
+         1 AS DEMAND_REGION_ID,
+         string_to_array('pharmacy,food', ',') AS DEMAND_SPECS)
+    ),
+    SOLVE_METHOD => 'match_supply_demand',
+    SOLUTION_TABLE => 'rearm_msdo',
+    OPTIONS => KV_PAIRS(
+        aggregated_output = 'true',
+        partial_loading = 'true',
+        max_supply_combinations = '10000',
+        multi_step = 'true'
+    )
+)
+```
+
+#### MSDO Grammar
+
+| Field | Description |
+|-------|-------------|
+| `SUPPLY_NODE` | Node ID or WKT point for supply location |
+| `SUPPLY_ID` | Unique supply/vehicle identifier |
+| `SUPPLY_SIZE` | Capacity of this supply unit |
+| `SUPPLY_EDGELABEL` | Edge label for multi-modal transport (AIR, SEA, LAND) |
+| `SUPPLY_REGION_ID` | Region grouping |
+| `SUPPLY_ORDER` | Priority ordering (reduces combinatorial explosion) |
+| `SUPPLY_MAIN` | Set to 1 for hub supplies |
+| `SUPPLY_PENALTY` | Cost penalty (steers solver away from this supplier) |
+| `SUPPLY_SPECS` | Specifications this transport can carry (`VARCHAR[]`) |
+| `DEMAND_NODE` | Node ID or WKT point for demand location |
+| `DEMAND_ID` | Unique demand identifier |
+| `DEMAND_SIZE` | Required quantity |
+| `DEMAND_REGION_ID` | Region grouping |
+| `DEMAND_SPECS` | Specifications required (`VARCHAR[]`) |
+
+#### MSDO Key Concepts
+
+- **Multi-step:** Works backward from demand to find accommodating supply; previous supplies become demand for next iteration
+- **Multi-modal:** Edge labels (AIR, SEA, LAND) constrain which transports use which routes
+- **Spec matching:** `SUPPLY_SPECS` must satisfy `DEMAND_SPECS` (e.g., fragile goods require fragile-capable transport)
+- **Partial loading:** Allows off-loading only part of a truck's supply at each stop
+
+#### Depot Routing — Two Depots, Twelve Trucks (DC)
+
+A different MSDO shape: trucks dispatched from named **depots** to drop-off **customer demands**. The depot constraint is expressed via `SUPPLY_REGION_ID` / `DEMAND_REGION_ID` — both columns hold the depot identifier, and the solver only assigns a supply to a demand whose region matches. `SUPPLY_ID` / `SUPPLY_SIZE` are the canonical grammar identifiers for per-truck attributes (descriptive aliases like `SUPPLY_TRUCK_ID` auto-map to them). Adapted from `~/demos/msdo_demo/DC_TWODEPOTS_MSDO.sql`:
+
+```sql
+DROP TABLE IF EXISTS dc_msdo;
+EXECUTE FUNCTION MATCH_GRAPH(
+    GRAPH => 'dc',
+    SAMPLE_POINTS => INPUT_TABLES(
+        -- Demands: customers, each tied to one of the two depots
+        (SELECT id    AS DEMAND_ID,
+                wkt   AS DEMAND_WKTPOINT,
+                size  AS DEMAND_SIZE,
+                depot AS DEMAND_REGION_ID
+         FROM customers),
+        -- Supplies: 12 trucks of varying capacity sitting at the depots
+        (SELECT depot      AS SUPPLY_REGION_ID,
+                wkt        AS SUPPLY_WKTPOINT,
+                truck_id   AS SUPPLY_ID,
+                truck_size AS SUPPLY_SIZE
+         FROM suppliers)
+    ),
+    SOLVE_METHOD   => 'match_supply_demand',
+    SOLUTION_TABLE => 'dc_msdo',
+    OPTIONS => KV_PAIRS(
+        output_tracks            = 'true',   -- emit per-truck animated track table
+        aggregated_output        = 'true',
+        svg_width  = '400', svg_height = '600',
+        svg_speed  = '500', svg_basemap = 'true',  -- auto-render animated route SVG
+        timeout                  = '80',
+        partial_loading          = 'true',   -- truck can drop part of its load mid-route
+        permute_supplies         = 'true',   -- search supply orderings
+        max_combinations         = '1000',
+        max_supply_combinations  = '100',
+        max_trip_cost            = '0.0',    -- 0 = no per-trip cost cap
+        unit_unloading_cost      = '0.0',
+        service_limit            = '0',      -- 0 = no per-supply service-cost cap
+        service_radius           = '0.0',
+        max_stops                = '0',      -- 0 = unlimited stops per truck
+        round_trip               = 'false',
+        enable_reuse             = 'false',
+        batch_tsm_mode           = 'false',
+        restricted_type          = 'none',
+        filter_unreachable_input = 'true'
+    )
+);
+```
+
+**Depot identifiers** (alternate to the `SUPPLY_NODE` / `DEMAND_NODE` shape above):
+
+| Field | Description |
+|-------|-------------|
+| `SUPPLY_REGION_ID` | Depot the truck departs from (joins to `DEMAND_REGION_ID`) |
+| `SUPPLY_ID` | Unique supply/truck identifier |
+| `SUPPLY_SIZE` | Per-supply capacity (truck capacity in this case) |
+| `DEMAND_REGION_ID` | Restricts a demand to be served only from this depot |
+
+<p align="center">
+  <img src="images/msdo/msdo_dc.gif" alt="Animated SVG of the DC two-depot MSDO solution — trucks fanning out from each depot to deliver customer demands in real time" width="500"/>
+</p>
+
+*Real-time SVG simulation produced by the solver — every numbered truck departs its depot, visits its assigned customers (red drop-offs), and the basemap-overlaid SVG plays the entire delivery sequence end-to-end.*
+
+> **SVG animation:** When `output_tracks='true'` plus the `svg_*` options are set, MATCH_GRAPH emits an animated SVG of every truck's route alongside the solution table — drop it straight into a Workbench HTML block. See `~/demos/procter_msdo/PROCTOR.sql` for a Brazil-scale variant using Voronoi territory pre-clustering.
+
+### Isochrone (Reachability)
+
+In practice, isochrones are computed via `SOLVE_GRAPH` with `SHORTEST_PATH` from a source point and `max_solution_targets = '0'` (visit every reachable node). The resulting cost field is then contoured by Workbench's `contour` render type. From `~/demos/isochrone/isochrone.json`:
+
+```sql
+DROP TABLE IF EXISTS dc_sssp_all;
+EXECUTE FUNCTION SOLVE_GRAPH(
+    GRAPH          => 'dc',
+    SOLVER_TYPE    => 'SHORTEST_PATH',
+    SOURCE_NODES   => INPUT_TABLE(
+        SELECT ST_GEOMFROMTEXT('POINT(-77.036489 38.892108)') AS WKTPOINT
+    ),
+    SOLUTION_TABLE => 'dc_sssp_all',
+    OPTIONS => KV_PAIRS(
+        simplified_xyz       = 'true',  -- emit (x, y, z=cost) per reachable node
+        max_solution_targets = '0'      -- 0 = solve to every reachable node
+    )
+);
+```
+
+The `dc_sssp_all` table can then be filtered to a reachability buffer (e.g. cost ≤ 120 s within 10 km of source) for crisp isochrone rendering. The `match_isochrone` MATCH_GRAPH method also exists (sample shape: `WKTPOINT + ID`, options `max_radius`) but the SSSP-and-contour pattern shown above is what production demos use.
+
+### EV Charging Station Routing
+
+`match_charging_stations` takes **two input tables** in `INPUT_TABLES`: the catalog of charging stations (`WKTPOINT + ID`) and the origin/destination pairs to route (`ORIGIN_WKTPOINT + DESTINATION_WKTPOINT + OD_ID`). From `~/demos/ev_demo/USA_EV_CHARGING.sql`:
+
+```sql
+DROP TABLE IF EXISTS ki_home.us_match_solve;
+EXECUTE FUNCTION MATCH_GRAPH(
+    GRAPH => 'ki_home.osm_graph_usa',
+    SAMPLE_POINTS => INPUT_TABLES(
+        -- 1) Charging-station catalog
+        (SELECT wkt AS WKTPOINT, id AS ID
+         FROM   us_north_ev_charging),
+        -- 2) Origin → destination trip(s)
+        (SELECT ST_GEOMFROMTEXT('POINT(-122.420311 37.778992)') AS ORIGIN_WKTPOINT,
+                ST_GEOMFROMTEXT('POINT( -81.663566 30.333843)') AS DESTINATION_WKTPOINT,
+                1 AS OD_ID)
+    ),
+    SOLVE_METHOD   => 'match_charging_stations',
+    SOLUTION_TABLE => 'ki_home.us_match_solve',
+    OPTIONS => KV_PAIRS(
+        charging_capacity   = '20000',  -- vehicle range, in graph weight units
+        charging_candidates = '5',      -- stations probed per base location
+        charging_penalty    = '2000',   -- cost added per full charge
+        charging_gridsize   = '0.1',    -- search-bin angular size
+        aggregated_output   = 'false',
+        timeout             = '60'
+    )
+);
+```
+
+---
+
+## 10. ALTER GRAPH — Modifying Existing Graphs
+
+Modify an existing graph without full recreation. `ALTER GRAPH ... MODIFY` supports the same components as `CREATE GRAPH`.
+
+### Add New Edges
+
+```sql
+ALTER GRAPH wiki_graph MODIFY (
+    EDGES => INPUT_TABLES(
+        (SELECT 'Tom' AS node1, 'Jane' AS node2, 'Family' AS label)
+    ),
+    OPTIONS => KV_PAIRS(graph_table = 'wiki_graph_modified')
+);
+```
+
+### Add Restrictions
+
+```sql
+ALTER GRAPH wiki_graph MODIFY (
+    RESTRICTIONS => INPUT_TABLES(
+        (SELECT 'Bill' AS node1, 'Alex' AS node2)
+    )
+);
+```
+
+### Update Ontology Options
+
+```sql
+ALTER GRAPH wiki_graph MODIFY (
+    OPTIONS => KV_PAIRS(
+        schema_node_labelkeys = 'false',
+        schema_edge_labelkeys = 'false'
+    )
+);
+```
+
+---
+
+## 11. Graph Lifecycle Management
+
+### Listing Graphs
+
+```sql
+DESCRIBE GRAPH *
+```
+
+Returns: `GRAPH_NAME`, `DIRECTED`, `NUM_NODES`, `NUM_EDGES`, `IS_PERSISTED`, etc.
+
+### Showing Graph Details
+
+```sql
+DESCRIBE GRAPH my_graph
+```
+
+### Persisting Graphs
+
+Graphs are in-memory by default and lost on server restart. To persist:
+
+```sql
+CREATE OR REPLACE GRAPH my_graph (
+    ...
+    OPTIONS => KV_PAIRS(save_persist = 'true')
+);
+```
+
+### Live Sync with Source Tables
+
+Automatically update the graph when source tables change:
+
+```sql
+CREATE OR REPLACE GRAPH my_graph (
+    ...
+    OPTIONS => KV_PAIRS(add_table_monitor = 'true')
+);
+```
+
+### Deleting Graphs
+
+```sql
+-- Delete graph (keeps source tables intact)
+DROP GRAPH my_graph
+
+-- Delete graph and persisted data
+DROP GRAPH my_graph WITH OPTIONS (delete_persist = 'true')
+```
+
+---
+
+## 12. REST API Reference
+
+### Graph Grammar
+
+The graph grammar defines all valid identifiers, identifier combinations, and solver configurations. It is the building block of Kinetica Graph. To retrieve the complete grammar as JSON:
+
+- **REST API:** `POST /show/graph/grammar` — returns the full grammar JSON with all components, identifiers, solve methods, options, and output schemas. View the live response as an [**interactive JSON tree**](schemas/show_graph_grammar.html) (expand/collapse, filter by keyword)
+- **C++ test binary:** `./bin/TestSolver.x -g` (from the build directory) — outputs the complete grammar for `/create/graph` and `/match/graph` endpoints including all identifier combinations and solver parameters
+
+The grammar defines:
+- **Components:** `NODES`, `EDGES`, `WEIGHTS`, `RESTRICTIONS`, `QUERIES`, `SAMPLES`, `SOLVETARGETS`
+- **Node identifiers:** `NODE` (generic — auto-resolves to `NODE_ID` \| `NODE_NAME` \| `NODE_WKTPOINT`), `NODE_ID`, `NODE_X`, `NODE_Y`, `NODE_NAME`, `NODE_WKTPOINT`, `NODE_LABEL`, `NODE_LABEL_KEY`, `NODE_PARTITION_BOUNDARY`
+- **Edge identifiers:** `EDGE_ID`, `EDGE_NODE1` / `EDGE_NODE2` (generic endpoint refs — resolve to `_ID` \| `_NAME` \| `_WKTPOINT`), `EDGE_WKTLINE`, `EDGE_LABEL`, `EDGE_WEIGHT`, plus directional variants
+- **Edge direction senses:** `FORWARD`, `BIDIRECTIONAL`, `BACKWARD`
+
+### Endpoints
+
+The full request/response field schemas — auto-generated from `gpudb-schemas/endpoint-schemas/` — are linked from the table below. See the [**Schema Reference index**](schemas/index.html) for the complete list.
+
+| Endpoint | Method | Description | Schema |
+|----------|--------|-------------|--------|
+| `/create/graph` | POST | Create a graph from table components | [JSON](schemas/create_graph.html) |
+| `/query/graph` | POST | Topological adjacency queries (hop-based) | [JSON](schemas/query_graph.html) |
+| `/solve/graph` | POST | Run solver algorithms | [JSON](schemas/solve_graph.html) |
+| `/match/graph` | POST | GPS matching, supply-demand optimization | [JSON](schemas/match_graph.html) |
+| `/show/graph` | POST | Graph metadata and ontology | [JSON](schemas/show_graph.html) |
+| `/show/graph/grammar` | POST | Valid identifier combinations | [JSON tree](schemas/show_graph_grammar.html) |
+| `/alter/graph` | POST | Modify existing graph | [JSON](schemas/alter_graph.html) |
+| `/get/graph/entities` | POST | Fetch nodes/edges by id, name, or label | [JSON](schemas/get_graph_entities.html) |
+| `/delete/graph` | POST | Delete a graph | — |
+
+### /create/graph
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `graph_name` | string | Unique graph name (required) |
+| `directed_graph` | boolean | If `true`, directed graph (default: `true`) |
+| `nodes` | array | Node identifiers (e.g., `'table.column AS NODE_ID'`) |
+| `edges` | array | Edge identifiers |
+| `weights` | array | Edge cost identifiers |
+| `restrictions` | array | Restriction identifiers |
+| `options` | map | Configuration key-value pairs |
+
+### /query/graph (ADJACENCY_SOLVER)
+
+The `/query/graph` endpoint runs the **Adjacency Solver** — finding paths from source to target nodes via many-to-many queries with labels, hop-based pattern filtering, and node/edge filtering based on labels.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `graph_name` | string | Graph to query |
+| `queries` | array | Node or edge identifiers to query |
+| `rings` | int | Number of hops (default: 1). `0` returns nodes matching criteria |
+| `adjacency_table` | string | Table for results (blank = return in response) |
+
+Options: `force_undirected`, `limit`, `find_common_labels`
+
+### /solve/graph
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `solver_type` | string | Algorithm (default: `SHORTEST_PATH`) |
+| `source_nodes` | array | Starting nodes |
+| `destination_nodes` | array | Target nodes |
+| `solution_table` | string | Result table (default: `graph_solutions`) |
+
+**Solver types:** `SHORTEST_PATH`, `PAGE_RANK`, `PROBABILITY_RANK`, `CENTRALITY`, `CLOSENESS`, `MULTIPLE_ROUTING`, `INVERSE_SHORTEST_PATH`, `BACKHAUL_ROUTING`, `ALLPATHS`, `STATS_ALL`
+
+**Key options:** `max_solution_radius`, `min_solution_radius`, `max_solution_targets`, `uniform_weights`, `output_edge_path`, `output_wkt_path`, `num_best_paths`, `max_num_combinations`, `convergence_limit` (PageRank), `max_iterations` (PageRank), `max_runs` (centrality), `output_clusters` (STATS_ALL), `solve_heuristic` (A-STAR), `astar_radius`, `left_turn_penalty`, `right_turn_penalty`, `intersection_penalty`, `sharp_turn_penalty`
+
+### /match/graph
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `graph_name` | string | Graph to match against |
+| `sample_points` | string/array | GPS points or supply/demand specification |
+| `solve_method` | string | Algorithm (default: `markov_chain`) |
+| `solution_table` | string | Result table |
+
+**Solve methods:** `markov_chain`, `match_od_pairs`, `match_supply_demand`, `match_batch_solves`, `match_loops`, `match_charging_stations`, `match_similarity`, `match_pickup_dropoff`, `match_clusters`, `match_pattern`, `match_embedding`, `match_isochrone`, `match_route_detour`
+
+**Key options:** `gps_noise`, `num_segments`, `search_radius`, `chain_width` (markov_chain); `partial_loading`, `aggregated_output`, `multi_step`, `max_combinations`, `max_supply_combinations`, `permute_supplies`, `round_trip` (match_supply_demand); `max_radius` (match_isochrone); `charging_capacity`, `charging_candidates`, `charging_penalty`, `charging_gridsize` (match_charging_stations); `output_tracks`, `timeout`
+
+### Response Format
+
+All REST responses use double-wrapped JSON:
+```json
+{
+    "status": "OK",
+    "message": "",
+    "data_str": "<JSON string with results>"
+}
+```
+
+For graph queries: `data_str → info → gql_result` contains hop-based path structure with `column_headers`, `column_datatypes`, and `column_1..column_N` arrays.
+
+---
+
+## 13. Graph Explorer
+
+Kinetica Graph Explorer is a zero-install, browser-based tool for exploring graph data structures in a Kinetica GPU database. Connect to any Kinetica instance, browse graphs, inspect label distributions, visualize ontology structures, run GQL queries, and explore query results as interactive path visualizations — all from a single HTML file.
+
+- **Hosted:** [graph-explorer.kinetica.com](https://graph-explorer.kinetica.com)
+- **Source:** [github.com/kineticadb/graph/tree/master/explorer](https://github.com/kineticadb/graph/tree/master/explorer)
+
+### Quick Start
+
+1. Open `KineticaGraphExplorer.html` in any modern browser (or visit the hosted URL above).
+2. Enter your Kinetica server URL, username, and password in the sidebar.
+3. Click **Connect** — available graphs appear in the sidebar list.
+4. Select a graph to explore.
+
+No build step, no dependencies to install, no server to run.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/kineticadb/graph/master/explorer/screenshots/explorer_banking_full.png" alt="Graph Explorer — banking graph full dashboard" width="900"/>
+  <br/><em>Full dashboard — banking graph with 622K nodes / 845K edges: ontology, canvas visualization (50K node/edge limits), and label distribution charts with 16 node labels and 15 edge labels.</em>
+</p>
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/kineticadb/graph/master/explorer/screenshots/explorer_query_helper.png" alt="Graph Explorer — query helper and visualization" width="900"/>
+  <br/><em>Query Helper generates GQL from ontology labels. Multiple query panels with path visualization, force-graph canvas, and node detail lookup.</em>
+</p>
+
+### Features
+
+#### Graph Overview
+- **Label Distribution** — Interactive doughnut charts and sortable tables for node and edge labels, with counts and percentages.
+- **Summary Cards** — At-a-glance counts of labeled/unlabeled nodes and edges, with the number of distinct labels shown.
+
+#### Ontology Visualization
+- Ontology auto-loads on graph selection — the graph's structural schema is rendered as a Graphviz DOT diagram.
+- **Full / NKey / EKey** toggles in the panel header — `Full` enables exhaustive edge search for accurate percentages; `NKey` / `EKey` control schema label grouping. Toggles auto-reload the ontology.
+- Pan, zoom, and click on nodes/edges in the ontology to highlight matching labels in the charts.
+- **⤢ Maximize** for a full-viewport view (Esc or **▣ Restore** to return).
+
+#### Graph Visualization
+- **↻ Pull + Visualize** fetches graph nodes and edges via `/get/graph/entities` (with batching for large graphs > 500 K edges, fallback to `/get/records`). Renderer-toggle clicks (Auto / Canvas / Deck.gl / WMS) only switch the rendering mode — they don't auto-fetch. Switching between Canvas ↔ Deck.gl reuses already-fetched data.
+- **CanvasGraph** (non-WKT graphs) — force-directed visualization with colors matching label charts. Click a node to fetch its full record from the source table. Node/edge limit sliders and a viz-limit dropdown live in the header.
+- **Viz-limit guard** — the limit dropdown (10 K / 100 K / 1 M / 10 M / 100 M / ∞) gates `Pull + Visualize` across all renderers. When the graph exceeds the chosen limit, a red `[Continue] [Cancel]` banner appears.
+- **Geo graph renderers** — for WKT graphs the header shows a `Auto | Canvas | Deck.gl | WMS` toggle, covering both client-side and server-side paths (see [Geo Rendering](#geo-rendering) below).
+- Click a node to **copy its entity ID** to clipboard (for use in Query Helper or queries).
+- Label selection in the charts filters the visualization to matching subgraphs. Multi-label combos (e.g. `["director","actor"]`) match as exact combos.
+- Supports both directed (`digraph`) and undirected (`graph`) ontology topologies — pathfinding works in both, and generated GQL uses `-[]-` for undirected graphs.
+
+#### Geo Rendering
+
+WKT geospatial graphs (road networks, transit, utilities) get a dedicated renderer toggle. The four options trade resolution, GPU/CPU cost, and round-trip pattern differently — pick by edge count and what you want to see.
+
+<p align="center">
+  <img src="images/explorer/explorer_geo_rendering.png" alt="Graph Explorer geo rendering modes" width="900"/>
+  <br/><em>Visual options: Carto basemap (Off / Light / Color), WMS server-side (Heatmap → Raster → CB), client-side Canvas (progressive / LoD), and Deck.gl (Auto). Examples shown: Seattle metro road network (Canvas), San Francisco roads on Voyager basemap (Deck.gl), and the 27 M-edge US road network colored by state with Deck.gl + light basemap and WMS class-break raster.</em>
+</p>
+
+| Renderer | Where it draws | Best for | Notable controls |
+|---|---|---|---|
+| **Deck.gl** *(default, `DeckMapView`)* | WebGL on the GPU via `LineLayer` + MapLibre GL basemap | Up to ~27 M edges at 60 fps; sharp lines that stay crisp under zoom | `🌐 Off / Light / Color` basemap toggle (CartoDB `light_all` for grayscale, `rastertiles/voyager` for street color); WebGL anti-aliasing |
+| **Canvas** *(`MapView`)* | HTML5 Canvas 2D | < 2 M edges, lowest dependency footprint | Pre-parsed WKT → `Float32Array` per batch, color-batched drawing, `requestAnimationFrame`-throttled, adaptive LoD, progressive rendering, viewport culling, HiDPI |
+| **WMS** *(server-side)* | Kinetica `/wms` endpoint renders PNG tiles on the database side | Tens of millions of edges; client RAM stays at zero — only PNG bytes cross the wire | Style sub-toggle `Auto / Heat / Raster / CB` — Heatmap uses the jet colormap with a zoom-aware blur radius so the spectrum stays consistent at every zoom; CB shows class-break coloring by edge label (top 20). Cursor-centered wheel zoom, debounced pan |
+| **Auto** | Picks Deck.gl or WMS based on edge count and zoom | Default for unfamiliar graphs | No manual tuning; falls back to WMS at ultra-large scales |
+
+**Edge picking — single-click into the source table** All three renderers converge on the same node/edge detail strip:
+- **Deck.gl** and **Canvas** look the picked edge up by ID against the source table (with id-column auto-probe) — the edge geometry is already client-side, so it's a one-row DB hit.
+- **WMS** has no client edge data (image-only), so it issues a server-side `STXY_DWITHIN` query around the click point, returning the matching record and pinning a highlight on the picked edge.
+
+Label-filter selections in the doughnut charts are pushed into all three paths — for WMS this becomes a `LABEL_FILTER` parameter on the tile request so the server colors only matching edges.
+
+#### SQL / GQL Query
+- **Query** button opens a floating, draggable, resizable SQL editor panel. Each click opens a **new independent panel** — multiple queries can be open simultaneously.
+- **Query Helper** generates GQL from form inputs: pick source label(s), add intermediate hops with node/edge label sets, pick target label(s), click **Generate Query** — a BFS over the ontology produces a direction-aware `MATCH` pattern with the right `->` / `<-` arrows. Labels with spaces are auto-quoted; graph names are double-quoted per part (`GRAPH "schema"."graph"`). Multi-label selections use OR logic (`(a:street_address|email)`).
+- Press **Ctrl+Enter** (or click **Run**) to execute.
+- After a successful query with hop data, the **Visualization** tab activates automatically. Two toggles appear below the editor:
+  - **View Results** — scrollable data table of the `RETURN` columns.
+  - **Visualization** — interactive force-directed path visualization with label-consistent colors, legend, directed arrows, and animated particles. Re-centers responsively on panel resize.
+  - **Node Detail Lookup** — clicking any node in the visualization copies its ID and fetches the full record from the original node source table (e.g. `expero.vertexes`). The record is shown as a horizontal table strip beneath the graph.
+
+#### Session Save / Load
+- **Load Session** restores from a JSON file. Uses the active server connection (warns if the session was saved from a different server). Warns if the graph is not found. Re-fetches table data and visualization if they were active.
+- **Save Session** downloads current state as JSON with a timestamped filename. Includes connection, graph, labels, ontology, data/viz state, and queries with their Query Helper selections.
+- **Session-loss protection** — switching graphs, changing profiles, connecting, or loading a session shows a confirmation banner with **Save & Continue** / **Continue** / **Cancel**.
+- **Auto-run Queries** toggle (on by default) — restored queries execute automatically on session load.
+
+#### Cross-View Picking and UI
+- **Pick** mode enables bidirectional highlighting: clicking ontology elements highlights the label chart; hovering chart rows highlights ontology nodes/edges.
+- **Auto-refresh** polling toggle (5 s – 5 min) for live label-count monitoring.
+- **Resizable split panes**, **floating query panels** (minimize → Q1/Q2 pill, maximize, restore, close), color-coded **progress bar** during data fetch, click-anywhere **node detail strip**, and tooltips on every control.
+
+### Architecture
+
+A single HTML file with inline CSS and JSX (transpiled in-browser by Babel). All library dependencies are loaded from CDN:
+
+| Library | Purpose |
+|---|---|
+| React 18 | UI component framework |
+| D3 v7 | SVG manipulation, zoom/pan for ontology viewer |
+| Chart.js | Doughnut charts for label distribution |
+| @hpcc-js/wasm (Graphviz) | DOT → SVG layout for ontology rendering |
+| force-graph | Canvas-based force-directed graph visualization (non-geo) |
+| deck.gl v9 | WebGL GPU-accelerated geo visualization (`LineLayer` for millions of edges) |
+| MapLibre GL v4 | Open-source basemap engine — CartoDB `light_all` and `rastertiles/voyager` tiles, no API key |
+
+### Kinetica API Endpoints
+
+| Endpoint | Usage |
+|---|---|
+| `POST /show/graph` | List graphs, get label details, and ontology DOT (`export_graph_schema: 'true'`) |
+| `POST /get/graph/entities` | Fetch graph nodes/edges directly with labels and identifier type (int / string / WKT) |
+| `POST /get/records` | Fallback for visualization data; node/edge detail lookup from source tables |
+| `POST /execute/sql` | Run SQL and GQL queries; also used for WMS BBOX computation |
+| `GET /wms` | Server-side map-tile rendering for large WKT graphs (> 2 M edges) — heatmap or raster styles |
+
+Kinetica REST responses are **double-wrapped**: the top-level JSON contains a `data_str` field which is itself a JSON string. For GQL queries the unwrapped response has two distinct data sources — `json_encoded_response` holds the `RETURN`-statement columns (shown in **View Results**), and `info.gql_result` holds the hop-based path structure (`NODE1_HOP_1`, `EDGE_LABELS_HOP_1`, …) that drives the **Visualization** force-graph. Both are column-oriented objects with `column_headers`, `column_datatypes`, and `column_1..column_N` arrays.
+
+Tested on Chrome, Firefox, and Edge. Requires ES2017+ (async/await, `fetch`).
+
+---
+
+## 14. Use Cases and Examples
+
+The three use cases below are captured live from Kinetica Graph Explorer — each figure is a screenshot of the actual query running against a real graph. The session files that produced them live in this repository; load them via **Load Session** in the Explorer to reproduce every figure exactly.
+
+> For additional use cases, architecture diagrams, and performance benchmarks, see the [Kinetica Graph Analytics Slide Deck](https://docs.google.com/presentation/d/1Rh5tHXww_0_GCv74w1RaiF3FIw_Ku5fQ5-CM06TIlBg/edit).
+
+### Use Case 1: Top Movies — Actor Ranking by Co-appearance and Rating
+
+**Graph:** `ki_home.top_movies` — a property graph over the IMDb top-200 movies. Nodes are `movie`, `actor`, `director`, and `year`; edges are `acted`, `directed`, and `released`. Each actor node carries a `Description` (bio) and `Rating` (IMDb popularity score).
+
+<p align="center">
+  <img src="images/explorer/top_movies_session.png" alt="top_movies session — ontology, label charts, and visualization" width="900"/>
+  <br/><em>Graph Explorer on <code>ki_home.top_movies</code> — ontology (top-left), node/edge label distribution (right), and the full force-directed graph (bottom-left). Actors dominate at 87.2% of nodes; every movie is linked to its year, director, and full cast.</em>
+</p>
+
+**Goal:** Rank the most impactful actors across the top 200 movies — who appears most often, and what is the average rating of the films they carried.
+
+```sql
+-- Rank all actors with their short bio based on their appearances
+-- and impact on movie ratings among all top 200 movies.
+SELECT actor, COUNT(*) AS movie_count, score, bio
+FROM GRAPH_TABLE(
+    GRAPH top_movies
+    MATCH (a:actor)-[e:acted]->(m:movie)
+    RETURN DISTINCT a.node AS actor, a.Description AS bio,
+                    a.Rating AS score, m.node AS movie
+)
+GROUP BY 1, 3, 4
+ORDER BY 2 DESC
+LIMIT 10;
+```
+
+Two-layer composition:
+
+| Layer | Role |
+|-------|------|
+| Cypher `MATCH (a:actor)-[e:acted]->(m:movie)` | Traversal — emit one row per `(actor, movie)` pair with the actor's bio + rating |
+| Outer `SELECT ... GROUP BY actor` | Count each actor's appearances and surface their IMDb rating and bio |
+
+<p align="center">
+  <img src="images/explorer/top_movies_q0_results.png" alt="Top movies — actor ranking table" width="900"/>
+  <br/><em>Explorer View Results tab — the ten most prolific actors across the top 200 films, each with their IMDb rating and short bio</em>
+</p>
+
+<p align="center">
+  <img src="images/explorer/top_movies_q0_graph.png" alt="Top movies — actor/movie co-appearance graph" width="900"/>
+  <br/><em>Explorer Visualization tab — the <code>actor → acted → movie</code> bipartite graph returned by the query (2,911 nodes). Dense clusters correspond to actors who share many of the top-200 films; isolates are one-appearance actors</em>
+</p>
+
+### Use Case 2: Banking Graph — Wire-to-Address Exposure Trail
+
+**Graph:** `expero.banking_graph` — a financial-network graph with 10+ node labels (`bank`, `party`, `wire_message`, `banking_transaction`, `internal_account`, `external_account`, `street_address`, `ip_address`, `device_cookie`, …). The interesting backbone for fraud analysis is the five-hop chain:
+
+```
+bank —performed→ wire_message —is_for_transaction→ banking_transaction
+     —involved→ internal_account —registered_at→ street_address
+```
+
+<p align="center">
+  <img src="images/explorer/banking_session.png" alt="Banking session — ontology, label charts, and visualization" width="900"/>
+  <br/><em>Graph Explorer on <code>expero.banking_graph</code> — full-search ontology (top-left), per-label counts and percentages (right), and the force-directed graph (bottom-left). Percentages annotate each node label's share of the graph and each edge's share of all relationships.</em>
+</p>
+
+**Goal:** Starting from any bank, materialize the full audit trail to the physical address of every internal account that received funds. Then narrow the scope to a single suspect bank.
+
+**Query 1 — every bank, every trail:**
+
+```sql
+GRAPH "expero"."banking_graph"
+MATCH (a:bank)-[ab:performed]->(b:wire_message)
+      -[bc:is_for_transaction]->(c:banking_transaction)
+      -[cd:involved]->(d:internal_account)
+      -[de:registered_at]->(e:street_address)
+RETURN a.NODE  AS a_node, b.NODE  AS b_node, ab.LABEL AS ab_label,
+       c.NODE  AS c_node, bc.LABEL AS bc_label,
+       d.NODE  AS d_node, cd.LABEL AS cd_label,
+       e.NODE  AS e_node, de.LABEL AS de_label;
+```
+
+<p align="center">
+  <img src="images/explorer/banking_q0_results.png" alt="Banking — all-bank trail results" width="900"/>
+  <br/><em>Explorer View Results tab — one row per full five-hop trail (bank UUID → wire UUID → transaction UUID → internal account UUID → street address)</em>
+</p>
+
+<p align="center">
+  <img src="images/explorer/banking_q0_graph.png" alt="Banking — all-bank trail" width="900"/>
+  <br/><em>Explorer Visualization tab — the same trails as a force-directed network. Every row of the Cypher result becomes a path in the canvas; the whole-graph view is a hairball of overlapping trails</em>
+</p>
+
+**Query 2 — pin a single bank and drill down:**
+
+```sql
+GRAPH "expero"."banking_graph"
+MATCH (a:bank WHERE a.NODE = '03fbeb8e-e85e-49b6-8f6d-6d1326b20f3c')
+      -[ab:performed]->(b:wire_message)
+      -[bc:is_for_transaction]->(c:banking_transaction)
+      -[cd:involved]->(d:internal_account)
+      -[de:registered_at]->(e:street_address)
+RETURN a.NODE  AS a_node, b.NODE  AS b_node, ab.LABEL AS ab_label,
+       c.NODE  AS c_node, bc.LABEL AS bc_label,
+       d.NODE  AS d_node, cd.LABEL AS cd_label,
+       e.NODE  AS e_node, de.LABEL AS de_label;
+```
+
+<p align="center">
+  <img src="images/explorer/banking_q1_results.png" alt="Banking — single-bank drilldown results" width="900"/>
+  <br/><em>Explorer View Results tab — 55 trail rows, all originating from the single pinned bank UUID</em>
+</p>
+
+<p align="center">
+  <img src="images/explorer/banking_q1_graph.png" alt="Banking — single-bank drilldown" width="900"/>
+  <br/><em>Explorer Visualization tab — same query anchored on one bank via <code>WHERE a.NODE = '…'</code>. The hairball collapses into a clean hub-and-spoke rooted at that bank</em>
+</p>
+
+The Query Helper panel on the left of the Explorer builds this query interactively: pick `bank` as source, `street_address` as target, add `wire_message` and `internal_account` as waypoints, and the Cypher writes itself.
+
+### Use Case 3: Wiki Graph — Friend-of-Friend Traversal with Label Keys
+
+**Graph:** `ki_home.wiki_graph` — the canonical Kinetica demo graph. Nodes carry two label keys (`Gender` ∈ {MALE, FEMALE}, `Interest` ∈ {golf, business, dance, chess}) so each person has a compound label like `MALE:chess`. Edges use the `Relations` label key (`Friend`, `Family`).
+
+**Goal:** Show that label-key grouping makes multi-attribute Cypher filters ergonomic — you match on a *class* of nodes (e.g. "any female"), not on a single label string.
+
+**Query 1 — chess chains that start with a woman who plays golf:**
+
+```sql
+GRAPH "ki_home"."wiki_graph"
+MATCH (a:FEMALE)-[ab]->(b:golf)-[bc]->(c:chess)
+RETURN a.NODE AS a_node, b.NODE AS b_node, ab.LABEL AS ab_label,
+       c.NODE AS c_node, bc.LABEL AS bc_label;
+```
+
+Because `FEMALE` and `golf` come from *different* label keys, a single node can match both simultaneously — the traversal finds women-who-play-golf without needing an explicit AND.
+
+<p align="center">
+  <img src="images/explorer/wiki_q0_graph.png" alt="Wiki — chess chain traversal" width="900"/>
+  <br/><em>Explorer Visualization tab — the single matching triple rendered as a force-directed network, colored by compound label (<code>FEMALE:business</code>, <code>MALE:golf</code>, <code>MALE:chess</code>)</em>
+</p>
+
+**Query 2 — friend-of-friend up to 4 hops:**
+
+```sql
+GRAPH "ki_home"."wiki_graph"
+MATCH (a:FEMALE)-[ab:Friend]->{1,4} (b:chess)
+RETURN a.node AS source, b.node AS target;
+```
+
+The `{1,4}` quantifier is Kinetica's variable-length-path operator: "any number of `Friend` hops between 1 and 4." Combined with label-key filtering at both ends, it answers "which women can reach a chess player through at most four friends?" in a single pattern.
+
+<p align="center">
+  <img src="images/explorer/wiki_q1_results.png" alt="Wiki — variable-length friend path results" width="900"/>
+  <br/><em>Explorer View Results tab — each row is one <code>(source, target)</code> pair, one FEMALE reaching one chess player through 1–4 Friend hops</em>
+</p>
+
+<p align="center">
+  <img src="images/explorer/wiki_q1_graph.png" alt="Wiki — variable-length friend paths" width="900"/>
+  <br/><em>Explorer Visualization tab — the same pairs rendered as a force-directed network</em>
+</p>
+
+---
+
+## 15. Best Practices
+
+### Graph Design
+1. **Use grammar-matching column names** (`node`, `label`, `node1`, `node2`) to avoid explicit annotation
+2. **Multi-label with `VARCHAR[]`** — use `string_to_array()` for multi-label support
+3. **Label keys for ontology** — group labels under `LABEL_KEY` to keep visualizations manageable
+4. **Consistent identifier types** — all node/edge tables must share the same data type
+
+### Query Performance
+5. **Filter during traversal** — apply `WHERE` inline at each hop `(n:Label WHERE ...)` to prune paths early
+6. **Limit variable-length ranges** — start with `{1,3}` and increase carefully; always combine with label/attribute filters
+7. **Use `GRAPH_TABLE()` for aggregation** — bare Cypher cannot GROUP BY
+8. **Prefer Cypher for relationships** — don't fall back to SQL JOINs when a graph already models the relationships
+
+### Solver Selection
+9. **SHORTEST_PATH** for point-to-point routing (requires weighted edges)
+10. **PAGE_RANK / CENTRALITY** for node importance analysis
+11. **MATCH_GRAPH** for logistics optimization (supply-demand, batch routing, isochrones)
+12. **Cypher** for exploratory pattern matching and relationship discovery
+
+### Resource Management
+13. **Avoid `graph_table`** for graphs > 1,000 elements (high overhead)
+14. **Use `save_persist`** for production graphs that must survive restarts
+15. **Use `add_table_monitor`** for graphs that should auto-update with source table changes
+16. **Drop solution tables** before re-running MATCH_GRAPH — it doesn't auto-replace
+
+### Cypher Correctness
+17. **Always prefix with `GRAPH "name"`** — required for all Cypher queries
+18. **Unique return aliases** — every RETURN expression needs a distinct name
+19. **Single continuous path** — MATCH must be one linear chain, not comma-separated patterns
+20. **Separate variables at path ends** — when the same entity appears at both ends, use `(a WHERE ...)...(b WHERE ...)` instead of reusing the same variable
+
+---
+
+## 16. Troubleshooting
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| Parse error on Cypher | Missing `GRAPH "name"` prefix | Always start with `GRAPH "graph_name"` |
+| Column not found | WHERE references column not in source table | Run `DESCRIBE TABLE source_table` to check |
+| Ambiguous column | Duplicate return aliases | Give every RETURN expression a unique `AS` alias |
+| Empty Cypher results | Wrong arrow direction | Flip arrow `<-[]-` or add `force_undirected` hint |
+| Timeout on solve/Cypher | Large graph, unfiltered traversal | Increase timeout; add inline WHERE filters |
+| Graph already exists | Duplicate name | Use `CREATE OR REPLACE` or drop first |
+| Data type mismatch | NODE columns differ across tables | Ensure all NODE/NODE1/NODE2 share same type |
+| Missing INPUT_TABLES | Bare SELECT in clause | Wrap each SELECT in `INPUT_TABLES((...))` |
+| MATCH_GRAPH fails on re-run | Solution table already exists | `DROP TABLE IF EXISTS <solution_table>` first |
+| `graph_table` slow | Large graph with materialization | Omit `graph_table` unless GRAPH_TABLE() SQL needed |
+| No edges found | Wrong label or direction | Check `DESCRIBE GRAPH`; verify labels with `SELECT DISTINCT LABEL FROM source_table` |
+
+---
+
+## Appendix: Workbook Catalog
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/kineticadb/graph/master/graph_workbooks_logo.png" alt="Graph Workbooks" width="300"/>
+</p>
+
+Interactive workbooks are available for import into Kinetica Workbench. Download from the [kineticadb/graph](https://github.com/kineticadb/graph) repository:
+
+| # | Workbook | Domain | Key Topics |
+|---|----------|--------|------------|
+| 1 | Wikipedia Example | Social | Table design, graph creation, label keys, Cypher basics |
+| 2 | Banking | Finance | Risk scoring, wire transfers, GRAPH_TABLE aggregation |
+| 3 | Logistics | Supply Chain | MSDO, multi-modal transport, spec matching |
+| 4 | Social Networks | Social | Bluesky model, mutual likes, engagement metrics |
+| 5 | GraphRag BBC News | NLP/KG | Entity extraction, knowledge graphs, ALLPATHS |
+| 6 | Isochrone Coverages | Geospatial | Travel-time reachability, coverage analysis |
+| 7 | Dynamic Ontology | Schema | ALTER GRAPH, evolving schemas, live updates |
+| 8 | Two Depot Deliveries | Logistics | Depot-based delivery optimization |
+| 9 | Six Depot Deliveries | Logistics | San Francisco multi-depot routing |
+| 10 | Bluesky SQL Proc | Automation | SQL procedures on social graphs |
+
+---
+
+## Appendix: Resources
+
+| Resource | Link |
+|----------|------|
+| **Graph Analytics Presentation** | [Kinetica Graph Analytics Slide Deck](https://docs.google.com/presentation/d/1Rh5tHXww_0_GCv74w1RaiF3FIw_Ku5fQ5-CM06TIlBg/edit) |
+| **GitHub Repository** | [kineticadb/graph](https://github.com/kineticadb/graph) |
+| **Quick Guide** | [quickguide.md](https://github.com/kineticadb/graph/blob/master/quickguide.md) |
+| **Cypher Examples** | [cypherquery_cases.md](https://github.com/kineticadb/graph/blob/master/cypherquery_cases.md) |
+| **REST API Schemas** | [restapi_schemas.md](https://github.com/kineticadb/graph/blob/master/restapi_schemas.md) |
+| **Free Developer Edition** | [Kinetica Developer Edition](https://www.kinetica.com/kinetica-developer-edition/) |
+
+---
+
+*Generated from Kinetica Graph documentation, source code, workbook examples, endpoint schemas, and the [kineticadb/graph](https://github.com/kineticadb/graph) repository.*

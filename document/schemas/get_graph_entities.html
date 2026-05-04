@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='UTF-8'/>
+<meta name='viewport' content='width=device-width, initial-scale=1.0'/>
+<title>Get Graph Entities — Kinetica Graph API</title>
+<link rel='icon' type='image/png' href='../favicon.png'/>
+<style>
+:root {
+  --bg: #ffffff; --bg-alt: #f6f8fa; --text: #24292f; --muted: #57606a;
+  --border: #d0d7de; --accent: #2563eb; --code-bg: #eff1f3;
+}
+:root[data-theme="dark"] {
+  --bg: #0d1117; --bg-alt: #161b22; --text: #c9d1d9; --muted: #8b949e;
+  --border: #30363d; --accent: #58a6ff; --code-bg: #21262d;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d1117; --bg-alt: #161b22; --text: #c9d1d9; --muted: #8b949e;
+    --border: #30363d; --accent: #58a6ff; --code-bg: #21262d;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+       background: var(--bg); color: var(--text); line-height: 1.55; }
+.wrap { max-width: 1100px; margin: 0 auto; padding: 32px 28px 80px; }
+h1 { margin: 0 0 4px; font-size: 28px; }
+h2 { margin: 36px 0 12px; font-size: 20px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+.crumbs { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+.crumbs a { color: var(--accent); text-decoration: none; }
+.crumbs a:hover { text-decoration: underline; }
+.endpoint { display: inline-block; background: var(--code-bg); color: var(--accent);
+            padding: 2px 8px; border-radius: 4px; font-family: SFMono-Regular,Consolas,monospace; font-size: 13px; }
+.short { font-size: 16px; color: var(--muted); margin: 4px 0 16px; }
+.intro { background: var(--bg-alt); border: 1px solid var(--border); border-radius: 6px;
+         padding: 12px 14px; margin: 0 0 24px; font-size: 14px; }
+table { width: 100%; border-collapse: collapse; margin: 8px 0 24px; font-size: 14px; }
+th { text-align: left; background: var(--bg-alt); padding: 8px 10px; border-bottom: 1px solid var(--border);
+     position: sticky; top: 0; }
+td { padding: 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+td.fname { white-space: nowrap; min-width: 180px; }
+td.ftype { white-space: nowrap; min-width: 110px; color: var(--muted); }
+td.fdoc { line-height: 1.5; }
+code { background: var(--code-bg); color: var(--text); padding: 1px 5px;
+       border-radius: 3px; font-family: SFMono-Regular,Consolas,monospace; font-size: 92%; }
+.kv { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+.value-block { margin-top: 6px; font-size: 13px; }
+ul.choices { margin: 6px 0 0 16px; padding: 0; }
+ul.choices li { margin: 2px 0; }
+details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.theme-btn { position: fixed; top: 16px; right: 16px; padding: 6px 12px; border: 1px solid var(--border);
+             background: var(--bg-alt); color: var(--text); border-radius: 6px; cursor: pointer; font-size: 13px; }
+</style>
+</head>
+<body>
+<button id='themeBtn' class='theme-btn'>☀ Light</button>
+<div class='wrap'>
+  <div class='crumbs'><a href='../Kinetica_Graph_User_Guide.html'>← Back to User Guide</a> · Graph API Reference</div>
+  <h1>Get Graph Entities</h1>
+  <div><span class='endpoint'>/get/graph/entities</span></div>
+  <p class='short'>Retrieve graph nodes or edges.</p>
+  
+    <h2>Request</h2>
+    <div class='intro'>Retrieves node or edge entities from an existing graph, with pagination support via offset and limit. Use @<code>endpoint /show/graph</code> to obtain the total number of nodes and edges.</div>
+    <table>
+      <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+      <tbody>
+    <tr>
+      <td class='fname'><code>graph_name</code></td>
+      <td class='ftype'><code>string</code></td>
+      <td class='fdoc'>Name of the graph from which to retrieve entities.</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>offset</code></td>
+      <td class='ftype'><code>long</code></td>
+      <td class='fdoc'>Starting index of the entities to retrieve (0-based).<div class='value-block'><span class='kv'>default:</span> <code>0</code></div></td>
+    </tr>
+    <tr>
+      <td class='fname'><code>limit</code></td>
+      <td class='ftype'><code>long</code></td>
+      <td class='fdoc'>Number of entities to retrieve starting from @<code>input offset</code>. A value of -1 returns all entities from the offset to the end. Note: the @<code>output entities_int</code> or @<code>output entities_string</code> array size will be 2x this value for nodes (stride 2) or 4x for edges (stride 4).<div class='value-block'><span class='kv'>default:</span> <code>10000</code></div></td>
+    </tr>
+    <tr>
+      <td class='fname'><code>options</code></td>
+      <td class='ftype'>map&lt;string,<code>string</code>&gt;</td>
+      <td class='fdoc'>Optional parameters.<div class='value-block'><span class='kv'>default:</span> <code>{}</code></div></td>
+    </tr></tbody>
+    </table>
+    <h2>Response</h2>
+    <div class='intro'></div>
+    <table>
+      <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+      <tbody>
+    <tr>
+      <td class='fname'><code>result</code></td>
+      <td class='ftype'><code>boolean</code></td>
+      <td class='fdoc'>Indicates a successful retrieval.</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>entities_int</code></td>
+      <td class='ftype'>array&lt;<code>long</code>&gt;</td>
+      <td class='fdoc'>Flat array of entity data for integer-identifier graphs with a repeating stride. For node entities (stride 2): [node_id, label_index, ...]. For edge entities (stride 4): [edge_id, node1_id, node2_id, label_index, ...]. Populated when the graph uses integer identifiers; empty otherwise. The label_index is a 1-based index into the @<code>output labels</code> array; 0 indicates no label. When the request option 'concise_edge_connectivity' is 'true', this array is also used (regardless of graph identifier type) for edge entities and carries [edge_id, node1_index, node2_index, edge_label_index] where node1_index/node2_index are 0-based positions into the node array returned from a paired node call on the same graph.</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>entities_string</code></td>
+      <td class='ftype'>array&lt;<code>string</code>&gt;</td>
+      <td class='fdoc'>Flat array of entity data for name-identifier (string) graphs only. For node entities (stride 2): [node_name, label_index, ...]. For edge entities (stride 4): [edge_id, node1_name, node2_name, label_index, ...]. Populated only when the graph uses string identifiers. Empty for integer-identifier graphs (data goes to @<code>output entities_int</code>) and for WKT/geo-XY graphs (data always goes to @<code>output entities_double</code> — 'POINT(x y)' strings are never emitted). The label_index is a string representation of a 1-based index into the @<code>output labels</code> array; '0' indicates no label.</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>entities_double</code></td>
+      <td class='ftype'>array&lt;<code>double</code>&gt;</td>
+      <td class='fdoc'>Compact double-packed payload for WKT (geo/XY) graphs. WKT graphs ALWAYS use this array — 'POINT(x y)' strings are never emitted anywhere. Stride 3 for nodes: [x, y, label_index, ...]. Stride 6 for edges (non-concise): [edge_id, x0, y0, x1, y1, label_index, ...]. Empty for non-WKT graphs and when concise mode emits edges into @<code>output entities_int</code> instead. label_index/edge_id occupy double slots (representable exactly up to 2^53). When 'concise_edge_connectivity' is 'true' and entity_type is 'node', tombstoned (deleted) WKT slots emit [0.0, 0.0, 0.0] to keep position indices stable. Roughly 4x smaller on the wire than 'POINT(x y)' strings and avoids any client-side regex parse.</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>entities_weight</code></td>
+      <td class='ftype'>array&lt;<code>float</code>&gt;</td>
+      <td class='fdoc'>Per-edge weight values, populated only when the request option 'include_weights' is 'true' and @<code>input options entity_type</code> is 'edge'. Stride 1, aligned 1:1 with the edge records emitted in @<code>output entities_int</code> or @<code>output entities_string</code> (i.e. the i-th weight corresponds to the i-th edge record). Empty when the graph has no weights component, when requesting nodes, or when the option is not set. Single-precision float matches the graph server's native weight storage.</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>labels</code></td>
+      <td class='ftype'>array&lt;<code>string</code>&gt;</td>
+      <td class='fdoc'>Array of distinct label strings. The label_index values in @<code>output entities_int</code>, @<code>output entities_string</code>, or @<code>output entities_double</code> are 1-based indexes into this array; index 0 means no label.</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>info</code></td>
+      <td class='ftype'>map&lt;string,<code>string</code>&gt;</td>
+      <td class='fdoc'>Additional information map. Contains the following keys: 'identifier_type' — describes the graph's native node identifier type: 'int', 'string', or 'wkt' (geo/XY graph). 'payload_type' — describes which array actually holds this response payload: 'int' (@<code>output entities_int</code>), 'string' (@<code>output entities_string</code>), or 'double' (@<code>output entities_double</code>). WKT graphs ALWAYS use 'double' for both nodes and edges — 'POINT(x y)' strings are never emitted. In concise edge mode payload_type is 'int' regardless of graph type. Clients should dispatch on 'payload_type', not 'identifier_type', to parse the response. 'total_count' — total number of entities available in the graph for the requested entity_type, used for pagination; this is the live (non-deleted) count by default, or the raw count (including deleted slots) when 'concise_edge_connectivity' is true for a node request. 'status_message' — set to 'Cancelled' if the request was cancelled mid-iteration (with @<code>output result</code> set to false). 'concise_edge_connectivity' — set to 'true' when the response was produced with the concise option (edges emitted as [edge_id, v0_index, v1_index, label_idx] in @<code>output entities_int</code>; WKT-graph nodes emitted as [x, y, label_idx] in @<code>output entities_double</code>; non-WKT nodes still in their native array; node output includes deleted slots to keep indices stable). 'include_weights' — set to 'true' when @<code>output entities_weight</code> is populated.</td>
+    </tr></tbody>
+    </table>
+</div>
+<script>
+(function(){
+  const saved = localStorage.getItem('schema-theme');
+  const theme = saved || 'dark';
+  document.documentElement.setAttribute('data-theme', theme);
+  document.addEventListener('DOMContentLoaded', () => {
+    const btn = document.getElementById('themeBtn');
+    function update() {
+      const t = document.documentElement.getAttribute('data-theme');
+      btn.textContent = t === 'dark' ? '☀ Light' : '☾ Dark';
+    }
+    update();
+    btn.addEventListener('click', () => {
+      const t = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+      localStorage.setItem('schema-theme', t);
+      update();
+    });
+  });
+})();
+</script>
+</body>
+</html>

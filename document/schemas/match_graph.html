@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='UTF-8'/>
+<meta name='viewport' content='width=device-width, initial-scale=1.0'/>
+<title>Match Graph — Kinetica Graph API</title>
+<link rel='icon' type='image/png' href='../favicon.png'/>
+<style>
+:root {
+  --bg: #ffffff; --bg-alt: #f6f8fa; --text: #24292f; --muted: #57606a;
+  --border: #d0d7de; --accent: #2563eb; --code-bg: #eff1f3;
+}
+:root[data-theme="dark"] {
+  --bg: #0d1117; --bg-alt: #161b22; --text: #c9d1d9; --muted: #8b949e;
+  --border: #30363d; --accent: #58a6ff; --code-bg: #21262d;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d1117; --bg-alt: #161b22; --text: #c9d1d9; --muted: #8b949e;
+    --border: #30363d; --accent: #58a6ff; --code-bg: #21262d;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+       background: var(--bg); color: var(--text); line-height: 1.55; }
+.wrap { max-width: 1100px; margin: 0 auto; padding: 32px 28px 80px; }
+h1 { margin: 0 0 4px; font-size: 28px; }
+h2 { margin: 36px 0 12px; font-size: 20px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+.crumbs { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+.crumbs a { color: var(--accent); text-decoration: none; }
+.crumbs a:hover { text-decoration: underline; }
+.endpoint { display: inline-block; background: var(--code-bg); color: var(--accent);
+            padding: 2px 8px; border-radius: 4px; font-family: SFMono-Regular,Consolas,monospace; font-size: 13px; }
+.short { font-size: 16px; color: var(--muted); margin: 4px 0 16px; }
+.intro { background: var(--bg-alt); border: 1px solid var(--border); border-radius: 6px;
+         padding: 12px 14px; margin: 0 0 24px; font-size: 14px; }
+table { width: 100%; border-collapse: collapse; margin: 8px 0 24px; font-size: 14px; }
+th { text-align: left; background: var(--bg-alt); padding: 8px 10px; border-bottom: 1px solid var(--border);
+     position: sticky; top: 0; }
+td { padding: 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+td.fname { white-space: nowrap; min-width: 180px; }
+td.ftype { white-space: nowrap; min-width: 110px; color: var(--muted); }
+td.fdoc { line-height: 1.5; }
+code { background: var(--code-bg); color: var(--text); padding: 1px 5px;
+       border-radius: 3px; font-family: SFMono-Regular,Consolas,monospace; font-size: 92%; }
+.kv { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+.value-block { margin-top: 6px; font-size: 13px; }
+ul.choices { margin: 6px 0 0 16px; padding: 0; }
+ul.choices li { margin: 2px 0; }
+details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.theme-btn { position: fixed; top: 16px; right: 16px; padding: 6px 12px; border: 1px solid var(--border);
+             background: var(--bg-alt); color: var(--text); border-radius: 6px; cursor: pointer; font-size: 13px; }
+</style>
+</head>
+<body>
+<button id='themeBtn' class='theme-btn'>☀ Light</button>
+<div class='wrap'>
+  <div class='crumbs'><a href='../Kinetica_Graph_User_Guide.html'>← Back to User Guide</a> · Graph API Reference</div>
+  <h1>Match Graph</h1>
+  <div><span class='endpoint'>/match/graph</span></div>
+  <p class='short'>Match sample points to a graph.</p>
+  
+    <h2>Request</h2>
+    <div class='intro'>Matches a directed route implied by a given set of<br>latitude/longitude points to an existing underlying road network graph using a<br>given solution type.<br>IMPORTANT: It's highly recommended that you review the<br><code>Graphs and Solvers</code><br>concepts documentation, the<br><code>Graph REST Tutorial</code>,<br>and/or some<br><code>/match/graph examples</code><br>before using this endpoint.</div>
+    <table>
+      <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+      <tbody>
+    <tr>
+      <td class='fname'><code>graph_name</code></td>
+      <td class='ftype'><code>string</code></td>
+      <td class='fdoc'>Name of the underlying geospatial graph resource to match to using @<code>input sample_points</code>.</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>sample_points</code></td>
+      <td class='ftype'>array&lt;<code>string</code>&gt;</td>
+      <td class='fdoc'>Sample points used to match to an underlying geospatial<br>graph. Sample points must be specified using<br><code>identifiers</code>;<br>identifiers are grouped as<br><code>combinations</code>.<br>Identifiers can be used with: existing column names, e.g.,<br>'table.column AS SAMPLE_X'; expressions, e.g.,<br>'ST_MAKEPOINT(table.x, table.y) AS SAMPLE_WKTPOINT'; or constant values, e.g.,<br>'<code>1, 2, 10</code> AS SAMPLE_TRIPID'.</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>solve_method</code></td>
+      <td class='ftype'><code>string</code></td>
+      <td class='fdoc'>The type of solver to use for graph matching.<div class='value-block'><span class='kv'>default:</span> <code>markov_chain</code><br><details><summary><span class='kv'>valid_choices</span></summary><ul class='choices'><li><code>markov_chain</code> — Matches @<code>input sample_points</code> to the graph using the Hidden Markov Model (HMM)-based method, which conducts a range-tree closest-edge search to find the best combinations of possible road segments (<code>num_segments</code>) for each sample point to create the best route. The route is secured one point at a time while looking ahead <code>chain_width</code> number of points, so the prediction is corrected after each point. This solution type is the most accurate but also the most computationally intensive. Related options: <code>num_segments</code> and <code>chain_width</code>.</li><li><code>match_od_pairs</code> — Matches @<code>input sample_points</code> to find the most probable path between origin and destination pairs with cost constraints.</li><li><code>match_supply_demand</code> — Matches @<code>input sample_points</code> to optimize scheduling multiple supplies (trucks) with varying sizes to varying demand sites with varying capacities per depot. Related options: <code>partial_loading</code> and <code>max_combinations</code>.</li><li><code>match_batch_solves</code> — Matches @<code>input sample_points</code> source and destination pairs for the shortest path solves in batch mode.</li><li><code>match_loops</code> — Matches closed loops (Eulerian paths) originating and ending at each graph node within min and max hops (levels).</li><li><code>match_charging_stations</code> — Matches an optimal path across a number of ev-charging stations between source and target locations.</li><li><code>match_similarity</code> — Matches the intersection set(s) by computing the Jaccard similarity score between node pairs.</li><li><code>match_pickup_dropoff</code> — Matches the pickups and dropoffs by optimizing the total trip costs</li><li><code>match_clusters</code> — Matches the graph nodes with a cluster index using Louvain clustering algorithm</li><li><code>match_pattern</code> — Matches a pattern in the graph</li><li><code>match_embedding</code> — Creates vector node embeddings</li><li><code>match_isochrone</code> — Solves for isochrones for a set of input sources</li><li><code>match_route_detour</code> — Computes detour costs for nearby stations at a mark point along each source-target route.</li></ul></details></div></td>
+    </tr>
+    <tr>
+      <td class='fname'><code>solution_table</code></td>
+      <td class='ftype'><code>string</code></td>
+      <td class='fdoc'>The name of the table used to store the results, in [schema_name.]table_name format, using standard <code>name resolution rules</code> and meeting <code>table naming criteria</code>.  This table contains a <code>track</code> of geospatial points for the matched portion of the graph, a track ID, and a score value. Also outputs a details table containing a trip ID (that matches the track ID), the latitude/longitude pair, the timestamp the point was recorded at, and an edge ID corresponding to the matched road segment. Must not be an existing table of the same name.<div class='value-block'><span class='kv'>default:</span> <code></code></div></td>
+    </tr>
+    <tr>
+      <td class='fname'><code>options</code></td>
+      <td class='ftype'>map&lt;string,<code>string</code>&gt;</td>
+      <td class='fdoc'>Additional parameters<div class='value-block'><span class='kv'>default:</span> <code>{}</code></div></td>
+    </tr></tbody>
+    </table>
+    <h2>Response</h2>
+    <div class='intro'></div>
+    <table>
+      <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+      <tbody>
+    <tr>
+      <td class='fname'><code>result</code></td>
+      <td class='ftype'><code>boolean</code></td>
+      <td class='fdoc'>Indicates a successful solution.</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>match_score</code></td>
+      <td class='ftype'><code>float</code></td>
+      <td class='fdoc'>The mean square error calculation representing the map matching score. Values closer to zero are better.</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>info</code></td>
+      <td class='ftype'>map&lt;string,<code>string</code>&gt;</td>
+      <td class='fdoc'>Additional information.</td>
+    </tr></tbody>
+    </table>
+</div>
+<script>
+(function(){
+  const saved = localStorage.getItem('schema-theme');
+  const theme = saved || 'dark';
+  document.documentElement.setAttribute('data-theme', theme);
+  document.addEventListener('DOMContentLoaded', () => {
+    const btn = document.getElementById('themeBtn');
+    function update() {
+      const t = document.documentElement.getAttribute('data-theme');
+      btn.textContent = t === 'dark' ? '☀ Light' : '☾ Dark';
+    }
+    update();
+    btn.addEventListener('click', () => {
+      const t = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+      localStorage.setItem('schema-theme', t);
+      update();
+    });
+  });
+})();
+</script>
+</body>
+</html>

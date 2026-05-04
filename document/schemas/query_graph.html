@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='UTF-8'/>
+<meta name='viewport' content='width=device-width, initial-scale=1.0'/>
+<title>Query Graph — Kinetica Graph API</title>
+<link rel='icon' type='image/png' href='../favicon.png'/>
+<style>
+:root {
+  --bg: #ffffff; --bg-alt: #f6f8fa; --text: #24292f; --muted: #57606a;
+  --border: #d0d7de; --accent: #2563eb; --code-bg: #eff1f3;
+}
+:root[data-theme="dark"] {
+  --bg: #0d1117; --bg-alt: #161b22; --text: #c9d1d9; --muted: #8b949e;
+  --border: #30363d; --accent: #58a6ff; --code-bg: #21262d;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d1117; --bg-alt: #161b22; --text: #c9d1d9; --muted: #8b949e;
+    --border: #30363d; --accent: #58a6ff; --code-bg: #21262d;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+       background: var(--bg); color: var(--text); line-height: 1.55; }
+.wrap { max-width: 1100px; margin: 0 auto; padding: 32px 28px 80px; }
+h1 { margin: 0 0 4px; font-size: 28px; }
+h2 { margin: 36px 0 12px; font-size: 20px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+.crumbs { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+.crumbs a { color: var(--accent); text-decoration: none; }
+.crumbs a:hover { text-decoration: underline; }
+.endpoint { display: inline-block; background: var(--code-bg); color: var(--accent);
+            padding: 2px 8px; border-radius: 4px; font-family: SFMono-Regular,Consolas,monospace; font-size: 13px; }
+.short { font-size: 16px; color: var(--muted); margin: 4px 0 16px; }
+.intro { background: var(--bg-alt); border: 1px solid var(--border); border-radius: 6px;
+         padding: 12px 14px; margin: 0 0 24px; font-size: 14px; }
+table { width: 100%; border-collapse: collapse; margin: 8px 0 24px; font-size: 14px; }
+th { text-align: left; background: var(--bg-alt); padding: 8px 10px; border-bottom: 1px solid var(--border);
+     position: sticky; top: 0; }
+td { padding: 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+td.fname { white-space: nowrap; min-width: 180px; }
+td.ftype { white-space: nowrap; min-width: 110px; color: var(--muted); }
+td.fdoc { line-height: 1.5; }
+code { background: var(--code-bg); color: var(--text); padding: 1px 5px;
+       border-radius: 3px; font-family: SFMono-Regular,Consolas,monospace; font-size: 92%; }
+.kv { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+.value-block { margin-top: 6px; font-size: 13px; }
+ul.choices { margin: 6px 0 0 16px; padding: 0; }
+ul.choices li { margin: 2px 0; }
+details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.theme-btn { position: fixed; top: 16px; right: 16px; padding: 6px 12px; border: 1px solid var(--border);
+             background: var(--bg-alt); color: var(--text); border-radius: 6px; cursor: pointer; font-size: 13px; }
+</style>
+</head>
+<body>
+<button id='themeBtn' class='theme-btn'>☀ Light</button>
+<div class='wrap'>
+  <div class='crumbs'><a href='../Kinetica_Graph_User_Guide.html'>← Back to User Guide</a> · Graph API Reference</div>
+  <h1>Query Graph</h1>
+  <div><span class='endpoint'>/query/graph</span></div>
+  <p class='short'>Queries an existing graph.</p>
+  
+    <h2>Request</h2>
+    <div class='intro'>Employs a topological query on a graph generated a-priori by<br>@<code>endpoint /create/graph</code> and returns a list of adjacent edge(s) or node(s),<br>also known as an adjacency list, depending on what's been provided to the<br>endpoint; providing edges will return nodes and providing nodes will return<br>edges.<br>To determine the node(s) or edge(s) adjacent to a value from a given column,<br>provide a list of values to @<code>input queries</code>. This field can be populated with<br>column values from any table as long as the type is supported by the given<br>identifier. See<br><code>Query Identifiers</code><br>for more information.<br>To return the adjacency list in the response, leave @<code>input adjacency_table</code><br>empty. <br>IMPORTANT: It's highly recommended that you review the<br><code>Graphs and Solvers</code><br>concepts documentation, the<br><code>Graph REST Tutorial</code>,<br>and/or some<br><code>/match/graph examples</code><br>before using this endpoint.</div>
+    <table>
+      <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+      <tbody>
+    <tr>
+      <td class='fname'><code>graph_name</code></td>
+      <td class='ftype'><code>string</code></td>
+      <td class='fdoc'>Name of the graph resource to query.</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>queries</code></td>
+      <td class='ftype'>array&lt;<code>string</code>&gt;</td>
+      <td class='fdoc'>Nodes or edges to be queried specified using <code>query identifiers</code>. Identifiers can be used with existing column names, e.g., 'table.column AS QUERY_NODE_ID', raw values, e.g., '<code>0, 2</code> AS QUERY_NODE_ID', or expressions, e.g., 'ST_MAKEPOINT(table.x, table.y) AS QUERY_NODE_WKTPOINT'. Multiple values can be provided as long as the same identifier is used for all values. If using raw values in an identifier combination, the number of values specified must match across the combination.</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>restrictions</code></td>
+      <td class='ftype'>array&lt;<code>string</code>&gt;</td>
+      <td class='fdoc'>Additional restrictions to apply to the nodes/edges of an existing graph. Restrictions must be specified using <code>identifiers</code>; identifiers are grouped as <code>combinations</code>. Identifiers can be used with existing column names, e.g., 'table.column AS RESTRICTIONS_EDGE_ID', expressions, e.g., 'column/2 AS RESTRICTIONS_VALUECOMPARED', or raw values, e.g., '<code>0, 0, 0, 1</code> AS RESTRICTIONS_ONOFFCOMPARED'. If using raw values in an identifier combination, the number of values specified must match across the combination.<div class='value-block'><span class='kv'>default:</span> <code>[]</code></div></td>
+    </tr>
+    <tr>
+      <td class='fname'><code>adjacency_table</code></td>
+      <td class='ftype'><code>string</code></td>
+      <td class='fdoc'>Name of the table to store the resulting adjacencies, in [schema_name.]table_name format, using standard <code>name resolution rules</code> and meeting <code>table naming criteria</code>.  If left blank, the query results are instead returned in the response. If the 'QUERY_TARGET_NODE_LABEL' <code>query identifier</code> is used in @<code>input queries</code>, then two additional columns will be available: 'PATH_ID' and 'RING_ID'. See <code>Using Labels</code> for more information.<div class='value-block'><span class='kv'>default:</span> <code></code></div></td>
+    </tr>
+    <tr>
+      <td class='fname'><code>rings</code></td>
+      <td class='ftype'><code>int</code></td>
+      <td class='fdoc'>Sets the number of rings around the node to query for adjacency, with '1' being the edges directly attached to the queried node. Also known as number of hops. For example, if it is set to '2', the edge(s) directly attached to the queried node(s) will be returned; in addition, the edge(s) attached to the node(s) attached to the initial ring of edge(s) surrounding the queried node(s) will be returned. If the value is set to '0', any nodes that meet the criteria in @<code>input queries</code> and @<code>input restrictions</code> will be returned. This parameter is only applicable when querying nodes.<div class='value-block'><span class='kv'>default:</span> <code>1</code></div></td>
+    </tr>
+    <tr>
+      <td class='fname'><code>options</code></td>
+      <td class='ftype'>map&lt;string,<code>string</code>&gt;</td>
+      <td class='fdoc'>Additional parameters<div class='value-block'><span class='kv'>default:</span> <code>{}</code></div></td>
+    </tr></tbody>
+    </table>
+    <h2>Response</h2>
+    <div class='intro'></div>
+    <table>
+      <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+      <tbody>
+    <tr>
+      <td class='fname'><code>result</code></td>
+      <td class='ftype'><code>boolean</code></td>
+      <td class='fdoc'>Indicates a successful query.</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>adjacency_list_int_array</code></td>
+      <td class='ftype'>array&lt;<code>long</code>&gt;</td>
+      <td class='fdoc'>The adjacency entity integer ID: either edge IDs per node requested (if using QUERY_EDGE_ID or QUERY_NODE1_ID and QUERY_NODE2_ID in the input) or two node IDs per edge requested (if using QUERY_NODE_ID in the input).</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>adjacency_list_string_array</code></td>
+      <td class='ftype'>array&lt;<code>string</code>&gt;</td>
+      <td class='fdoc'>The adjacency entity string ID: either edge IDs per node requested (if using QUERY_EDGE_NAME or QUERY_NODE1_NAME and QUERY_NODE2_NAME in the input) or two node IDs per edge requested (if using QUERY_NODE_NAME in the input).</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>adjacency_list_wkt_array</code></td>
+      <td class='ftype'>array&lt;<code>string</code>&gt;</td>
+      <td class='fdoc'>The adjacency entity WKTPOINT or WKTLINE ID: either edge IDs per node requested (if using QUERY_EDGE_WKTLINE or QUERY_NODE1_WKTPOINT and QUERY_NODE2_WKTPOINT in the input) or two node IDs per edge requested (if using QUERY_NODE_WKTPOINT in the input).</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>info</code></td>
+      <td class='ftype'>map&lt;string,<code>string</code>&gt;</td>
+      <td class='fdoc'>Additional information.</td>
+    </tr></tbody>
+    </table>
+</div>
+<script>
+(function(){
+  const saved = localStorage.getItem('schema-theme');
+  const theme = saved || 'dark';
+  document.documentElement.setAttribute('data-theme', theme);
+  document.addEventListener('DOMContentLoaded', () => {
+    const btn = document.getElementById('themeBtn');
+    function update() {
+      const t = document.documentElement.getAttribute('data-theme');
+      btn.textContent = t === 'dark' ? '☀ Light' : '☾ Dark';
+    }
+    update();
+    btn.addEventListener('click', () => {
+      const t = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+      localStorage.setItem('schema-theme', t);
+      update();
+    });
+  });
+})();
+</script>
+</body>
+</html>

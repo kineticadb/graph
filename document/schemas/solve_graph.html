@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='UTF-8'/>
+<meta name='viewport' content='width=device-width, initial-scale=1.0'/>
+<title>Solve Graph — Kinetica Graph API</title>
+<link rel='icon' type='image/png' href='../favicon.png'/>
+<style>
+:root {
+  --bg: #ffffff; --bg-alt: #f6f8fa; --text: #24292f; --muted: #57606a;
+  --border: #d0d7de; --accent: #2563eb; --code-bg: #eff1f3;
+}
+:root[data-theme="dark"] {
+  --bg: #0d1117; --bg-alt: #161b22; --text: #c9d1d9; --muted: #8b949e;
+  --border: #30363d; --accent: #58a6ff; --code-bg: #21262d;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d1117; --bg-alt: #161b22; --text: #c9d1d9; --muted: #8b949e;
+    --border: #30363d; --accent: #58a6ff; --code-bg: #21262d;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+       background: var(--bg); color: var(--text); line-height: 1.55; }
+.wrap { max-width: 1100px; margin: 0 auto; padding: 32px 28px 80px; }
+h1 { margin: 0 0 4px; font-size: 28px; }
+h2 { margin: 36px 0 12px; font-size: 20px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+.crumbs { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+.crumbs a { color: var(--accent); text-decoration: none; }
+.crumbs a:hover { text-decoration: underline; }
+.endpoint { display: inline-block; background: var(--code-bg); color: var(--accent);
+            padding: 2px 8px; border-radius: 4px; font-family: SFMono-Regular,Consolas,monospace; font-size: 13px; }
+.short { font-size: 16px; color: var(--muted); margin: 4px 0 16px; }
+.intro { background: var(--bg-alt); border: 1px solid var(--border); border-radius: 6px;
+         padding: 12px 14px; margin: 0 0 24px; font-size: 14px; }
+table { width: 100%; border-collapse: collapse; margin: 8px 0 24px; font-size: 14px; }
+th { text-align: left; background: var(--bg-alt); padding: 8px 10px; border-bottom: 1px solid var(--border);
+     position: sticky; top: 0; }
+td { padding: 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+td.fname { white-space: nowrap; min-width: 180px; }
+td.ftype { white-space: nowrap; min-width: 110px; color: var(--muted); }
+td.fdoc { line-height: 1.5; }
+code { background: var(--code-bg); color: var(--text); padding: 1px 5px;
+       border-radius: 3px; font-family: SFMono-Regular,Consolas,monospace; font-size: 92%; }
+.kv { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+.value-block { margin-top: 6px; font-size: 13px; }
+ul.choices { margin: 6px 0 0 16px; padding: 0; }
+ul.choices li { margin: 2px 0; }
+details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.theme-btn { position: fixed; top: 16px; right: 16px; padding: 6px 12px; border: 1px solid var(--border);
+             background: var(--bg-alt); color: var(--text); border-radius: 6px; cursor: pointer; font-size: 13px; }
+</style>
+</head>
+<body>
+<button id='themeBtn' class='theme-btn'>☀ Light</button>
+<div class='wrap'>
+  <div class='crumbs'><a href='../Kinetica_Graph_User_Guide.html'>← Back to User Guide</a> · Graph API Reference</div>
+  <h1>Solve Graph</h1>
+  <div><span class='endpoint'>/solve/graph</span></div>
+  <p class='short'>Solves an existing graph.</p>
+  
+    <h2>Request</h2>
+    <div class='intro'>Solves an existing graph for a type of problem (e.g., shortest path,<br>page rank, traveling salesman, etc.) using source nodes, destination nodes, and<br>additional, optional weights and restrictions. <br>IMPORTANT: It's highly recommended that you review the<br><code>Graphs and Solvers</code><br>concepts documentation, the<br><code>Graph REST Tutorial</code>,<br>and/or some<br><code>/solve/graph examples</code><br>before using this endpoint.</div>
+    <table>
+      <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+      <tbody>
+    <tr>
+      <td class='fname'><code>graph_name</code></td>
+      <td class='ftype'><code>string</code></td>
+      <td class='fdoc'>Name of the graph resource to solve.</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>weights_on_edges</code></td>
+      <td class='ftype'>array&lt;<code>string</code>&gt;</td>
+      <td class='fdoc'>Additional weights to apply to the edges of an existing<br>graph. Weights must be specified using<br><code>identifiers</code>;<br>identifiers are grouped as<br><code>combinations</code>.<br>Identifiers can be used with existing column names, e.g.,<br>'table.column AS WEIGHTS_EDGE_ID', expressions, e.g.,<br>'ST_LENGTH(wkt) AS WEIGHTS_VALUESPECIFIED', or constant values, e.g.,<br>'<code>4, 15, 2</code> AS WEIGHTS_VALUESPECIFIED'. Any provided weights will be added<br>(in the case of 'WEIGHTS_VALUESPECIFIED') to or multiplied with<br>(in the case of 'WEIGHTS_FACTORSPECIFIED') the existing weight(s). If using<br>constant values in an identifier combination, the number of values specified<br>must match across the combination.<div class='value-block'><span class='kv'>default:</span> <code>[]</code></div></td>
+    </tr>
+    <tr>
+      <td class='fname'><code>restrictions</code></td>
+      <td class='ftype'>array&lt;<code>string</code>&gt;</td>
+      <td class='fdoc'>Additional restrictions to apply to the nodes/edges of an<br>existing graph. Restrictions must be specified using<br><code>identifiers</code>;<br>identifiers are grouped as<br><code>combinations</code>.<br>Identifiers can be used with existing column names, e.g.,<br>'table.column AS RESTRICTIONS_EDGE_ID', expressions, e.g.,<br>'column/2 AS RESTRICTIONS_VALUECOMPARED', or constant values, e.g.,<br>'<code>0, 0, 0, 1</code> AS RESTRICTIONS_ONOFFCOMPARED'. If using constant values in an<br>identifier combination, the number of values specified must match across the<br>combination. If remove_previous_restrictions option is set<br>to true, any<br>provided restrictions will replace the existing restrictions. Otherwise, any provided<br>restrictions will be added (in the case of 'RESTRICTIONS_VALUECOMPARED') to or<br>replaced (in the case of 'RESTRICTIONS_ONOFFCOMPARED').<div class='value-block'><span class='kv'>default:</span> <code>[]</code></div></td>
+    </tr>
+    <tr>
+      <td class='fname'><code>solver_type</code></td>
+      <td class='ftype'><code>string</code></td>
+      <td class='fdoc'>The type of solver to use for the graph.<div class='value-block'><span class='kv'>default:</span> <code>SHORTEST_PATH</code><br><details><summary><span class='kv'>valid_choices</span></summary><ul class='choices'><li><code>SHORTEST_PATH</code> — Solves for the optimal (shortest) path based on weights and restrictions from one source to destinations nodes. Also known as the Dijkstra solver.</li><li><code>PAGE_RANK</code> — Solves for the probability of each destination node being visited based on the links of the graph topology. Weights are not required to use this solver.</li><li><code>PROBABILITY_RANK</code> — Solves for the transitional probability (Hidden Markov) for each node based on the weights (probability assigned over given edges).</li><li><code>CENTRALITY</code> — Solves for the degree of a node to depict how many pairs of individuals that would have to go through the node to reach one another in the minimum number of hops. Also known as betweenness.</li><li><code>MULTIPLE_ROUTING</code> — Solves for finding the minimum cost cumulative path for a round-trip starting from the given source and visiting each given destination node once then returning to the source. Also known as the traveling salesman problem.</li><li><code>INVERSE_SHORTEST_PATH</code> — Solves for finding the optimal path cost for each destination node to route to the source node. Also known as inverse Dijkstra or the service man routing problem.</li><li><code>BACKHAUL_ROUTING</code> — Solves for optimal routes that connect remote asset nodes to the fixed (backbone) asset nodes.</li><li><code>ALLPATHS</code> — Solves for paths that would give costs between max and min solution radia - Make sure to limit by the 'max_solution_targets' option. Min cost should be &gt;= shortest_path cost.</li><li><code>STATS_ALL</code> — Solves for graph statistics such as graph diameter, longest pairs, vertex valences, topology numbers, average and max cluster sizes, etc.</li><li><code>CLOSENESS</code> — Solves for the centrality closeness score per node as the sum of the inverse shortest path costs to all nodes in the graph.</li></ul></details></div></td>
+    </tr>
+    <tr>
+      <td class='fname'><code>source_nodes</code></td>
+      <td class='ftype'>array&lt;<code>string</code>&gt;</td>
+      <td class='fdoc'>It can be one of the nodal identifiers - e.g: 'NODE_WKTPOINT' for source nodes. For <code>BACKHAUL_ROUTING</code>, this list depicts the fixed assets.<div class='value-block'><span class='kv'>default:</span> <code>[]</code></div></td>
+    </tr>
+    <tr>
+      <td class='fname'><code>destination_nodes</code></td>
+      <td class='ftype'>array&lt;<code>string</code>&gt;</td>
+      <td class='fdoc'>It can be one of the nodal identifiers - e.g: 'NODE_WKTPOINT' for destination (target) nodes. For <code>BACKHAUL_ROUTING</code>, this list depicts the remote assets.<div class='value-block'><span class='kv'>default:</span> <code>[]</code></div></td>
+    </tr>
+    <tr>
+      <td class='fname'><code>solution_table</code></td>
+      <td class='ftype'><code>string</code></td>
+      <td class='fdoc'>Name of the table to store the solution, in [schema_name.]table_name format, using standard <code>name resolution rules</code>.<div class='value-block'><span class='kv'>default:</span> <code>graph_solutions</code></div></td>
+    </tr>
+    <tr>
+      <td class='fname'><code>options</code></td>
+      <td class='ftype'>map&lt;string,<code>string</code>&gt;</td>
+      <td class='fdoc'>Additional parameters<div class='value-block'><span class='kv'>default:</span> <code>{}</code></div></td>
+    </tr></tbody>
+    </table>
+    <h2>Response</h2>
+    <div class='intro'></div>
+    <table>
+      <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+      <tbody>
+    <tr>
+      <td class='fname'><code>result</code></td>
+      <td class='ftype'><code>boolean</code></td>
+      <td class='fdoc'>Indicates a successful solution on all servers.</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>result_per_destination_node</code></td>
+      <td class='ftype'>array&lt;<code>float</code>&gt;</td>
+      <td class='fdoc'>Cost or page rank (based on solver type) for each destination node requested. Only populated if 'export_solve_results' option is set to true.</td>
+    </tr>
+    <tr>
+      <td class='fname'><code>info</code></td>
+      <td class='ftype'>map&lt;string,<code>string</code>&gt;</td>
+      <td class='fdoc'>Additional information.</td>
+    </tr></tbody>
+    </table>
+</div>
+<script>
+(function(){
+  const saved = localStorage.getItem('schema-theme');
+  const theme = saved || 'dark';
+  document.documentElement.setAttribute('data-theme', theme);
+  document.addEventListener('DOMContentLoaded', () => {
+    const btn = document.getElementById('themeBtn');
+    function update() {
+      const t = document.documentElement.getAttribute('data-theme');
+      btn.textContent = t === 'dark' ? '☀ Light' : '☾ Dark';
+    }
+    update();
+    btn.addEventListener('click', () => {
+      const t = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+      localStorage.setItem('schema-theme', t);
+      update();
+    });
+  });
+})();
+</script>
+</body>
+</html>
