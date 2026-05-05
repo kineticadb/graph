@@ -1303,7 +1303,10 @@ EXECUTE FUNCTION MATCH_GRAPH(
 ```
 
 <p align="center">
-  <img src="images/emergency/emergency_response.gif" alt="Real-time SVG simulation: every fire station's shortest path to the disaster animates simultaneously over the basemap, the fastest converging first" width="800"/>
+  <video src="images/emergency/emergency_response.mp4" width="800" autoplay loop muted playsinline
+         aria-label="Real-time SVG simulation: every fire station's shortest path to the disaster animates simultaneously over the basemap, the fastest converging first">
+    Your browser does not support the video tag.
+  </video>
 </p>
 
 *Real-time `match_batch_solves` simulation. Each red dot is one of the 1,700+ fire stations launching its shortest path toward the disaster origin; the routes light up in parallel and the basemap underlay (`svg_basemap = 'true'`) provides geographic context. Sort the resulting `batch_sssp` table by `COST` ascending to see which station arrives first.*
@@ -1510,7 +1513,10 @@ EXECUTE FUNCTION MATCH_GRAPH(
 | `DEMAND_REGION_ID` | Restricts a demand to be served only from this depot |
 
 <p align="center">
-  <img src="images/msdo/msdo_dc.gif" alt="Animated SVG of the DC two-depot MSDO solution — trucks fanning out from each depot to deliver customer demands in real time" width="500"/>
+  <video src="images/msdo/msdo_dc.mp4" width="500" autoplay loop muted playsinline
+         aria-label="Animated SVG of the DC two-depot MSDO solution — trucks fanning out from each depot to deliver customer demands in real time">
+    Your browser does not support the video tag.
+  </video>
 </p>
 
 *Real-time SVG simulation produced by the solver — every numbered truck departs its depot, visits its assigned customers (red drop-offs), and the basemap-overlaid SVG plays the entire delivery sequence end-to-end.*
