@@ -59,4 +59,17 @@ Section 13 ("Graph Explorer") mirrors the public README at `github.com/kineticad
 
 ## Screenshot toolchain
 
-`screenshot_session.py` and `replay_session.py` drive the Explorer headlessly via Playwright to regenerate `images/explorer/*.png` from session JSONs in `sessions/`. The `out/<graph_name>/` subdirs hold the raw per-query captures; `images/explorer/*.png` are the curated set referenced by the guide. Ontology DOTs can be re-rendered via `db.show_graph(name, options={'export_graph_schema':'true', ...})` + `dot -Tpng` when the Explorer can't produce the exact view needed.
+`screenshot_session.py` and `replay_session.py` drive the Explorer headlessly via Playwright to regenerate `images/explorer/*.png` from session JSONs in `sessions/`. The `out/<graph_name>/` subdirs hold the raw per-query captures; the curated set under `images/explorer/` is what the guide references. Ontology DOTs can be re-rendered via `db.show_graph(name, options={'export_graph_schema':'true', ...})` + `dot -Tpng` when the Explorer can't produce the exact view needed.
+
+### PNG → WebP conversion (mandatory after any new screenshot)
+
+The guide's image assets are stored as **WebP**, not PNG — switching cut `images/` from 9.0 MB to 4.0 MB at `quality=85, method=6` (visually lossless). After any new PNG lands under `images/` (Explorer capture, workbook screenshot, manual paste from `~/Pictures/Screenshots/`), convert it via:
+
+```bash
+python3 convert_screenshots.py images/         # smart: keep PNG only if WebP grows
+python3 convert_screenshots.py --force images/ # consistency: always swap to WebP
+```
+
+The helper deletes the source PNG when the WebP is smaller (or always with `--force`). It skips files that already have a sibling `.webp`, so re-running is safe. Then update any `images/...png` references in the markdown to `.webp` and re-inline. Two non-image animations live in the same tree as **MP4** (`emergency_response.mp4`, `msdo_dc.mp4`) and are embedded with `<video autoplay loop muted playsinline>` rather than `<img>` — those replaced 5.8 MB of GIF with 1.3 MB of MP4.
+
+`favicon.png` is the lone PNG that should **not** be converted — browsers reference it via `<link rel="icon" type="image/png">`.

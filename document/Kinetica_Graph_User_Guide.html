@@ -371,7 +371,7 @@
 </p>
 
 <p align="center">
-  <img src="images/explorer/explorer_head.png" alt="Kinetica Graph Explorer" width="900"/>
+  <img src="images/explorer/explorer_head.webp" alt="Kinetica Graph Explorer" width="900"/>
   <br/><em>Kinetica Graph Explorer — ontology, label distribution, and force-directed visualization of a knowledge graph, all in a single browser tab.</em>
 </p>
 
@@ -713,12 +713,12 @@ You don't have to use label keys. A graph with just raw labels (e.g. `MALE`, `FE
 The `wiki_graph` from Section 4 illustrates both views:
 
 <p align="center">
-  <img src="images/explorer/wiki_ontology_flat.png" alt="Wiki graph ontology — flat labels" width="480"/>
+  <img src="images/explorer/wiki_ontology_flat.webp" alt="Wiki graph ontology — flat labels" width="480"/>
   <br/><em>Flat ontology — each raw label is its own node (<code>MALE:chess</code>, <code>FEMALE:dance</code>, …) connected by the actual edge labels <code>Friend</code> and <code>Family</code>. Percentages show the share of each label combination.</em>
 </p>
 
 <p align="center">
-  <img src="images/explorer/wiki_ontology_labelkeys.png" alt="Wiki graph ontology — grouped by label keys" width="480"/>
+  <img src="images/explorer/wiki_ontology_labelkeys.webp" alt="Wiki graph ontology — grouped by label keys" width="480"/>
   <br/><em>Same graph with label keys enabled — all person nodes collapse into a single <code>Gender:Interest</code> category and all edges into <code>Relations</code>. One self-loop summarizes the whole schema.</em>
 </p>
 
@@ -776,14 +776,14 @@ Render the DOT with any Graphviz tool (`dot -Tpng`, the Python `graphviz` packag
 The banking graph (`expero.banking_graph`) has 17 node labels and more than 20 edge labels. A sample-based summary misses the long tail of low-frequency `exp_has_comment` edges, so `schema_full_search=true` is the right setting for this graph:
 
 <p align="center">
-  <img src="images/explorer/banking_ontology_fullsearch.png" alt="Banking graph ontology — full search" width="800"/>
+  <img src="images/explorer/banking_ontology_fullsearch.webp" alt="Banking graph ontology — full search" width="800"/>
   <br/><em>Banking ontology rendered from <code>/show/graph</code> with <code>export_graph_schema=true</code> and <code>schema_full_search=true</code>. Every node label (with its percentage of total nodes) and every edge label (with its percentage of total edges) is present.</em>
 </p>
 
 The same session view in Graph Explorer pairs this ontology with the bar-chart breakdown from `labeljson`, giving a per-label population at a glance:
 
 <p align="center">
-  <img src="images/explorer/banking_session.png" alt="Banking session with ontology and label charts" width="800"/>
+  <img src="images/explorer/banking_session.webp" alt="Banking session with ontology and label charts" width="800"/>
   <br/><em>Graph Explorer banking session — ontology graph on the left, per-label bar charts on the right, both driven by the same <code>/show/graph</code> response.</em>
 </p>
 
@@ -1262,13 +1262,13 @@ A real-world `match_batch_solves` pattern: given a disaster location and 1,700+ 
 The setup builds an `osm_seattle` road-network graph from OSM, then filters the FSQ places table to "Fire Station" category labels within a Seattle-area polygon. Each station becomes a destination paired with the single disaster origin; `inverse_solve = 'true'` flips the solver so all fire stations race **toward** the disaster point.
 
 <p align="center">
-  <img src="images/emergency/seattle_road_graph.png" alt="osm_seattle road graph — every drivable edge in the Seattle metro region rendered from the OSM-derived edge table" width="700"/>
+  <img src="images/emergency/seattle_road_graph.webp" alt="osm_seattle road graph — every drivable edge in the Seattle metro region rendered from the OSM-derived edge table" width="700"/>
 </p>
 
 *Seattle road network graph (`osm_seattle`) built from OSM via `CREATE GRAPH ... WITH OPTIONS (graph_table = ...)`. Roughly 1.5 M edges in the Seattle-area bounding polygon shown.*
 
 <p align="center">
-  <img src="images/emergency/fsq_fire_stations.png" alt="FSQ public-places dataset filtered to Fire Stations within the Seattle bounding box — ~1700 candidate origins" width="700"/>
+  <img src="images/emergency/fsq_fire_stations.webp" alt="FSQ public-places dataset filtered to Fire Stations within the Seattle bounding box — ~1700 candidate origins" width="700"/>
 </p>
 
 *Foursquare Open Places (FSQ) filtered to fire stations within the bounding polygon — ~1,700 destinations to race toward the disaster point.*
@@ -1388,13 +1388,13 @@ ORDER BY num_groceries ASC;
 ```
 
 <p align="center">
-  <img src="images/isochrone/grocery_access_table.png" alt="Result table — per-origin grocery counts within 10-minute isochrones, ranging from 27 (rural source 5) to 600 (urban source 1)" width="700"/>
+  <img src="images/isochrone/grocery_access_table.webp" alt="Result table — per-origin grocery counts within 10-minute isochrones, ranging from 27 (rural source 5) to 600 (urban source 1)" width="700"/>
 </p>
 
 *Per-origin grocery counts from the all-in-one query. Source 5 (rural) reaches just 27 groceries within 10 minutes; source 1 (downtown Seattle) reaches 600. The `POLYGON` column is the isochrone WKT used in the spatial join.*
 
 <p align="center">
-  <img src="images/isochrone/grocery_access_map.png" alt="Map view of the 10 isochrone polygons over the Seattle region, each colored by origin and sized by road-network reachability within 600s" width="700"/>
+  <img src="images/isochrone/grocery_access_map.webp" alt="Map view of the 10 isochrone polygons over the Seattle region, each colored by origin and sized by road-network reachability within 600s" width="700"/>
 </p>
 
 *Workbench map view of the same 10 isochrone polygons rendered over the Seattle basemap. Each color is one of the 10 origins; polygon area reflects how much road network is reachable in 10 minutes from that point — dense urban origins yield compact, dense polygons; rural ones spread further along sparse highways.*
@@ -1814,7 +1814,7 @@ No build step, no dependencies to install, no server to run.
 WKT geospatial graphs (road networks, transit, utilities) get a dedicated renderer toggle. The four options trade resolution, GPU/CPU cost, and round-trip pattern differently — pick by edge count and what you want to see.
 
 <p align="center">
-  <img src="images/explorer/explorer_geo_rendering.png" alt="Graph Explorer geo rendering modes" width="900"/>
+  <img src="images/explorer/explorer_geo_rendering.webp" alt="Graph Explorer geo rendering modes" width="900"/>
   <br/><em>Visual options: Carto basemap (Off / Light / Color), WMS server-side (Heatmap → Raster → CB), client-side Canvas (progressive / LoD), and Deck.gl (Auto). Examples shown: Seattle metro road network (Canvas), San Francisco roads on Voyager basemap (Deck.gl), and the 27 M-edge US road network colored by state with Deck.gl + light basemap and WMS class-break raster.</em>
 </p>
 
@@ -1892,7 +1892,7 @@ The three use cases below are captured live from Kinetica Graph Explorer — eac
 **Graph:** `ki_home.top_movies` — a property graph over the IMDb top-200 movies. Nodes are `movie`, `actor`, `director`, and `year`; edges are `acted`, `directed`, and `released`. Each actor node carries a `Description` (bio) and `Rating` (IMDb popularity score).
 
 <p align="center">
-  <img src="images/explorer/top_movies_session.png" alt="top_movies session — ontology, label charts, and visualization" width="900"/>
+  <img src="images/explorer/top_movies_session.webp" alt="top_movies session — ontology, label charts, and visualization" width="900"/>
   <br/><em>Graph Explorer on <code>ki_home.top_movies</code> — ontology (top-left), node/edge label distribution (right), and the full force-directed graph (bottom-left). Actors dominate at 87.2% of nodes; every movie is linked to its year, director, and full cast.</em>
 </p>
 
@@ -1921,12 +1921,12 @@ Two-layer composition:
 | Outer `SELECT ... GROUP BY actor` | Count each actor's appearances and surface their IMDb rating and bio |
 
 <p align="center">
-  <img src="images/explorer/top_movies_q0_results.png" alt="Top movies — actor ranking table" width="900"/>
+  <img src="images/explorer/top_movies_q0_results.webp" alt="Top movies — actor ranking table" width="900"/>
   <br/><em>Explorer View Results tab — the ten most prolific actors across the top 200 films, each with their IMDb rating and short bio</em>
 </p>
 
 <p align="center">
-  <img src="images/explorer/top_movies_q0_graph.png" alt="Top movies — actor/movie co-appearance graph" width="900"/>
+  <img src="images/explorer/top_movies_q0_graph.webp" alt="Top movies — actor/movie co-appearance graph" width="900"/>
   <br/><em>Explorer Visualization tab — the <code>actor → acted → movie</code> bipartite graph returned by the query (2,911 nodes). Dense clusters correspond to actors who share many of the top-200 films; isolates are one-appearance actors</em>
 </p>
 
@@ -1940,7 +1940,7 @@ bank —performed→ wire_message —is_for_transaction→ banking_transaction
 ```
 
 <p align="center">
-  <img src="images/explorer/banking_session.png" alt="Banking session — ontology, label charts, and visualization" width="900"/>
+  <img src="images/explorer/banking_session.webp" alt="Banking session — ontology, label charts, and visualization" width="900"/>
   <br/><em>Graph Explorer on <code>expero.banking_graph</code> — full-search ontology (top-left), per-label counts and percentages (right), and the force-directed graph (bottom-left). Percentages annotate each node label's share of the graph and each edge's share of all relationships.</em>
 </p>
 
@@ -1961,12 +1961,12 @@ RETURN a.NODE  AS a_node, b.NODE  AS b_node, ab.LABEL AS ab_label,
 ```
 
 <p align="center">
-  <img src="images/explorer/banking_q0_results.png" alt="Banking — all-bank trail results" width="900"/>
+  <img src="images/explorer/banking_q0_results.webp" alt="Banking — all-bank trail results" width="900"/>
   <br/><em>Explorer View Results tab — one row per full five-hop trail (bank UUID → wire UUID → transaction UUID → internal account UUID → street address)</em>
 </p>
 
 <p align="center">
-  <img src="images/explorer/banking_q0_graph.png" alt="Banking — all-bank trail" width="900"/>
+  <img src="images/explorer/banking_q0_graph.webp" alt="Banking — all-bank trail" width="900"/>
   <br/><em>Explorer Visualization tab — the same trails as a force-directed network. Every row of the Cypher result becomes a path in the canvas; the whole-graph view is a hairball of overlapping trails</em>
 </p>
 
@@ -1986,12 +1986,12 @@ RETURN a.NODE  AS a_node, b.NODE  AS b_node, ab.LABEL AS ab_label,
 ```
 
 <p align="center">
-  <img src="images/explorer/banking_q1_results.png" alt="Banking — single-bank drilldown results" width="900"/>
+  <img src="images/explorer/banking_q1_results.webp" alt="Banking — single-bank drilldown results" width="900"/>
   <br/><em>Explorer View Results tab — 55 trail rows, all originating from the single pinned bank UUID</em>
 </p>
 
 <p align="center">
-  <img src="images/explorer/banking_q1_graph.png" alt="Banking — single-bank drilldown" width="900"/>
+  <img src="images/explorer/banking_q1_graph.webp" alt="Banking — single-bank drilldown" width="900"/>
   <br/><em>Explorer Visualization tab — same query anchored on one bank via <code>WHERE a.NODE = '…'</code>. The hairball collapses into a clean hub-and-spoke rooted at that bank</em>
 </p>
 
@@ -2015,7 +2015,7 @@ RETURN a.NODE AS a_node, b.NODE AS b_node, ab.LABEL AS ab_label,
 Because `FEMALE` and `golf` come from *different* label keys, a single node can match both simultaneously — the traversal finds women-who-play-golf without needing an explicit AND.
 
 <p align="center">
-  <img src="images/explorer/wiki_q0_graph.png" alt="Wiki — chess chain traversal" width="900"/>
+  <img src="images/explorer/wiki_q0_graph.webp" alt="Wiki — chess chain traversal" width="900"/>
   <br/><em>Explorer Visualization tab — the single matching triple rendered as a force-directed network, colored by compound label (<code>FEMALE:business</code>, <code>MALE:golf</code>, <code>MALE:chess</code>)</em>
 </p>
 
@@ -2030,12 +2030,12 @@ RETURN a.node AS source, b.node AS target;
 The `{1,4}` quantifier is Kinetica's variable-length-path operator: "any number of `Friend` hops between 1 and 4." Combined with label-key filtering at both ends, it answers "which women can reach a chess player through at most four friends?" in a single pattern.
 
 <p align="center">
-  <img src="images/explorer/wiki_q1_results.png" alt="Wiki — variable-length friend path results" width="900"/>
+  <img src="images/explorer/wiki_q1_results.webp" alt="Wiki — variable-length friend path results" width="900"/>
   <br/><em>Explorer View Results tab — each row is one <code>(source, target)</code> pair, one FEMALE reaching one chess player through 1–4 Friend hops</em>
 </p>
 
 <p align="center">
-  <img src="images/explorer/wiki_q1_graph.png" alt="Wiki — variable-length friend paths" width="900"/>
+  <img src="images/explorer/wiki_q1_graph.webp" alt="Wiki — variable-length friend paths" width="900"/>
   <br/><em>Explorer Visualization tab — the same pairs rendered as a force-directed network</em>
 </p>
 
