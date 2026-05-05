@@ -53,6 +53,15 @@ Path('Kinetica_Graph_User_Guide.html').write_text(h[:i] + '\n' + m + '\n' + h[j:
 
 The HTML's sidebar TOC is generated from `h2` headings only; in-content anchors (`#5-ontology-and-label-grouping`, `#7-graph_table--sql-aggregation-on-traversals`) use GitHub-style slugs — preserve em-dashes (`—`) if you want double-hyphen slugs (matches how marked/GitHub slugifies them).
 
+## Schema and grammar pages
+
+Section 7 of the guide links to standalone HTML pages under `schemas/` for each graph endpoint. Two generators produce them:
+
+- `generate_schema_pages.py` — renders one HTML page per endpoint (`create_graph`, `query_graph`, `solve_graph`, `match_graph`, `show_graph`, `alter_graph`, `get_graph_entities`) from JSON in `~/gpudb-dev/gpudb-schemas/endpoint-schemas/`. Source schemas have raw newlines inside string values (not `\n`); the script normalizes before parsing.
+- `generate_grammar_page.py` — makes a live `/show/graph/grammar` call and emits `schemas/show_graph_grammar.html` as a collapsible JSON tree. Needs `.venv/bin/python` so `gpudb` is importable; reads creds from `.env` (same vars as `generate_usecase_images.py`).
+
+Re-run whichever generator's source changed, then regenerate `schemas/index.html` if the endpoint set itself changed. The pages share the guide's dark/light theme — don't drift the styling.
+
 ## Graph Explorer integration
 
 Section 13 ("Graph Explorer") mirrors the public README at `github.com/kineticadb/graph/tree/master/explorer`. When updating it, pull narrative/feature content from that README rather than drafting from scratch. The Explorer itself is hosted at `graph-explorer.kinetica.com`.
