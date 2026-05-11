@@ -6,10 +6,35 @@ A zero-install, browser-based tool for exploring graph data structures in a [Kin
 
 1. Open `KineticaGraphExplorer.html` in any modern browser.
 2. Enter your Kinetica server URL, username, and password in the sidebar.
-3. Click **Connect** — available graphs appear in the sidebar list.
-4. Select a graph to explore.
+3. Click **Connect** — available graphs (and tables) appear in the sidebar list.
+4. Select a graph to explore, or switch the sidebar to **Tables** to browse base tables and scaffold a new graph via **+ New**.
 
 No build step, no dependencies to install, no server to run.
+
+### Optional: serve from a web server to enable the 📖 Docs link
+
+The sidebar's `📖 Docs` button opens `../document/Kinetica_Graph_User_Guide.html` (relative to the explorer) in a new tab. When the explorer is opened directly via `file://`, the button is shown optimistically — clicking works as long as the doc is present, but the button can't auto-detect a missing file (Chrome blocks the cross-origin HEAD probe between local files).
+
+To get the auto-detect behavior (and proper image rendering inside the doc), serve the parent `graph/` directory from any static web server. The expected layout is:
+
+```
+graph/
+  explorer/
+    KineticaGraphExplorer.html
+  document/
+    Kinetica_Graph_User_Guide.html
+    <subdirectories with images, css, etc.>
+```
+
+Examples that all work the same way:
+
+```bash
+# Local dev — one-liner from graph/
+python3 -m http.server 8080
+# Then open http://localhost:8080/explorer/KineticaGraphExplorer.html
+```
+
+Static hosting (nginx, S3, GitHub Pages, etc.) works identically as long as the directory layout above is preserved.
 
 ## Screenshots
 
@@ -34,7 +59,36 @@ No build step, no dependencies to install, no server to run.
 ![Graph Explorer — WMS class-break raster](screenshots/explorer_wms_cb_raster.png)
 *WMS server-side rendering: 27M US road edges colored by state code using class-break raster. Heatmap/CB/Auto style toggle. Edge label distribution chart with 49 state labels.*
 
+![Graph Explorer — Deck.gl with colored street basemap](screenshots/explorer_deckgl_basemap_color.png)
+*Deck.gl WebGL renderer (v7.2.3.13) on `ki_home.us_roads`: 6.76M nodes / 13.12M edges colored by state across 49 distinct edge labels. The new `🌐 Off | Light | Color` basemap toggle is active with **Color** (CartoDB Voyager) layered under the GPU-rasterized lines for geographic context.*
+
 ## Features
+
+### Browsing Graphs and Tables
+- **Sidebar tab toggle** — switch the connected-server list between **Graphs** (default) and **Tables**. Tables come from `INFORMATION_SCHEMA.TABLES` (system schemas filtered out).
+- **Search filter** — instant client-side filter for the current list. The list title row is omitted to maximize vertical room.
+- **Right-click context menu** — kind-aware actions on any list row:
+  - On a **graph**: `Open` (select & load), `Show Create Statement` (modal), `Modify` (opens a Create-Helper panel pre-filled by parsing the graph's CREATE SQL), `Delete…` (red, confirmation modal then `/drop/graph`), `Copy name`
+  - On a **table**: `Open Preview rows` (opens a Query panel with `SELECT * FROM <t> LIMIT 100`), `Schema DESCRIBE`, `Copy name`
+  - Click-away or `Esc` dismisses the menu. The menu is viewport-clamped so it never falls off-screen.
+- **Show Create Statement modal** — calls `/show/graph`, parses `original_request[0]` as JSON, and renders the `CREATE [DIRECTED] GRAPH ...` SQL with the `FROM <table>` names inside `NODES => INPUT_TABLES(...)` and `EDGES => INPUT_TABLES(...)` bolded for quick reference.
+- **`+ New` button** (sidebar header) — opens a Create-Graph panel (see below).
+
+### New-Graph Create Helper
+Click **`+ New`** in the sidebar to open a floating panel titled **Create GRAPH** (a specialized mode of the Query panel). Instead of free-form SQL, you get a structured form that scaffolds a valid `CREATE OR REPLACE [DIRECTED|UNDIRECTED] GRAPH ...` statement.
+
+- **Graph name** + **Action** toggle (`Recreate | Modify`) + **Directed / Undirected** toggle (shown only in Recreate mode — alter cannot change graph directionality).
+  - **Recreate** (default for `+ New`) generates `CREATE OR REPLACE [DIRECTED|UNDIRECTED] GRAPH <name> ( … )`.
+  - **Modify** (default when the panel is opened via the graph context menu `Modify`) generates `ALTER GRAPH <name> MODIFY ( … )` with the same body shape — just the leading clause and the `Directed/Undirected` row differ.
+- **Per-component sections** — `NODES`, `EDGES`, `WEIGHTS`, `RESTRICTIONS`, plus an **OPTIONS** section for `OPTIONS => KV_PAIRS(key = 'value', …)` entries. Each row in a component section binds one input column to one Kinetica graph identifier.
+- **Grammar-driven dropdowns** — identifier choices come from `/show/graph/grammar` when available, with a built-in fallback covering the common configurations (e.g., `NODE_ID + NODE_LABEL`, `NODE_NAME`, `NODE_WKTPOINT`) plus optional add-ons (`NODE_LABEL`, weights/restrictions extras, etc.).
+- **Table column auto-complete** — type or pick a `schema.table`, and the column input switches to a `<datalist>` populated from a one-shot `/get/records limit:1` probe. Results are cached per table so the same table isn't re-probed.
+- **Generic AS naming** — generated SQL uses Kinetica's generic identifier aliases when they fit (e.g., `NODE_NAME` → `AS NODE`, `EDGE_NODE1_WKTPOINT` → `AS NODE1`), and strips the section prefix from the rest (`NODE_LABEL` → `AS LABEL`, `EDGE_ID` → `AS ID`). The generated SQL stays terse and matches what `gadmin` produces.
+- **Multiple input tables per component** — rows targeting different tables are grouped automatically into separate `INPUT_TABLES(...)` blocks per component.
+- **Run** executes the generated SQL via `/execute/sql`. On success a green banner shows **`✓ Graph <name> created/modified. The sidebar list has been refreshed. Open`** — the sidebar re-fetches `/show/graph` and the **Open** button minimizes the panel (you'll find it as a `C*` pill in the header — your form state is preserved) and selects the new graph into the dashboard.
+- **Modify** (graph context menu) reopens this same panel pre-filled by parsing the graph's existing `CREATE GRAPH` statement (NODES/EDGES/WEIGHTS/RESTRICTIONS rows + OPTIONS key/value entries + directed flag + graph name) with the Action toggle pre-set to **Modify** — so the generated SQL is `ALTER GRAPH <name> MODIFY (…)`. Switch the Action toggle to `Recreate` to instead emit a `CREATE OR REPLACE` against the same form.
+- **Delete** (graph context menu, red) drops the graph from the server after a small confirmation dialog and refreshes the sidebar.
+- **Session save/restore** classifies Create panels separately (`kind: 'create'`) so an iterating Create panel can be saved with its form state; on restore it is **not** auto-run.
 
 ### Graph Overview
 - **Label Distribution** — Interactive doughnut charts and sortable tables for node and edge labels, with counts and percentages. Click column headers to sort by label name (alphabetical) or count (default).
@@ -47,11 +101,17 @@ No build step, no dependencies to install, no server to run.
 - **`⤢` Maximize** button for full-viewport ontology view (Esc or `▣ Restore` to return).
 
 ### Graph Visualization
-- **`↻ Pull+Visualize`** fetches graph nodes and edges via `/get/graph/entities` (with batching for large graphs >500K edges, fallback to `/get/records`).
+- **`↻ Pull+Visualize`** fetches graph nodes and edges via `/get/graph/entities` (with batching for large graphs >500K edges, fallback to `/get/records`). Renderer-toggle clicks (Auto/Canvas/Deck.gl) only switch the rendering mode — they don't auto-fetch. Press Pull+Visualize whenever you want fresh data. Switching between Canvas ↔ Deck.gl reuses already-fetched data.
 - **CanvasGraph** (non-WKT graphs) — Force-directed visualization with colors matching label charts. Click a node to fetch its full record from the source table. Node/edge limit sliders and viz limit dropdown in the header.
-- **MapView** (WKT geospatial graphs) — Two rendering modes, auto-selected by edge count:
-  - **Client-side canvas** (<2M edges) — Pre-parsed WKT→Float32Array per batch with progressive rendering (edges draw as batches arrive). Color-batched drawing, rAF-throttled, adaptive LOD. Zoom (cursor-centered), pan, HiDPI, viewport culling, data bounding box on interaction. Edge picking shows edge ID + WKT endpoints + source table lookup. Label filtering supported. Info overlay shows visible/total edge count and LOD level.
-  - **WMS server-side** (>2M edges) — Kinetica `/wms` endpoint renders PNG tiles on the server. Style toggle buttons in header: **Heatmap** (fast overview), **CB** (class-break raster colored by edge label — top 20 labels with PALETTE colors), **Auto** (default — heatmap at low zoom, cb_raster at deep zoom). Zoom/pan with debounced tile fetches. Zero client memory for edge data.
+- **Viz-limit guard** — the limit dropdown (10K / 100K / 1M / 10M / 100M / ∞) gates Pull+Visualize across **all** renderers (Canvas, Deck.gl, MapView). When the graph exceeds the chosen limit, a red confirmation banner with `[Continue]` `[Cancel]` appears. Pick `∞` to disable the warning.
+- **Geo graph renderers** — Renderer toggle (`Auto | Canvas | Deck.gl | WMS`) available for WKT graphs:
+  - **Deck.gl** (default, `DeckMapView`) — WebGL GPU-accelerated rendering via deck.gl `LineLayer` + MapLibre GL basemap. Handles 27M+ edges at 60fps. Binary Float32Array attributes uploaded directly to GPU. Edge picking on click shows source table record + lon/lat coordinates. Label filtering supported. WebGL antialiasing enabled. `⤢` maximize supported. **`🌐 Off | Light | Color`** segmented control toggles the CartoDB street-map basemap underneath the edges (Light = grayscale `light_all`; Color = `rastertiles/voyager`).
+  - **Canvas** (`MapView`) — Legacy Canvas 2D renderer. Pre-parsed WKT→Float32Array, color-batched, rAF-throttled, adaptive LOD, progressive rendering. Good for <2M edges.
+  - **WMS** — Kinetica `/wms` server-side tile rendering. No entity fetch needed. Style sub-toggle: `Auto | Heat | Raster | CB`. Heatmap uses the jet colormap with a zoom-aware blur radius so the color spectrum stays consistent as you zoom in. CB shows class-break coloring by edge label (top 20 labels). Zoom (cursor-centered wheel) + pan. Label filtering via `LABEL_FILTER`. **Edge picking**: click on the tile to run a server-side `STXY_DWITHIN` query around the cursor — picked record lands in the detail strip with the full source-table row.
+- **Edge-pick architecture**: each renderer uses the natural lookup for its data model. **Deck.gl** and **Canvas** look up the picked edge by ID against the source table (with id-column auto-probe) — the edge data is already client-side, so the only DB hit is one row. **WMS** has no client edge data (image-only), so it uses a server-side `ST_DWITHIN` geographic query around the click point. All three converge on the same detail strip with the full source-table record (weights, labels, etc.) and a pinned highlight on the picked edge.
+- **Edge-pick mode toggle** (`Pick: Graph | Table`) in the Canvas and Deck.gl renderer headers: `Graph` (default) is the id-based lookup described above; `Table` is the same `ST_DWITHIN` geographic query that WMS uses, but applied to Canvas/Deck.gl. Both return the same full source-table row when successful — the toggle is mostly there for parity with WMS and for graphs where id-based lookup misses (rare, e.g., custom join tables). WMS always uses geographic.
+- **Modal confirmation banners**: when switching servers/graphs with an active session, or when triggering Pull+Visualize beyond the viz limit, the rest of the UI is dimmed behind a translucent overlay and clicks are blocked until you respond to the banner (Save & Continue / Continue / Cancel).
+- **📖 Docs button** in the sidebar header opens the Kinetica Graph User Guide in a new tab. Auto-hides under HTTP if the doc file is missing (HEAD probe). Under `file://` (double-clicking the HTML), Chrome blocks the probe so the button shows by default — clicking still works as long as `../document/Kinetica_Graph_User_Guide.html` exists alongside.
 - Click a node in the visualization to **copy its entity ID** to clipboard (for use in Query Helper or queries).
 - Label selection in the charts filters the visualization to matching subgraphs. Multi-label combos (e.g., `["director","actor"]`) are selected as exact combos — won't match single-label nodes.
 - **`⤢` Maximize** button for full-viewport view (Esc or `▣ Restore` to return).
@@ -103,26 +163,32 @@ The application is a single HTML file containing inline CSS and JSX (transpiled 
 | Chart.js | Doughnut charts for label distribution |
 | @hpcc-js/wasm (Graphviz) | DOT→SVG layout for ontology rendering |
 | force-graph | Canvas-based force-directed graph visualization |
+| deck.gl v9 | WebGL GPU-accelerated geo visualization (LineLayer for millions of edges) |
+| MapLibre GL v4 | Open-source map basemap (dark background, no API key needed) |
 
 ### Component Overview
 
 | Component | Role |
 |---|---|
 | `App` | Root state management (graphs, credentials, labels, ontology, queries) |
-| `Sidebar` | Server connection, profile switching, graph list, session Load/Save, Auto-run toggle |
+| `Sidebar` | Server connection, profile switching, Graphs/Tables tab toggle + search filter, `+ New` graph button, right-click context menu, session Load/Save, Auto-run toggle |
 | `DashboardHeader` | Split-aligned header: Left (graph info, progress bar, + Query, minimized Q1/Q2) \| Right (Pick, Auto-refresh, timestamp) — separator aligns with label chart boundary |
 | `OntologyViewer` | Always visible — Graphviz WASM ontology with D3 zoom/pan, picking, Full/NKey/EKey toggles, ↻ Refresh, Reset View, ⤢ maximize in header |
 | `CanvasGraph` | For non-WKT graphs — force-graph with compact header (stats, labels, sliders, viz limit, ↻ Pull+Visualize, ⤢ maximize), node detail lookup |
-| `MapView` | For WKT geospatial graphs — canvas renderer with zoom/pan, edge picking from original source table, hover coordinates, label filtering, HiDPI rendering |
+| `DeckMapView` | Default geo renderer — deck.gl WebGL + MapLibre basemap, handles 27M+ edges at 60fps, edge picking, label filtering |
+| `MapView` | Legacy canvas geo renderer + WMS server-side tile rendering option |
 | `LabelChart` | Doughnut chart + interactive label table |
-| `QueryPanel` | Self-contained SQL editor + results table + path visualization (multiple instances) |
+| `QueryPanel` | Self-contained SQL editor + results table + path visualization (multiple instances). Three modes: **Query** (default, with Query Helper), **Table query** (Open Preview rows / Schema DESCRIBE — no helper), **Create graph** (`+ New` — Create Helper with grammar-driven NODES/EDGES/WEIGHTS/RESTRICTIONS form) |
 | `SplitPane` | Resizable split layout (horizontal or vertical) |
 
 ### Kinetica API Endpoints
 
 | Endpoint | Usage |
 |---|---|
-| `POST /show/graph` | List graphs, get label details, and ontology DOT (`export_graph_schema: 'true'`) |
+| `POST /show/graph` | List graphs, get label details, ontology DOT (`export_graph_schema: 'true'`), and the original `CREATE GRAPH` statement (via `original_request`) for the Show Create Statement modal and the Modify action |
+| `POST /delete/graph` | Drops the graph (Delete action — confirmation modal first) |
+| `POST /show/graph/grammar` | Populates the Create Helper's identifier dropdowns (with a hardcoded fallback if unavailable) |
+| `POST /show/table` | Schema DESCRIBE for tables (from the right-click menu) |
 | `POST /get/graph/entities` | Fetch graph nodes/edges directly with labels and identifier type (int/string/wkt) |
 | `POST /get/records` | Fallback for visualization data; also used for node/edge detail lookup from source tables |
 | `POST /execute/sql` | Run SQL and GQL queries; also used for WMS BBOX computation |

@@ -1407,8 +1407,9 @@ Kinetica Graph Explorer is a zero-install, browser-based tool for exploring grap
 
 1. Open `KineticaGraphExplorer.html` in any modern browser (or visit the hosted URL above).
 2. Enter your Kinetica server URL, username, and password in the sidebar.
-3. Click **Connect** — available graphs appear in the sidebar list.
-4. Select a graph to explore.
+3. Click **Connect & List** — the sidebar fills with both graphs and tables in a single round-trip.
+4. Toggle `[Graphs N] [Tables M]` to switch what the list shows. Use the filter input to narrow by substring.
+5. Click any graph to explore, or right-click a row for actions (Open, Show Create Statement, Modify, Delete…, Copy name).
 
 No build step, no dependencies to install, no server to run.
 
@@ -1423,6 +1424,24 @@ No build step, no dependencies to install, no server to run.
 </p>
 
 ### Features
+
+#### Sidebar — Browse, Filter, Manage
+- **`Connect & List`** issues `/show/graph` plus a SQL query against `INFORMATION_SCHEMA.TABLES` so you see graphs and tables side-by-side. System schemas (`SYSTEM`, `sys_sql_temp`, `pg_catalog`, `information_schema`) are filtered out.
+- **Tabbed list `[Graphs N] [Tables M]`** flips the visible list. The filter input applies case-insensitive substring matching; switching tabs clears it.
+- **`+ New`** opens a Create-Helper query panel pre-filled with an empty `CREATE OR REPLACE DIRECTED GRAPH …` template (see [Graph Authoring](#graph-authoring--create--modify) below).
+- **Right-click context menu** — graph rows expose **Open**, **Show Create Statement**, **Modify**, **Delete…** (red, with confirmation), and **Copy name**. Table rows expose **Open (Preview rows)**, **Schema (DESCRIBE)**, and **Copy name**. The schema-action panel auto-runs `SELECT * FROM <table> LIMIT 100` or `DESCRIBE <table>`.
+- **Show Create Statement** opens a read-only modal with the original `CREATE GRAPH …` text. Backing table names found inside `NODES => INPUT_TABLES(...)` / `EDGES => INPUT_TABLES(...)` are highlighted; **Copy** writes the cleaned SQL to the clipboard.
+- **📖 Docs** button (sidebar header) links to this user guide in a new tab when it's deployed alongside the Explorer.
+
+#### Graph Authoring — Create / Modify
+The Create Helper replaces the Query Helper in the same floating panel and lets you author or edit a graph without writing the SQL by hand.
+
+- **Per-component sections** — `NODES`, `EDGES`, `WEIGHTS`, `RESTRICTIONS`. Each has a **Configuration** dropdown (populated from `/show/graph/grammar`) that spawns the required identifier rows plus optional add-ons (e.g. picking `EDGES → NODE1 + NODE2 (string)` adds `EDGE_ID`, `LABEL`, `WEIGHT`, `PARTITION`, `NODE1_LABEL`, `NODE2_LABEL` as optional rows; empty optional rows are dropped on **Generate**).
+- **OPTIONS** section — `+ Add option` lets you add arbitrary `key = 'value'` pairs that get emitted as `OPTIONS => KV_PAIRS(...)`. A shared datalist suggests common option keys.
+- **Schema-aware column auto-complete** — `schema.table.column` inputs probe the table via `/get/records limit:1` once you've typed a known table prefix, then suggest column names in the datalist. The cache makes repeated edits instant.
+- **Action toggle `Recreate | Modify`** at the top of the helper switches between generating `CREATE OR REPLACE [DIRECTED|UNDIRECTED] GRAPH …` and `ALTER GRAPH <name> MODIFY ( … )` (the Modify view hides the directionality row, since alter cannot change it).
+- **Modify from existing graph** — right-click → **Modify** parses the recorded create statement (balanced-paren capture of each component block + sub-select projections + `KV_PAIRS` options), rehydrates the helper, and boots the panel in Modify mode.
+- **Run flow** — Generate fills the SQL textarea; the textarea + Run row stay pinned to the bottom of the panel regardless of how many helper rows you've added. After a successful CREATE/ALTER, a green ✓ banner appears with an **Open** button that switches the dashboard to the new graph while keeping the Create panel minimized as a `C*` pill (so unfinished edits aren't lost).
 
 #### Graph Overview
 - **Label Distribution** — Interactive doughnut charts and sortable tables for node and edge labels, with counts and percentages.
@@ -1463,6 +1482,8 @@ WKT geospatial graphs (road networks, transit, utilities) get a dedicated render
 - **Deck.gl** and **Canvas** look the picked edge up by ID against the source table (with id-column auto-probe) — the edge geometry is already client-side, so it's a one-row DB hit.
 - **WMS** has no client edge data (image-only), so it issues a server-side `STXY_DWITHIN` query around the click point, returning the matching record and pinning a highlight on the picked edge.
 
+A **Pick: Graph | Table** toggle in the renderer header chooses between id-based source-table lookup (`Graph`, fast — uses the edge id the client already has) and spatial lookup (`Table`, issues `STXY_DWITHIN` around the click). The toggle is hidden in WMS mode, which is always spatial.
+
 Label-filter selections in the doughnut charts are pushed into all three paths — for WMS this becomes a `LABEL_FILTER` parameter on the tile request so the server colors only matching edges.
 
 #### SQL / GQL Query
@@ -1483,7 +1504,7 @@ Label-filter selections in the doughnut charts are pushed into all three paths �
 #### Cross-View Picking and UI
 - **Pick** mode enables bidirectional highlighting: clicking ontology elements highlights the label chart; hovering chart rows highlights ontology nodes/edges.
 - **Auto-refresh** polling toggle (5 s – 5 min) for live label-count monitoring.
-- **Resizable split panes**, **floating query panels** (minimize → Q1/Q2 pill, maximize, restore, close), color-coded **progress bar** during data fetch, click-anywhere **node detail strip**, and tooltips on every control.
+- **Resizable split panes**, **floating query panels** (minimize → kind-aware pill — `Q*` query, `T*` table preview, `C*` create-graph — maximize, restore, close), color-coded **progress bar** during data fetch, click-anywhere **node detail strip**, and tooltips on every control.
 
 ### Architecture
 
@@ -1503,10 +1524,12 @@ A single HTML file with inline CSS and JSX (transpiled in-browser by Babel). All
 
 | Endpoint | Usage |
 |---|---|
-| `POST /show/graph` | List graphs, get label details, and ontology DOT (`export_graph_schema: 'true'`) |
+| `POST /show/graph` | List graphs, get label details, ontology DOT (`export_graph_schema: 'true'`), and the original CREATE statement (for Modify / Show Create Statement) |
+| `POST /show/graph/grammar` | Seed the Create Helper's per-component identifier dropdowns; falls back to a built-in default grammar if the server doesn't expose it |
 | `POST /get/graph/entities` | Fetch graph nodes/edges directly with labels and identifier type (int / string / WKT) |
-| `POST /get/records` | Fallback for visualization data; node/edge detail lookup from source tables |
-| `POST /execute/sql` | Run SQL and GQL queries; also used for WMS BBOX computation |
+| `POST /get/records` | Fallback for visualization data; node/edge detail lookup from source tables; column probing for Create-Helper auto-complete |
+| `POST /execute/sql` | Run SQL and GQL queries; list tables via `INFORMATION_SCHEMA.TABLES`; WMS BBOX computation |
+| `POST /drop/graph` | Right-click → **Delete…** confirmation flow |
 | `GET /wms` | Server-side map-tile rendering for large WKT graphs (> 2 M edges) — heatmap or raster styles |
 
 Kinetica REST responses are **double-wrapped**: the top-level JSON contains a `data_str` field which is itself a JSON string. For GQL queries the unwrapped response has two distinct data sources — `json_encoded_response` holds the `RETURN`-statement columns (shown in **View Results**), and `info.gql_result` holds the hop-based path structure (`NODE1_HOP_1`, `EDGE_LABELS_HOP_1`, …) that drives the **Visualization** force-graph. Both are column-oriented objects with `column_headers`, `column_datatypes`, and `column_1..column_N` arrays.
