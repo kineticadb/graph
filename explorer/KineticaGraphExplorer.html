@@ -43,7 +43,7 @@
 const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
 /* ═══════════════════════ CONSTANTS ════════════════════════ */
-const EXPLORER_VERSION = "7.2.3.13";  // Tied to Kinetica core-graph release tag (release/v7.2.3-ga-13). Run ./update-version.sh to auto-sync from latest git tag.
+const EXPLORER_VERSION = "7.2.3.14";  // Tied to Kinetica core-graph release tag (release/v7.2.3-ga-14). Run ./update-version.sh to auto-sync from latest git tag.
 const SAFETY_TIMEOUT_MS = 10 * 60 * 1000;
 const PALETTE = [
     { solid: '#0984e3', light: '#e1f0fb' }, { solid: '#00cec9', light: '#e0f9f8' },
@@ -53,7 +53,7 @@ const PALETTE = [
     { solid: '#2d3436', light: '#eaebec' }, { solid: '#b2bec3', light: '#f1f2f3' },
 ];
 const DEFAULT_PROFILES = [
-    { label: "Localhost", url: "http://127.0.0.1:9191", user: "admin", pass: "admin" },
+    { label: "Localhost", url: "http://127.0.0.1:9191", user: "admin", pass: "***REMOVED***" },
     { label: "Demo72",   url: "https://demo72.kinetica.com/_gpudb", user: "", pass: "" },
 ];
 
@@ -405,7 +405,6 @@ function Sidebar(props) {
     var onConnect = props.onConnect, onClearGraphs = props.onClearGraphs, graphs = props.graphs, activeGraph = props.activeGraph, onSelectGraph = props.onSelectGraph, loading = props.loading, onLoad = props.onLoad, onSave = props.onSave, autoRunQueries = props.autoRunQueries, onToggleAutoRun = props.onToggleAutoRun;
     var tables = props.tables || [], listMode = props.listMode || 'graphs', onChangeListMode = props.onChangeListMode;
     var onSelectTable = props.onSelectTable, onContextItem = props.onContextItem;
-    var onNewGraph = props.onNewGraph;
     const [profileIdx, setProfileIdx] = useState(0);
     const [url,  setUrl]  = useState(DEFAULT_PROFILES[0].url);
     const [user, setUser] = useState(DEFAULT_PROFILES[0].user);
@@ -516,7 +515,6 @@ function Sidebar(props) {
                     </div>
                     <input value={filter} onChange={function(e){ setFilter(e.target.value); }} placeholder="Filter…" style={{ flex:1, padding:'4px 8px', border:'1px solid #dfe6e9', borderRadius:6, fontSize:11, background:'#fff', outline:'none', fontFamily:'inherit', minWidth:0 }}/>
                     {filter && <span onClick={function(){ setFilter(''); }} title="Clear filter" style={{ fontSize:10, color:'#636e72', cursor:'pointer', padding:'2px 4px', userSelect:'none' }}>{'✕'}</span>}
-                    {onNewGraph && <button onClick={onNewGraph} title="Create a new graph (opens a Query panel with a CREATE GRAPH template and a Create Helper)" style={{ padding:'4px 8px', border:'none', borderRadius:5, cursor:'pointer', fontWeight:700, color:'#fff', background:'#00b894', fontSize:10, flexShrink:0 }}>+ New</button>}
                 </div>
             )}
             {(function() {
@@ -892,7 +890,7 @@ function OntologyViewer(props) {
 /* ═══════════════════ DashboardHeader ═════════════════════ */
 function DashboardHeader(props) {
     var graphName = props.graphName, server = props.server, lastRefresh = props.lastRefresh, pickingEnabled = props.pickingEnabled;
-    var onTogglePicking = props.onTogglePicking, onRefresh = props.onRefresh, onQuery = props.onQuery, onVisualize = props.onVisualize, loading = props.loading;
+    var onTogglePicking = props.onTogglePicking, onRefresh = props.onRefresh, onCreate = props.onCreate, onQuery = props.onQuery, onSolve = props.onSolve, onMatch = props.onMatch, onVisualize = props.onVisualize, loading = props.loading;
     var minimizedPanels = props.minimizedPanels || [], onRestorePanel = props.onRestorePanel;
     var hSplit = props.hSplit || 0.65;
     var nodeCount = props.nodeCount || 0, edgeCount = props.edgeCount || 0;
@@ -953,12 +951,20 @@ function DashboardHeader(props) {
 
                     {separator}
 
-                    {/* Section 2: Query */}
+                    {/* Section 2: Create / Query / Solve / Match */}
+                    {onCreate && smallBtn('+ Create', '#00b894', onCreate, 'Open a Create Graph helper panel (CREATE OR REPLACE GRAPH …)')}
                     {smallBtn('+ Query', '#6c5ce7', onQuery, 'Open a new SQL/GQL query panel')}
+                    {onSolve && smallBtn('+ Solve', '#fd79a8', onSolve, 'Open a Solve Graph helper panel (grammar-driven SOLVE_GRAPH SQL)')}
+                    {onMatch && smallBtn('+ Match', '#e17055', onMatch, 'Open a Match Graph helper panel (grammar-driven MATCH_GRAPH SQL)')}
                     {minimizedPanels.map(function(mp) {
+                        // Color-code the pill by panel kind: Q*/T* purple, C* green (create), S* pink (solve), M* orange (match).
+                        var k = mp.label && mp.label.charAt(0);
+                        var isCreate = k === 'C', isSolve = k === 'S', isMatch = k === 'M';
+                        var borderC = isCreate ? '#00b894' : isSolve ? '#fd79a8' : isMatch ? '#e17055' : '#6c5ce7';
+                        var bg      = isCreate ? '#e6f9f3' : isSolve ? '#ffeef6' : isMatch ? '#fff1ec' : '#f0eefc';
                         return <button key={mp.id} onClick={function(){ if (onRestorePanel) onRestorePanel(mp.id); }} title={'Restore ' + mp.label} style={{
-                            padding:'4px 10px', border:'2px solid #6c5ce7', borderRadius:6, cursor:'pointer',
-                            fontWeight:700, color:'#6c5ce7', background:'#f0eefc', fontSize:11, fontFamily:'inherit', transition:'0.2s',
+                            padding:'4px 10px', border:'2px solid ' + borderC, borderRadius:6, cursor:'pointer',
+                            fontWeight:700, color: borderC, background: bg, fontSize:11, fontFamily:'inherit', transition:'0.2s',
                         }}>{mp.label}</button>;
                     })}
                 </div>
@@ -994,6 +1000,242 @@ function DashboardHeader(props) {
     );
 }
 
+/* ═══════════════════ SolveMapView (paths from wktroute on Deck.gl) ════════ */
+// Lightweight map renderer for the Solve panel's Map tab. Takes the auto-fetched
+// solution_table rows + the detected WKT column and draws each row's LINESTRING
+// as a Deck.gl PathLayer line with a CartoDB raster basemap underneath. One
+// color per path (PALETTE-cycled). Auto-fits viewport to the union bbox on mount.
+function SolveMapView(props) {
+    var rows = props.rows || [];
+    var wktCol = props.wktCol;
+    var xyCols = props.xyCols || null;   // { x: 'x', y: 'y' } when row carries plain coord pair
+    var basemapStyle = props.basemapStyle || 'light';
+    var containerRef = useRef(null);
+    var mapRef = useRef(null);
+    var deckRef = useRef(null);
+    // Picked-row state: { row, idx } | null. Click anywhere along a path to
+    // pick it (deck.gl PathLayer pickable=true). All path geometry is already
+    // client-side so no server roundtrip is needed — the picked row carries
+    // the full solver-output record (NAME, COST, EDGE_PATH, …, wktroute, nameroute).
+    const [pickedRow, setPickedRow] = useState(null);
+
+    var hexToRgb = function(hex) {
+        var h = String(hex || '#888').replace('#', '');
+        if (h.length === 3) h = h.split('').map(function(c){ return c + c; }).join('');
+        return [parseInt(h.substr(0,2), 16) || 128, parseInt(h.substr(2,2), 16) || 128, parseInt(h.substr(4,2), 16) || 128, 230];
+    };
+
+    var parseCoordList = function(s) {
+        return s.split(',').map(function(pair) {
+            var nums = pair.trim().split(/\s+/);
+            return [parseFloat(nums[0]), parseFloat(nums[1])];
+        }).filter(function(c) { return !isNaN(c[0]) && !isNaN(c[1]); });
+    };
+    // Parse each row's geometry into either a PathLayer feature (LINESTRING) or
+    // a PolygonLayer feature (POLYGON, with optional holes). Other shapes are
+    // dropped. Both lists feed deck.gl on the same map.
+    var geom = useMemo(function() {
+        if (!rows.length) return { paths: [], polygons: [], points: [] };
+        var paths = [], polygons = [], points = [];
+        for (var i = 0; i < rows.length; i++) {
+            var color = hexToRgb(PALETTE[i % PALETTE.length].solid);
+            // WKT branch (LINESTRING / POLYGON).
+            if (wktCol) {
+                var wkt = rows[i] && rows[i][wktCol];
+                if (wkt) {
+                    var s = String(wkt).trim();
+                    var mLine = s.match(/^LINESTRING\s*\(\s*([^)]+)\s*\)/i);
+                    if (mLine) {
+                        var coords = parseCoordList(mLine[1]);
+                        if (coords.length) paths.push({ path: coords, color: color, pathIdx: i });
+                        continue;
+                    }
+                    var mPoly = s.match(/^POLYGON\s*\(\s*(\(.*\))\s*\)\s*$/i);
+                    if (mPoly) {
+                        var ringStrs = mPoly[1].match(/\([^)]+\)/g) || [];
+                        var rings = ringStrs.map(function(rs){ return parseCoordList(rs.slice(1, -1)); }).filter(function(r){ return r.length >= 3; });
+                        if (rings.length) polygons.push({ polygon: rings, color: color, pathIdx: i });
+                        continue;
+                    }
+                }
+            }
+            // x,y branch (plain coord-pair rows like single-isochrone SOURCE/x/y/z).
+            if (xyCols) {
+                var xv = rows[i] && rows[i][xyCols.x];
+                var yv = rows[i] && rows[i][xyCols.y];
+                var x = typeof xv === 'number' ? xv : parseFloat(xv);
+                var y = typeof yv === 'number' ? yv : parseFloat(yv);
+                if (!isNaN(x) && !isNaN(y)) points.push({ position: [x, y], color: color, pathIdx: i });
+            }
+        }
+        return { paths: paths, polygons: polygons, points: points };
+    }, [rows, wktCol, xyCols && xyCols.x, xyCols && xyCols.y]);
+    var pathsData = geom.paths;
+    var polygonsData = geom.polygons;
+    var pointsData = geom.points;
+
+    // Compute initial viewState fitting the union bbox over linestrings + polygons + points.
+    var initialViewState = useMemo(function() {
+        if (!pathsData.length && !polygonsData.length && !pointsData.length) return { longitude: 0, latitude: 0, zoom: 1, pitch: 0, bearing: 0 };
+        var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        var visit = function(c){ if (c[0] < minX) minX = c[0]; if (c[0] > maxX) maxX = c[0]; if (c[1] < minY) minY = c[1]; if (c[1] > maxY) maxY = c[1]; };
+        pathsData.forEach(function(p){ p.path.forEach(visit); });
+        polygonsData.forEach(function(p){ (p.polygon || []).forEach(function(ring){ ring.forEach(visit); }); });
+        pointsData.forEach(function(p){ visit(p.position); });
+        var cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+        var span = Math.max(maxX - minX, maxY - minY, 0.0001);
+        // For a single point with zero span, default to a sensible city-level zoom.
+        var zoom = span < 0.0005 ? 12 : Math.max(1, Math.min(18, Math.log2(360 / span) - 1));
+        return { longitude: cx, latitude: cy, zoom: zoom, pitch: 0, bearing: 0 };
+    }, [pathsData, polygonsData, pointsData]);
+
+    useEffect(function() {
+        if (!containerRef.current || (!pathsData.length && !polygonsData.length && !pointsData.length)) return;
+        var map = new maplibregl.Map({
+            container: containerRef.current,
+            style: {
+                version: 8,
+                sources: {
+                    'carto-light': { type: 'raster', tiles: ['https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png'], tileSize: 256 },
+                    'carto-color': { type: 'raster', tiles: ['https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png'], tileSize: 256 }
+                },
+                layers: [
+                    { id: 'bg-dark', type: 'background', paint: { 'background-color': '#0a0a1a' } },
+                    { id: 'carto-light', type: 'raster', source: 'carto-light', paint: { 'raster-opacity': basemapStyle === 'light' ? 0.75 : 0 } },
+                    { id: 'carto-color', type: 'raster', source: 'carto-color', paint: { 'raster-opacity': basemapStyle === 'color' ? 0.75 : 0 } }
+                ]
+            },
+            center: [initialViewState.longitude, initialViewState.latitude],
+            zoom: initialViewState.zoom,
+            interactive: false,
+            attributionControl: false,
+        });
+        mapRef.current = map;
+
+        var pathLayer = new deck.PathLayer({
+            id: 'solve-paths',
+            data: pathsData,
+            getPath: function(d) { return d.path; },
+            getColor: function(d) { return d.color; },
+            widthUnits: 'pixels',
+            getWidth: 5,
+            widthMinPixels: 4,
+            jointRounded: true,
+            capRounded: true,
+            pickable: true,
+            autoHighlight: true,
+            highlightColor: [255, 255, 255, 200],
+        });
+        // PolygonLayer renders isochrone polygons and other POLYGON outputs.
+        // Stroked + lightly filled (alpha 80) so overlapping rings remain visible.
+        var polygonLayer = new deck.PolygonLayer({
+            id: 'solve-polygons',
+            data: polygonsData,
+            getPolygon: function(d) { return d.polygon; },
+            getFillColor: function(d) { return [d.color[0], d.color[1], d.color[2], 80]; },
+            getLineColor: function(d) { return d.color; },
+            getLineWidth: 2,
+            lineWidthUnits: 'pixels',
+            lineWidthMinPixels: 2,
+            stroked: true,
+            filled: true,
+            pickable: true,
+            autoHighlight: true,
+            highlightColor: [255, 255, 255, 120],
+        });
+
+        // ScatterplotLayer for plain x,y rows (e.g., single-isochrone SOURCE/x/y/z).
+        var pointLayer = new deck.ScatterplotLayer({
+            id: 'solve-points',
+            data: pointsData,
+            getPosition: function(d) { return d.position; },
+            getFillColor: function(d) { return d.color; },
+            getLineColor: [255, 255, 255, 220],
+            getRadius: 6,
+            radiusUnits: 'pixels',
+            radiusMinPixels: 3,
+            radiusMaxPixels: 14,
+            stroked: true,
+            lineWidthUnits: 'pixels',
+            lineWidthMinPixels: 1,
+            pickable: true,
+            autoHighlight: true,
+            highlightColor: [255, 255, 255, 220],
+        });
+
+        var d = new deck.Deck({
+            parent: containerRef.current,
+            viewState: initialViewState,
+            controller: true,
+            useDevicePixels: true,
+            glOptions: { antialias: true },
+            layers: [polygonLayer, pathLayer, pointLayer],
+            onViewStateChange: function(e) {
+                map.jumpTo({ center: [e.viewState.longitude, e.viewState.latitude], zoom: e.viewState.zoom });
+                d.setProps({ viewState: e.viewState });
+            },
+            onClick: function(info) {
+                if (info && info.index >= 0 && info.object) {
+                    var rowIdx = info.object.pathIdx;
+                    setPickedRow({ row: rows[rowIdx], idx: rowIdx });
+                } else {
+                    setPickedRow(null);
+                }
+            },
+            getCursor: function(state) { return state.isHovering ? 'pointer' : (state.isDragging ? 'grabbing' : 'grab'); },
+            style: { position: 'absolute', top: 0, left: 0, zIndex: 1 }
+        });
+        deckRef.current = d;
+
+        return function() {
+            try { d.finalize(); } catch(e) {} deckRef.current = null;
+            try { map.remove(); } catch(e) {} mapRef.current = null;
+        };
+    }, [pathsData, polygonsData, pointsData, initialViewState.longitude, initialViewState.latitude, initialViewState.zoom]);
+
+    // Switch basemap opacity on toggle.
+    useEffect(function() {
+        if (!mapRef.current) return;
+        var apply = function() {
+            try {
+                if (!mapRef.current) return;
+                if (mapRef.current.getLayer('carto-light')) mapRef.current.setPaintProperty('carto-light', 'raster-opacity', basemapStyle === 'light' ? 0.75 : 0);
+                if (mapRef.current.getLayer('carto-color')) mapRef.current.setPaintProperty('carto-color', 'raster-opacity', basemapStyle === 'color' ? 0.75 : 0);
+            } catch(e) {}
+        };
+        if (mapRef.current.loaded()) apply();
+        else mapRef.current.on('load', apply);
+    }, [basemapStyle]);
+
+    return (
+        <div style={{ width:'100%', height:'100%', display:'flex', flexDirection:'column', minHeight:0 }}>
+            <div ref={containerRef} style={{ flex:'1 1 auto', position:'relative', background:'#0a0a1a', minHeight:200 }}/>
+            {pickedRow && pickedRow.row && (
+                <div style={{ flexShrink:0, maxHeight:140, overflowY:'auto', overflowX:'auto', borderTop:'2px solid #fd79a8', background:'#fff' }}>
+                    <table style={{ borderCollapse:'collapse', fontSize:13, whiteSpace:'nowrap' }}>
+                        <thead><tr>
+                            <th style={{ position:'sticky', top:0, background:'#f1f2f6', padding:'6px 12px', textAlign:'left', fontWeight:700, fontSize:11, color:'#636e72', borderBottom:'2px solid #dfe6e9' }}>path #</th>
+                            {Object.keys(pickedRow.row).map(function(key) {
+                                return <th key={key} style={{ position:'sticky', top:0, background:'#f1f2f6', padding:'6px 12px', textAlign:'left', fontWeight:700, fontSize:11, color:'#636e72', borderBottom:'2px solid #dfe6e9' }}>{key}</th>;
+                            })}
+                        </tr></thead>
+                        <tbody><tr>
+                            <td style={{ padding:'6px 12px', fontSize:12, color:'#fd79a8', fontWeight:700, borderBottom:'1px solid #f1f2f6' }}>{pickedRow.idx + 1}</td>
+                            {Object.keys(pickedRow.row).map(function(key) {
+                                var v = pickedRow.row[key];
+                                var s = v == null ? '' : String(v);
+                                // Long WKT strings get truncated to keep the strip readable.
+                                if (s.length > 200) s = s.substring(0, 200) + '…';
+                                return <td key={key} style={{ padding:'6px 12px', fontSize:12, color:'#2d3436', borderBottom:'1px solid #f1f2f6', fontFamily: /^(LINESTRING|POINT)/i.test(s) ? 'monospace' : 'inherit' }}>{s}</td>;
+                            })}
+                        </tr></tbody>
+                    </table>
+                </div>
+            )}
+        </div>
+    );
+}
+
 /* ═══════════════════ QueryPanel (unified SQL + results + visualization) ════ */
 function QueryPanel(props) {
     var onClose = props.onClose, onMinimize = props.onMinimize, credentials = props.credentials, labelData = props.labelData, panelIndex = props.panelIndex || 0;
@@ -1001,6 +1243,9 @@ function QueryPanel(props) {
     var dotString = props.dotString, activeGraph = props.activeGraph, graphDirected = props.graphDirected, nodeSourceTable = props.nodeSourceTable, initialHelper = props.initialHelper;
     var hideQueryHelper = !!props.hideQueryHelper; // suppress Query Helper UI (used when panel is opened from a Table click/context-menu)
     var createHelper = !!props.createHelper; // show the Create Helper (NODES/EDGES pickers) for new-graph flow
+    var solveHelper = !!props.solveHelper; // show the Solve Helper (grammar-driven SOLVE_GRAPH builder)
+    var matchHelper = !!props.matchHelper; // show the Match Helper (grammar-driven MATCH_GRAPH builder)
+    var endpointGrammar = props.endpointGrammar || {};
     var availableTables = props.tables || []; // [{name, type}] from App — used by Create Helper dropdowns
     var graphGrammar = props.graphGrammar || {}; // { NODES: [{label, identifiers}], EDGES, WEIGHTS, RESTRICTIONS }
     var tableColumnsCache = props.tableColumnsCache || {}; // { 'schema.table': [col,...] }
@@ -1025,7 +1270,7 @@ function QueryPanel(props) {
     const [pos, setPos] = useState({ x: 120 + panelIndex * 30, y: 60 + panelIndex * 30 });
     // The Create Helper has many rows (NODES/EDGES/WEIGHTS/RESTRICTIONS with optional
     // add-ons) — give it a taller default so the whole flow + SQL preview is visible.
-    const [size, setSize] = useState({ w: 640, h: !!props.createHelper ? 780 : 620 });
+    const [size, setSize] = useState({ w: 640, h: (!!props.createHelper || !!props.solveHelper || !!props.matchHelper) ? 780 : 620 });
     const [maximized, setMaximized] = useState(false);
     var savedLayout = useRef(null);
     const [activeTab, setActiveTab] = useState(initialTab); // null | 'results' | 'graph'
@@ -1038,8 +1283,307 @@ function QueryPanel(props) {
     const [chGraphName, setChGraphName] = useState(initCH.graphName || 'new_graph');
     const [chDirected, setChDirected] = useState(initCH.directed !== false);
     const [chRows, setChRows] = useState(initCH.rows || { NODES: [], EDGES: [], WEIGHTS: [], RESTRICTIONS: [] });
+    // Per-component default table (e.g., NODES: 'schema.nodes_table'). When set,
+    // a row's value can be a bare column name and the SQL builder joins it to this
+    // table. Empty string = no default; rows must use full schema.table.column form.
+    // Splitting a component across multiple tables is still possible: any row whose
+    // value contains a dot is treated as a full override.
+    const [chSectionTable, setChSectionTable] = useState(initCH.sectionTable || { NODES:'', EDGES:'', WEIGHTS:'', RESTRICTIONS:'' });
     // OPTIONS rows for OPTIONS => KV_PAIRS(...). Each entry is { key, value }.
     const [chOptions, setChOptions] = useState(initCH.options || []);
+    // Per-section expand state. NODES/EDGES are always rendered expanded.
+    // WEIGHTS/RESTRICTIONS auto-expand when they have rows, else collapse to a
+    // header pull-down to save vertical space. Map shape: { WEIGHTS: bool, RESTRICTIONS: bool }.
+    // Missing key = "auto" (uses the has-content heuristic).
+    const [chExpanded, setChExpanded] = useState(initCH.expanded || {});
+
+    // ─── Solve-Helper state (used when solveHelper=true) ───────────────────
+    // Mirrors the Create-Helper state but iterates over the components reported
+    // by `endpointGrammar.solve.components` (typically WEIGHTS / RESTRICTIONS /
+    // SOLVETARGETS×2). The user picks a solver type; OPTIONS is filtered by the
+    // grammar's `filtervalues`; Generate emits `EXECUTE FUNCTION SOLVE_GRAPH(...)`.
+    var initSH = (initialHelper && initialHelper.solve) || {};
+    var solveGr = (endpointGrammar && endpointGrammar.solve) || null;
+    // Default solver list — used when the server grammar isn't available (e.g.,
+    // older builds) so the UI is still functional.
+    var DEFAULT_SOLVERS = ['SHORTEST_PATH','INVERSE_SHORTEST_PATH','ALLPATHS','MULTIPLE_ROUTING','BACKHAUL_ROUTING','PAGE_RANK','CENTRALITY','CLOSENESS','PROBABILITY_RANK','STATS_ALL'];
+    const [shShow, setShShow] = useState(initSH.show !== false);
+    const [shSolverType, setShSolverType] = useState(initSH.solverType || 'SHORTEST_PATH');
+    const [shSolutionTable, setShSolutionTable] = useState(initSH.solutionTable || '');
+    const [shRows, setShRows] = useState(initSH.rows || {});           // { COMPONENT_KEY: [{id, value, optional, groupId, groupLabel}, ...] }
+    const [shSectionTable, setShSectionTable] = useState(initSH.sectionTable || {});
+    const [shOptions, setShOptions] = useState(initSH.options || []);  // [{key, value}]
+    const [shExpanded, setShExpanded] = useState(initSH.expanded || {});
+    // Per-section input mode for SOLVETARGETS-type sections (SOURCE_NODES /
+    // DESTINATION_NODES). Sparse map — only sections explicitly switched to
+    // 'constants' get an entry. Constants mode lets the user type literal SQL
+    // expressions per row (e.g., 'Bill', ST_geomFromText('POINT(-122 37)')).
+    const [shSectionMode, setShSectionMode] = useState(initSH.sectionMode || {});
+    // When ON (default), the generated SQL is prefixed with `DROP TABLE IF EXISTS
+    // <solution_table>;` so consecutive Runs don't fail because the solution
+    // table from the prior run already exists.
+    const [shAutoDrop, setShAutoDrop] = useState(initSH.autoDrop !== false);
+    function shAddConfig(compKey, configRequired, configLabel) {
+        if (!configRequired || !configRequired.length) return;
+        var grammarComp = solveGr && solveGr.components && solveGr.components[compKey];
+        var optional = (grammarComp && grammarComp.optional) || [];
+        var gid = 'g' + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36);
+        setShRows(function(prev) {
+            var next = Object.assign({}, prev);
+            var newRows = configRequired.map(function(id) { return { id: id, value: '', optional: false, groupId: gid, groupLabel: configLabel || '' }; })
+                .concat(optional.map(function(id) { return { id: id, value: '', optional: true, groupId: gid, groupLabel: configLabel || '' }; }));
+            next[compKey] = (prev[compKey] || []).concat(newRows);
+            return next;
+        });
+    }
+    function shUpdateRow(compKey, idx, value) {
+        setShRows(function(prev){ var arr = (prev[compKey] || []).slice(); arr[idx] = Object.assign({}, arr[idx], { value: value }); var n = Object.assign({}, prev); n[compKey] = arr; return n; });
+    }
+    function shRemoveRow(compKey, idx) {
+        setShRows(function(prev){ var arr = (prev[compKey] || []).slice(); arr.splice(idx, 1); var n = Object.assign({}, prev); n[compKey] = arr; return n; });
+    }
+    function shRemoveGroup(compKey, groupId) {
+        if (!groupId) return;
+        setShRows(function(prev){ var arr = (prev[compKey] || []).filter(function(r){ return r.groupId !== groupId; }); var n = Object.assign({}, prev); n[compKey] = arr; return n; });
+    }
+    function shAddOption() { setShOptions(function(prev){ return (prev || []).concat([{ key: '', value: '' }]); }); }
+    function shUpdateOption(idx, field, val) {
+        setShOptions(function(prev){ var arr = (prev || []).slice(); arr[idx] = Object.assign({}, arr[idx], (field === 'key' ? { key: val } : { value: val })); return arr; });
+    }
+    function shRemoveOption(idx) {
+        setShOptions(function(prev){ var arr = (prev || []).slice(); arr.splice(idx, 1); return arr; });
+    }
+    // For SOLVETARGETS rows (SOURCE_NODES / DESTINATION_NODES), reuse the
+    // Create-Helper's `chGenericId` with component='NODES' so NODE_NAME / NODE_ID
+    // / NODE_WKTPOINT all collapse to the bare `NODE` alias — Kinetica infers the
+    // typed variant from the column data. For WEIGHTS/RESTRICTIONS we pass the
+    // grammar's type name (WEIGHTS/RESTRICTIONS) so the section-prefix-strip path
+    // also applies.
+    function shAliasFor(compKey, rawId) {
+        var typeName = (solveGr && solveGr.components && solveGr.components[compKey] && solveGr.components[compKey].typeName) || compKey;
+        var aliasComp = typeName === 'SOLVETARGETS' ? 'NODES' : typeName;
+        return chGenericId(rawId, aliasComp);
+    }
+    // Build one sub-select per source table for a Solve component. In constants
+    // mode (shSectionMode[compKey] === 'constants'), each non-empty row becomes
+    // one literal sub-select: (SELECT <literal> AS NODE) — no FROM clause.
+    function shBuildSection(compKey) {
+        var rows = (shRows[compKey] || []).filter(function(r) { return r.value && r.value.trim(); });
+        if (!rows.length) return '';
+        var displayName = (solveGr && solveGr.components && solveGr.components[compKey] && solveGr.components[compKey].displayName) || compKey;
+        var mode = (shSectionMode && shSectionMode[compKey]) || 'table';
+        if (mode === 'constants') {
+            // Each row's `value` is a SQL expression (e.g., 'Bill', 42,
+            // ST_geomFromText('POINT(...)')). Rows added together by one
+            // configuration pick share a `groupId` and get emitted as one
+            // n-tuple sub-select; ungrouped rows are single-alias sub-selects.
+            var groups = [], byGid = {};
+            rows.forEach(function(r){
+                if (r.groupId) {
+                    if (!byGid[r.groupId]) { byGid[r.groupId] = []; groups.push(byGid[r.groupId]); }
+                    byGid[r.groupId].push(r);
+                } else {
+                    groups.push([r]);
+                }
+            });
+            var subs = groups.map(function(g){
+                var aliases = g.map(function(r){ return r.value.trim() + ' AS ' + shAliasFor(compKey, r.id); }).join(', ');
+                return '        (SELECT ' + aliases + ')';
+            });
+            return '    ' + displayName + ' => INPUT_TABLES(\n' + subs.join(',\n') + '\n    )';
+        }
+        // Table mode (default).
+        var defaultTbl = (shSectionTable && shSectionTable[compKey] || '').trim();
+        var byTable = {};
+        rows.forEach(function(r) {
+            var raw = r.value.trim();
+            var ref = chParseRef(raw);
+            if (!ref.table && defaultTbl) { ref = { table: defaultTbl, column: raw }; }
+            if (!ref.table || !ref.column) return;
+            (byTable[ref.table] = byTable[ref.table] || []).push({ id: shAliasFor(compKey, r.id), col: ref.column });
+        });
+        var tbls = Object.keys(byTable).map(function(tbl) {
+            var aliases = byTable[tbl].map(function(p) { return p.col + ' AS ' + p.id; }).join(', ');
+            return '        (SELECT ' + aliases + ' FROM ' + tbl + ')';
+        });
+        if (!tbls.length) return '';
+        return '    ' + displayName + ' => INPUT_TABLES(\n' + tbls.join(',\n') + '\n    )';
+    }
+    function shGenerate() {
+        var solver = (shSolverType || 'SHORTEST_PATH').trim();
+        var parts = [
+            "    GRAPH => '" + (activeGraph || '<graph>') + "'",
+            "    SOLVER_TYPE => '" + solver + "'",
+        ];
+        // Component sections (only those with rows are emitted).
+        var compKeys = (solveGr && solveGr.components) ? Object.keys(solveGr.components) : ['WEIGHTS','RESTRICTIONS','SOURCE_NODES','DESTINATION_NODES'];
+        compKeys.forEach(function(ck){
+            var s = shBuildSection(ck);
+            if (s) parts.push(s);
+        });
+        if (shSolutionTable && shSolutionTable.trim()) {
+            parts.push("    SOLUTION_TABLE => '" + shSolutionTable.trim() + "'");
+        }
+        var opts = (shOptions || []).filter(function(o){ return o && o.key && o.key.trim() && o.value !== undefined && String(o.value).trim() !== ''; });
+        if (opts.length) {
+            var lines = opts.map(function(o){ return "        " + o.key.trim() + " = '" + String(o.value).replace(/'/g, "''") + "'"; });
+            parts.push('    OPTIONS => KV_PAIRS(\n' + lines.join(',\n') + '\n    )');
+        }
+        var sql = 'EXECUTE FUNCTION SOLVE_GRAPH(\n' + parts.join(',\n') + '\n);';
+        // Prefix with DROP TABLE IF EXISTS so consecutive Runs against the same
+        // SOLUTION_TABLE don't fail — SOLVE_GRAPH won't replace an existing one.
+        if (shAutoDrop && shSolutionTable && shSolutionTable.trim()) {
+            sql = 'DROP TABLE IF EXISTS ' + shSolutionTable.trim() + ';\n' + sql;
+        }
+        setSql(sql);
+    }
+
+    // ─── Match-Helper state (used when matchHelper=true) ──────────────────
+    // Same shape as Solve Helper but smaller: /match/graph has a single
+    // SAMPLES component (role-renamed to SAMPLE_POINTS) and a `solve_method`
+    // filterparam (markov_chain, match_supply_demand, match_od_pairs, …).
+    var initMH = (initialHelper && initialHelper.match) || {};
+    var matchGr = (endpointGrammar && endpointGrammar.match) || null;
+    var DEFAULT_MATCH_METHODS = ['markov_chain','match_od_pairs','match_supply_demand','match_charging_stations','match_route_detour','match_loops','match_pickup_dropoff','match_isochrone','match_pattern','match_batch_solves','match_clusters','match_embeddings'];
+    const [mhShow, setMhShow] = useState(initMH.show !== false);
+    const [mhSolveMethod, setMhSolveMethod] = useState(initMH.solveMethod || 'markov_chain');
+    const [mhSolutionTable, setMhSolutionTable] = useState(initMH.solutionTable || '');
+    const [mhRows, setMhRows] = useState(initMH.rows || {});
+    const [mhSectionTable, setMhSectionTable] = useState(initMH.sectionTable || {});
+    const [mhSectionMode, setMhSectionMode] = useState(initMH.sectionMode || {});
+    const [mhOptions, setMhOptions] = useState(initMH.options || []);
+    const [mhExpanded, setMhExpanded] = useState(initMH.expanded || {});
+    const [mhAutoDrop, setMhAutoDrop] = useState(initMH.autoDrop !== false);
+    // The grammar's `addons` list is flat with no per-addon filtervalues, so
+    // we apply a name-based heuristic to drop SAMPLE_<DOMAIN>_* identifiers
+    // that clearly belong to other solve methods (e.g., SAMPLE_SUPPLY_* only
+    // applies to match_supply_demand; SAMPLE_PICKUP_/DROPOFF_/RIDE_* to
+    // match_pickup_dropoff; SAMPLE_PATTERN_* to match_pattern; etc.). Without
+    // this, picking a single-WKTPOINT config for match_isochrone spawns 20+
+    // unrelated optional rows.
+    function mhAddonApplies(addonName, solveMethod) {
+        if (!solveMethod) return true;
+        var prefixMap = [
+            { prefix: 'SAMPLE_SUPPLY_',  methods: ['match_supply_demand', 'match_charging_stations'] },
+            { prefix: 'SAMPLE_DEMAND_',  methods: ['match_supply_demand'] },
+            { prefix: 'SAMPLE_PICKUP_',  methods: ['match_pickup_dropoff'] },
+            { prefix: 'SAMPLE_DROPOFF_', methods: ['match_pickup_dropoff'] },
+            { prefix: 'SAMPLE_RIDE_',    methods: ['match_pickup_dropoff'] },
+            { prefix: 'SAMPLE_PATTERN_', methods: ['match_pattern'] },
+            { prefix: 'SAMPLE_OD_',      methods: ['match_od_pairs'] },
+            { prefix: 'SAMPLE_TRIPID',   methods: ['markov_chain'] },
+            { prefix: 'SAMPLE_TIME',     methods: ['markov_chain', 'match_od_pairs'] },
+        ];
+        for (var i = 0; i < prefixMap.length; i++) {
+            if (addonName.indexOf(prefixMap[i].prefix) === 0) return prefixMap[i].methods.indexOf(solveMethod) !== -1;
+        }
+        // No domain-specific prefix → applies broadly.
+        return true;
+    }
+    function mhAddConfig(compKey, configRequired, configLabel) {
+        if (!configRequired || !configRequired.length) return;
+        var grammarComp = matchGr && matchGr.components && matchGr.components[compKey];
+        var optional = ((grammarComp && grammarComp.optional) || [])
+            .filter(function(id){ return mhAddonApplies(id, mhSolveMethod); });
+        var gid = 'g' + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36);
+        setMhRows(function(prev) {
+            var next = Object.assign({}, prev);
+            var newRows = configRequired.map(function(id) { return { id: id, value: '', optional: false, groupId: gid, groupLabel: configLabel || '' }; })
+                .concat(optional.map(function(id) { return { id: id, value: '', optional: true, groupId: gid, groupLabel: configLabel || '' }; }));
+            next[compKey] = (prev[compKey] || []).concat(newRows);
+            return next;
+        });
+    }
+    function mhUpdateRow(compKey, idx, value) {
+        setMhRows(function(prev){ var arr = (prev[compKey] || []).slice(); arr[idx] = Object.assign({}, arr[idx], { value: value }); var n = Object.assign({}, prev); n[compKey] = arr; return n; });
+    }
+    function mhRemoveRow(compKey, idx) {
+        setMhRows(function(prev){ var arr = (prev[compKey] || []).slice(); arr.splice(idx, 1); var n = Object.assign({}, prev); n[compKey] = arr; return n; });
+    }
+    function mhRemoveGroup(compKey, groupId) {
+        if (!groupId) return;
+        setMhRows(function(prev){ var arr = (prev[compKey] || []).filter(function(r){ return r.groupId !== groupId; }); var n = Object.assign({}, prev); n[compKey] = arr; return n; });
+    }
+    function mhAddOption() { setMhOptions(function(prev){ return (prev || []).concat([{ key: '', value: '' }]); }); }
+    function mhUpdateOption(idx, field, val) {
+        setMhOptions(function(prev){ var arr = (prev || []).slice(); arr[idx] = Object.assign({}, arr[idx], (field === 'key' ? { key: val } : { value: val })); return arr; });
+    }
+    function mhRemoveOption(idx) {
+        setMhOptions(function(prev){ var arr = (prev || []).slice(); arr.splice(idx, 1); return arr; });
+    }
+    // Alias for SAMPLES rows: collapse SAMPLE_ prefix (e.g. SAMPLE_WKTPOINT → WKTPOINT).
+    function mhAliasFor(compKey, rawId) {
+        var typeName = (matchGr && matchGr.components && matchGr.components[compKey] && matchGr.components[compKey].typeName) || compKey;
+        return chGenericId(rawId, typeName);
+    }
+    function mhBuildSection(compKey) {
+        var rows = (mhRows[compKey] || []).filter(function(r) { return r.value && r.value.trim(); });
+        if (!rows.length) return '';
+        var displayName = (matchGr && matchGr.components && matchGr.components[compKey] && matchGr.components[compKey].displayName) || compKey;
+        var mode = (mhSectionMode && mhSectionMode[compKey]) || 'table';
+        if (mode === 'constants') {
+            // Group rows by `groupId` — rows added together by a single
+            // configuration pick share one groupId, so we emit them as one
+            // n-tuple sub-select: `(SELECT 1 AS ID, ST_GEOMFROMTEXT(...) AS WKTPOINT)`.
+            // Rows without a groupId (manually-added single literals) become
+            // their own single-alias sub-select.
+            var groups = [], byGid = {};
+            rows.forEach(function(r){
+                if (r.groupId) {
+                    if (!byGid[r.groupId]) { byGid[r.groupId] = []; groups.push(byGid[r.groupId]); }
+                    byGid[r.groupId].push(r);
+                } else {
+                    groups.push([r]);
+                }
+            });
+            var subs = groups.map(function(g){
+                var aliases = g.map(function(r){ return r.value.trim() + ' AS ' + mhAliasFor(compKey, r.id); }).join(', ');
+                return '        (SELECT ' + aliases + ')';
+            });
+            return '    ' + displayName + ' => INPUT_TABLES(\n' + subs.join(',\n') + '\n    )';
+        }
+        var defaultTbl = (mhSectionTable && mhSectionTable[compKey] || '').trim();
+        var byTable = {};
+        rows.forEach(function(r) {
+            var raw = r.value.trim();
+            var ref = chParseRef(raw);
+            if (!ref.table && defaultTbl) { ref = { table: defaultTbl, column: raw }; }
+            if (!ref.table || !ref.column) return;
+            (byTable[ref.table] = byTable[ref.table] || []).push({ id: mhAliasFor(compKey, r.id), col: ref.column });
+        });
+        var tbls = Object.keys(byTable).map(function(tbl) {
+            var aliases = byTable[tbl].map(function(p) { return p.col + ' AS ' + p.id; }).join(', ');
+            return '        (SELECT ' + aliases + ' FROM ' + tbl + ')';
+        });
+        if (!tbls.length) return '';
+        return '    ' + displayName + ' => INPUT_TABLES(\n' + tbls.join(',\n') + '\n    )';
+    }
+    function mhGenerate() {
+        var method = (mhSolveMethod || 'markov_chain').trim();
+        var parts = [
+            "    GRAPH => '" + (activeGraph || '<graph>') + "'",
+            "    SOLVE_METHOD => '" + method + "'",
+        ];
+        var compKeys = (matchGr && matchGr.components) ? Object.keys(matchGr.components) : ['SAMPLE_POINTS'];
+        compKeys.forEach(function(ck){
+            var s = mhBuildSection(ck);
+            if (s) parts.push(s);
+        });
+        if (mhSolutionTable && mhSolutionTable.trim()) {
+            parts.push("    SOLUTION_TABLE => '" + mhSolutionTable.trim() + "'");
+        }
+        var opts = (mhOptions || []).filter(function(o){ return o && o.key && o.key.trim() && o.value !== undefined && String(o.value).trim() !== ''; });
+        if (opts.length) {
+            var lines = opts.map(function(o){ return "        " + o.key.trim() + " = '" + String(o.value).replace(/'/g, "''") + "'"; });
+            parts.push('    OPTIONS => KV_PAIRS(\n' + lines.join(',\n') + '\n    )');
+        }
+        var sql = 'EXECUTE FUNCTION MATCH_GRAPH(\n' + parts.join(',\n') + '\n);';
+        if (mhAutoDrop && mhSolutionTable && mhSolutionTable.trim()) {
+            sql = 'DROP TABLE IF EXISTS ' + mhSolutionTable.trim() + ';\n' + sql;
+        }
+        setSql(sql);
+    }
+
     // Helper mode: 'recreate' → emits CREATE OR REPLACE [DIRECTED|UNDIRECTED] GRAPH …;
     //              'modify'   → emits ALTER GRAPH <name> MODIFY ( … ). Default 'recreate'
     // unless restored from a session (or the Modify context-menu entry) with mode:'modify'.
@@ -1070,21 +1614,37 @@ function QueryPanel(props) {
         if (component === 'EDGES' && id.indexOf('EDGE_') === 0) return id.slice(5);
         if (component === 'WEIGHTS' && id.indexOf('WEIGHTS_') === 0) return id.slice(8);
         if (component === 'RESTRICTIONS' && id.indexOf('RESTRICTIONS_') === 0) return id.slice(13);
+        // SAMPLES (match/graph): strip `SAMPLE_` prefix — every identifier in
+        // the grammar starts with SAMPLE_, and the SQL alias is the bare name
+        // (e.g., SAMPLE_WKTPOINT → WKTPOINT, SAMPLE_ORIGIN_WKTPOINT → ORIGIN_WKTPOINT).
+        if (component === 'SAMPLES' && id.indexOf('SAMPLE_') === 0) return id.slice(7);
         return id;
     }
     // Add the identifiers from a configuration to a component's row list. Required
     // identifiers come from the selected configuration; the component's optional
     // add-ons come too (with `optional: true` so they get a distinct placeholder).
-    function chAddConfig(component, configRequired) {
+    function chAddConfig(component, configRequired, configLabel) {
         if (!configRequired || !configRequired.length) return;
         var compGrammar = (graphGrammar && graphGrammar[component]) || {};
         var optional = compGrammar.optional || [];
+        // Tag every row added in this call with a unique groupId so the UI can
+        // render a single "remove combo" action that drops the whole group
+        // (required + its optional add-ons) in one click.
+        var gid = 'g' + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36);
+        var label = configLabel || '';
         setChRows(function(prev) {
             var next = Object.assign({}, prev);
-            var newRows = configRequired.map(function(id) { return { id: id, value: '', optional: false }; })
-                .concat(optional.map(function(id) { return { id: id, value: '', optional: true }; }));
+            var newRows = configRequired.map(function(id) { return { id: id, value: '', optional: false, groupId: gid, groupLabel: label }; })
+                .concat(optional.map(function(id) { return { id: id, value: '', optional: true, groupId: gid, groupLabel: label }; }));
             next[component] = (prev[component] || []).concat(newRows);
             return next;
+        });
+    }
+    function chRemoveGroup(component, groupId) {
+        if (!groupId) return;
+        setChRows(function(prev){
+            var arr = (prev[component] || []).filter(function(r){ return r.groupId !== groupId; });
+            var next = Object.assign({}, prev); next[component] = arr; return next;
         });
     }
     function chUpdateRow(component, idx, value) {
@@ -1099,6 +1659,19 @@ function QueryPanel(props) {
             var arr = (prev[component] || []).slice(); arr.splice(idx, 1);
             var next = Object.assign({}, prev); next[component] = arr; return next;
         });
+    }
+    // Per-alias example hint for Constants-mode row inputs. Picked by alias
+    // name keyword so the user sees a relevant SQL literal for each row
+    // (WKT geometries get an ST_GEOMFROMTEXT example; IDs get integers; etc.).
+    function constantHintFor(alias) {
+        var a = String(alias || '').toUpperCase();
+        if (/WKT|POINT|LINE|GEOM/.test(a)) return "ST_GEOMFROMTEXT('POINT(-122 37)')";
+        if (/^ID$|_ID$/.test(a))           return '1, 2, 3, …';
+        if (/NAME/.test(a))                return "'Bill'";
+        if (/TIME/.test(a))                return "0  or TIMESTAMP '2026-01-01'";
+        if (/SIZE|COUNT|PRIORITY|ORDER|LEVEL|PENALTY|REGION|TRIPID/.test(a)) return '1, 2, …';
+        if (/LABEL|SPECS|MAIN|ODDEVEN/.test(a)) return "'value'";
+        return 'literal value';
     }
     // Parse "schema.table.column" → { table:"schema.table", column:"column" }.
     // Tolerates plain "table.column" (no schema) too.
@@ -1115,9 +1688,14 @@ function QueryPanel(props) {
     function chBuildSection(component) {
         var rows = (chRows[component] || []).filter(function(r) { return r.value && r.value.trim(); });
         if (!rows.length) return '';
+        var defaultTbl = (chSectionTable && chSectionTable[component] || '').trim();
         var byTable = {};
         rows.forEach(function(r) {
-            var ref = chParseRef(r.value);
+            var raw = r.value.trim();
+            var ref = chParseRef(raw);
+            // If the row has no dot AND we have a section default table, treat the
+            // value as a bare column name and join it to the default.
+            if (!ref.table && defaultTbl) { ref = { table: defaultTbl, column: raw }; }
             if (!ref.table || !ref.column) return;
             (byTable[ref.table] = byTable[ref.table] || []).push({ id: chGenericId(r.id, component), col: ref.column });
         });
@@ -1594,42 +2172,130 @@ function QueryPanel(props) {
                 // Create Helper state stashed under `helper.create` so the create-graph
                 // panel can be restored mid-iteration. Note: we DON'T auto-run on
                 // restore — the user reruns intentionally to (re-)create the graph.
-                create: createHelper ? { show: chShow, graphName: chGraphName, directed: chDirected, rows: chRows, options: chOptions, mode: chMode } : undefined
+                create: createHelper ? { show: chShow, graphName: chGraphName, directed: chDirected, rows: chRows, sectionTable: chSectionTable, options: chOptions, mode: chMode, expanded: chExpanded } : undefined,
+                solve: solveHelper ? { show: shShow, solverType: shSolverType, solutionTable: shSolutionTable, rows: shRows, sectionTable: shSectionTable, sectionMode: shSectionMode, options: shOptions, expanded: shExpanded, autoDrop: shAutoDrop } : undefined,
+                match: matchHelper ? { show: mhShow, solveMethod: mhSolveMethod, solutionTable: mhSolutionTable, rows: mhRows, sectionTable: mhSectionTable, sectionMode: mhSectionMode, options: mhOptions, expanded: mhExpanded, autoDrop: mhAutoDrop } : undefined
             }
         };
-    }, [sql, activeTab, stateRef, chShow, chGraphName, chDirected, chRows, chOptions, chMode]);
+    }, [sql, activeTab, stateRef, chShow, chGraphName, chDirected, chRows, chSectionTable, chOptions, chMode, chExpanded, shShow, shSolverType, shSolutionTable, shRows, shSectionTable, shSectionMode, shOptions, shExpanded, shAutoDrop, mhShow, mhSolveMethod, mhSolutionTable, mhRows, mhSectionTable, mhSectionMode, mhOptions, mhExpanded, mhAutoDrop]);
 
-    // Execute query
+    // Execute query — supports multi-statement input (split on top-level ; after
+    // stripping --line and /* block */ comments). Statements run sequentially;
+    // first error aborts. The final non-empty statement's response is used for
+    // display. For a successful EXECUTE FUNCTION SOLVE_GRAPH with SOLUTION_TABLE,
+    // we additionally fetch `SELECT * FROM <solution_table> LIMIT N` and use
+    // that as the result so the user sees the solver output in View Results
+    // (same flow as a GQL query's results).
     var executeQuery = async function(statement) {
         if (!credentials || !credentials.url) return;
         setError(null); setResult(null); setLoading(true); setNodeDetail(null); setCreateSuccess(null);
-        try {
-            var hdrs = { "Content-Type": "application/json" };
-            if (credentials.user || credentials.pass) {
-                hdrs["Authorization"] = "Basic " + btoa(credentials.user + ":" + credentials.pass);
-            }
+        var hdrs = { "Content-Type": "application/json" };
+        if (credentials.user || credentials.pass) {
+            hdrs["Authorization"] = "Basic " + btoa(credentials.user + ":" + credentials.pass);
+        }
+        var runOne = async function(stmt) {
             var res = await fetch(credentials.url + '/execute/sql', {
                 method: "POST", headers: hdrs,
-                body: JSON.stringify({ statement: statement, offset: 0, limit: 10000, encoding: "json" }),
+                body: JSON.stringify({ statement: stmt, offset: 0, limit: 10000, encoding: "json" }),
             });
             if (!res.ok) {
                 var errText = await res.text().catch(function() { return res.statusText; });
                 throw new Error("HTTP " + res.status + ": " + errText);
             }
             var data = await res.json();
+            if (data && data.status === 'ERROR') {
+                throw new Error(data.message || ('Statement failed: ' + stmt));
+            }
+            return data;
+        };
+        try {
+            // Strip comments and split on `;`. Naive splitter — fine for our
+            // generated SQL where strings don't contain semicolons.
+            var stripped = String(statement || '')
+                .replace(/\/\*[\s\S]*?\*\//g, '')  // /* ... */
+                .replace(/--[^\n]*/g, '');         // -- to end of line
+            var stmts = stripped.split(';').map(function(s){ return s.trim(); }).filter(function(s){ return s.length; });
+            if (!stmts.length) { setLoading(false); return; }
+            var data = null;
+            var lastStmt = '';
+            for (var i = 0; i < stmts.length; i++) {
+                data = await runOne(stmts[i]);
+                lastStmt = stmts[i];
+            }
+            // If the last statement was an EXECUTE FUNCTION SOLVE_GRAPH / MATCH_GRAPH
+            // (...) with SOLUTION_TABLE, auto-fetch its contents so the user sees the
+            // actual solver/match output rather than just the function's status row.
+            var mSolveTbl = /EXECUTE\s+FUNCTION\s+(?:SOLVE_GRAPH|MATCH_GRAPH)\s*\([\s\S]*?SOLUTION_TABLE\s*=>\s*'([^']+)'/i.exec(lastStmt);
+            if (mSolveTbl) {
+                try {
+                    var tbl = mSolveTbl[1];
+                    // result_table_index option (when set) tells the server to return
+                    // a secondary table — match_isochrone + 2 → <table>_polygons, etc.
+                    // The grammar doesn't expose the suffix, so we hardcode the known
+                    // mappings and fall back to an INFORMATION_SCHEMA probe that picks
+                    // up sibling tables matching `<table>_*`.
+                    var SUFFIX_MAP = {
+                        // (solve_method|solver_type)|result_table_index → suffix
+                        'match_isochrone|2': '_polygons',
+                    };
+                    var mMethod = /SOLVE_METHOD\s*=>\s*'([^']+)'/i.exec(lastStmt) || /SOLVER_TYPE\s*=>\s*'([^']+)'/i.exec(lastStmt);
+                    var mIdx = /result_table_index\s*=\s*'?([0-9]+)'?/i.exec(lastStmt);
+                    var method = mMethod ? mMethod[1] : null;
+                    var resultIdx = mIdx ? mIdx[1] : null;
+                    var suffix = '';
+                    if (method && resultIdx) suffix = SUFFIX_MAP[method + '|' + resultIdx] || '';
+                    var targetTbl = tbl + suffix;
+                    var sel = 'SELECT * FROM ' + targetTbl + ' LIMIT 10000';
+                    try {
+                        data = await runOne(sel);
+                    } catch (firstErr) {
+                        // If we appended a guessed suffix that doesn't exist, OR if
+                        // result_table_index was set but unmapped, probe sibling tables.
+                        if (suffix || resultIdx) {
+                            try {
+                                var ix = tbl.lastIndexOf('.');
+                                var schema = ix >= 0 ? tbl.slice(0, ix) : null;
+                                var bare = ix >= 0 ? tbl.slice(ix + 1) : tbl;
+                                var probeSql = "SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME LIKE '" + bare + "_%'" + (schema ? " AND TABLE_SCHEMA = '" + schema + "'" : '');
+                                var probe = await runOne(probeSql);
+                                var probeInner = safeParse(probe.data_str) || probe;
+                                var jer = safeParse(probeInner.json_encoded_response) || {};
+                                var hdrs = jer.column_headers || [];
+                                var sIdx = hdrs.indexOf('TABLE_SCHEMA'), nIdx = hdrs.indexOf('TABLE_NAME');
+                                var rows = hdrs.length ? (jer['column_' + (nIdx + 1)] || []) : [];
+                                if (rows.length > 0) {
+                                    var schemas = jer['column_' + (sIdx + 1)] || [];
+                                    var pick = (schemas[0] ? (schemas[0] + '.') : '') + rows[0];
+                                    data = await runOne('SELECT * FROM ' + pick + ' LIMIT 10000');
+                                    setError("result_table_index suffix not mapped — auto-picked '" + pick + "'. Edit SQL if wrong.");
+                                } else { throw firstErr; }
+                            } catch (probeErr) { throw firstErr; }
+                        } else { throw firstErr; }
+                    }
+                } catch (sErr) {
+                    // The solve/match call succeeded but the SELECT failed
+                    // (e.g., permissions, no rows). Surface a non-fatal warning.
+                    setError('Run succeeded but SELECT * FROM <solution_table> failed: ' + sErr.message);
+                }
+            }
             setResult(data);
             // Detect a successful CREATE/ALTER on a graph — surface a success banner
             // + notify App to refresh the sidebar list. Matches:
             //   CREATE [OR REPLACE] [DIRECTED|UNDIRECTED] GRAPH <name>
             //   ALTER GRAPH <name>
-            var mCreate = statement.match(/CREATE\s+(?:OR\s+REPLACE\s+)?(?:DIRECTED\s+|UNDIRECTED\s+)?GRAPH\s+([A-Za-z_][\w.]*)/i);
-            var mAlter  = mCreate ? null : statement.match(/ALTER\s+GRAPH\s+([A-Za-z_][\w.]*)/i);
+            var mCreate = lastStmt.match(/CREATE\s+(?:OR\s+REPLACE\s+)?(?:DIRECTED\s+|UNDIRECTED\s+)?GRAPH\s+([A-Za-z_][\w.]*)/i);
+            var mAlter  = mCreate ? null : lastStmt.match(/ALTER\s+GRAPH\s+([A-Za-z_][\w.]*)/i);
             var m = mCreate || mAlter;
             if (m && data && data.status !== 'ERROR') {
                 var name = m[1];
                 var action = mAlter ? 'modified' : 'created';
                 setCreateSuccess({ graphName: name, action: action });
                 if (props.onGraphCreated) props.onGraphCreated(name);
+            }
+            // After a solve auto-fetch, flip to the results tab so the user sees
+            // the rows immediately (analogous to the GQL hop-results flow).
+            if (mSolveTbl && data && data.status !== 'ERROR') {
+                setActiveTab('results');
             }
         } catch(err) { setError(err.message); }
         finally { setLoading(false); }
@@ -1714,17 +2380,75 @@ function QueryPanel(props) {
     }, [inner]);
 
     var hasHops = graphParsed.headers.some(function(h) { return /^NODE1_HOP_/.test(h); });
+    // Solve path viz: when the auto-fetched solution_table rows include a
+    // `nameroute` column (string of comma-separated node names along the path),
+    // we can re-use the existing force-graph viz by synthesizing nodes+links
+    // from each row's path sequence. The grammar's outputs filter — keyed by
+    // solver_type — tells us which solvers actually produce `nameroute`, but
+    // the authoritative check is "does the result actually have the column?".
+    var nameRouteCol = (function(){
+        var hdrs = tableData.headers || [];
+        for (var i = 0; i < hdrs.length; i++) {
+            if (/^nameroute$/i.test(hdrs[i])) return hdrs[i];
+        }
+        return null;
+    })();
+    // WKT route column — geo path geometry. Detected the same way (named
+    // `wktroute` by the solver; sniff first row as fallback so any column
+    // whose value starts with LINESTRING/POINT/etc. is picked up).
+    var wktRouteCol = (function(){
+        var hdrs = tableData.headers || [], rows = tableData.rows || [];
+        for (var i = 0; i < hdrs.length; i++) {
+            if (/^(wktroute|wkt|polygon|geom)$/i.test(hdrs[i])) return hdrs[i];
+        }
+        if (rows.length > 0) {
+            for (var j = 0; j < hdrs.length; j++) {
+                var v = rows[0][hdrs[j]];
+                if (typeof v === 'string' && /^(LINESTRING|POINT|MULTILINESTRING|POLYGON|MULTIPOLYGON)\s*\(/i.test(v.trim())) return hdrs[j];
+            }
+        }
+        return null;
+    })();
+    // Both Solve and Match helpers feed a solution_table via /execute/sql →
+    // SELECT * roundtrip, so the same viz logic applies (path / map).
+    // Detect x,y column pair (case-insensitive; also longitude/latitude as
+    // common alternates). Lets us render plain coordinate-pair rows (e.g.,
+    // single-isochrone SOURCE/x/y/z output) as points on the Map tab.
+    var xyCols = (function(){
+        var hdrs = tableData.headers || [];
+        var find = function(names){
+            for (var i = 0; i < hdrs.length; i++) { var h = hdrs[i].toLowerCase(); if (names.indexOf(h) !== -1) return hdrs[i]; }
+            return null;
+        };
+        var xc = find(['x', 'lon', 'lng', 'longitude']);
+        var yc = find(['y', 'lat', 'latitude']);
+        return (xc && yc) ? { x: xc, y: yc } : null;
+    })();
+    var hasSolvePath = !!((solveHelper || matchHelper) && nameRouteCol && tableData.rows.length > 0);
+    var hasSolveMap = !!((solveHelper || matchHelper) && (wktRouteCol || xyCols) && tableData.rows.length > 0);
     var hasResults = tableData.rows.length > 0 || graphParsed.rows.length > 0;
 
-    // Auto-switch to Visualization tab when query returns hop data, or clear if no results
+    // Auto-switch viz tab on a fresh result:
+    //   - prefer the force-graph viz (`graph` tab) when hop or nameroute data is available
+    //   - else prefer the map viz (`map` tab) when wktroute is available
+    //   - else clear any open viz tab
+    // When a viz appears for a Solve panel, also collapse the Solve Helper so
+    // the viz claims more vertical real estate (user can re-open via the
+    // section header to tweak the configuration).
     useEffect(function() {
         if (!result) return;
-        if (hasHops && graphParsed.rows.length > 0) {
+        if ((hasHops && graphParsed.rows.length > 0) || hasSolvePath) {
             setActiveTab('graph');
+            if (solveHelper) setShShow(false);
+            if (matchHelper) setMhShow(false);
+            if (size.h < 500) setSize(function(s) { return { w: Math.max(s.w, 640), h: 560 }; });
+        } else if (hasSolveMap) {
+            setActiveTab('map');
+            if (solveHelper) setShShow(false);
+            if (matchHelper) setMhShow(false);
             if (size.h < 500) setSize(function(s) { return { w: Math.max(s.w, 640), h: 560 }; });
         } else {
-            // No viz data: clear the graph canvas and collapse tab
-            if (activeTab === 'graph') setActiveTab(null);
+            if (activeTab === 'graph' || activeTab === 'map') setActiveTab(null);
             if (graphRef.current) { graphRef.current._destructor && graphRef.current._destructor(); graphRef.current = null; }
             if (graphContainerRef.current) graphContainerRef.current.innerHTML = '';
         }
@@ -1800,28 +2524,63 @@ function QueryPanel(props) {
         return { nodes: nodes, links: links, maxDegree: maxDegree };
     }, [graphParsed, labelColorMap]);
 
+    // Solve path graph data: each row's nameroute is "A, B, C, …" (see
+    // GraphInterface.cpp:2074-2086) — a comma-separated sequence of node names
+    // along one path. We collapse all rows into one shared node set, with
+    // links between consecutive names. Per-row color encodes the path index so
+    // distinct paths are visually separable in the force-graph.
+    var solveGraphData = useMemo(function() {
+        if (!hasSolvePath) return { nodes: [], links: [], maxDegree: 1 };
+        var rows = tableData.rows, nodeMap = {}, linkMap = {};
+        rows.forEach(function(row, pathIdx) {
+            var seq = String(row[nameRouteCol] || '').split(/\s*,\s*/).map(function(s){ return s.trim(); }).filter(function(s){ return s.length; });
+            if (seq.length < 1) return;
+            var color = PALETTE[pathIdx % PALETTE.length].solid;
+            seq.forEach(function(n){
+                if (!nodeMap[n]) nodeMap[n] = { id: n, label: '', color: '#b2bec3', degree: 0 };
+            });
+            for (var i = 0; i < seq.length - 1; i++) {
+                var a = seq[i], b = seq[i + 1];
+                var key = a + '→' + b + '|p' + pathIdx;
+                if (!linkMap[key]) {
+                    linkMap[key] = { source: a, target: b, edgeLabel: 'path ' + (pathIdx + 1), color: color };
+                    nodeMap[a].degree++; nodeMap[b].degree++;
+                }
+            }
+        });
+        var nodes = Object.values(nodeMap), links = Object.values(linkMap), maxDegree = 1;
+        nodes.forEach(function(n){ if (n.degree > maxDegree) maxDegree = n.degree; });
+        return { nodes: nodes, links: links, maxDegree: maxDegree };
+    }, [hasSolvePath, tableData, nameRouteCol]);
+
+    // Force-graph render path consumes whichever data source has rows. GQL
+    // (`hasHops`) wins when both are present (rare in practice — solveHelper
+    // panels don't run GQL).
+    var effectiveGraphData = (hasHops && graphData.nodes.length > 0) ? graphData : solveGraphData;
+    var hasVizData = effectiveGraphData.nodes.length > 0;
+
     var legendItems = useMemo(function() {
         var seen = {}, items = [];
-        graphData.nodes.forEach(function(n) { if (n.label && !seen['n:' + n.label]) { seen['n:' + n.label] = true; items.push({ type: 'node', label: n.label, color: n.color }); } });
-        graphData.links.forEach(function(l) { if (l.edgeLabel && !seen['e:' + l.edgeLabel]) { seen['e:' + l.edgeLabel] = true; items.push({ type: 'edge', label: l.edgeLabel, color: l.color }); } });
+        effectiveGraphData.nodes.forEach(function(n) { if (n.label && !seen['n:' + n.label]) { seen['n:' + n.label] = true; items.push({ type: 'node', label: n.label, color: n.color }); } });
+        effectiveGraphData.links.forEach(function(l) { if (l.edgeLabel && !seen['e:' + l.edgeLabel]) { seen['e:' + l.edgeLabel] = true; items.push({ type: 'edge', label: l.edgeLabel, color: l.color }); } });
         return items;
-    }, [graphData]);
+    }, [effectiveGraphData]);
 
     // ─── Force-graph lifecycle ───
     useEffect(function() {
-        if (activeTab !== 'graph' || !graphContainerRef.current || graphData.nodes.length === 0) return;
+        if (activeTab !== 'graph' || !graphContainerRef.current || effectiveGraphData.nodes.length === 0) return;
         if (graphRef.current) { graphRef.current._destructor && graphRef.current._destructor(); graphRef.current = null; }
         graphContainerRef.current.innerHTML = '';
 
         var width = graphContainerRef.current.clientWidth || 600;
         var height = graphContainerRef.current.clientHeight || 400;
-        var maxDeg = graphData.maxDegree || 1;
+        var maxDeg = effectiveGraphData.maxDegree || 1;
         var nodeRadius = function(d) { return 4 + Math.sqrt((d.degree || 0) / maxDeg) * 14; };
 
         var graph = new ForceGraph(graphContainerRef.current)
             .width(width).height(height)
             .backgroundColor('#0a0a1a')
-            .graphData(graphData)
+            .graphData(effectiveGraphData)
             .nodeId('id')
             .nodeVal(function(n) { return n.degree || 1; })
             .nodeCanvasObjectMode(function() { return 'replace'; })
@@ -1871,7 +2630,7 @@ function QueryPanel(props) {
 
         graphRef.current = graph;
         return function() { if (graphRef.current) { graphRef.current._destructor && graphRef.current._destructor(); graphRef.current = null; } };
-    }, [activeTab, graphData]);
+    }, [activeTab, effectiveGraphData]);
 
     // Resize force-graph when container resizes (via ResizeObserver)
     // Only zoomToFit on significant size changes (panel resize), not small ones (detail strip toggle)
@@ -1930,7 +2689,10 @@ function QueryPanel(props) {
                 flexShrink:0, userSelect:'none',
             }}>
                 <span style={{ fontWeight:700, fontSize:12 }}>
-                    {createHelper ? ((chMode === 'modify' ? 'Modify GRAPH' : 'Create GRAPH') + (chGraphName ? ' — ' + chGraphName : '')) : ('SQL Query' + (count > 0 ? ' — ' + count + ' record' + (count !== 1 ? 's' : '') : ''))}
+                    {createHelper ? ((chMode === 'modify' ? 'Modify GRAPH' : 'Create GRAPH') + (chGraphName ? ' — ' + chGraphName : ''))
+                     : solveHelper ? ('Solve GRAPH' + (activeGraph ? ' — ' + activeGraph : '') + (shSolverType ? ' · ' + shSolverType : ''))
+                     : matchHelper ? ('Match GRAPH' + (activeGraph ? ' — ' + activeGraph : '') + (mhSolveMethod ? ' · ' + mhSolveMethod : ''))
+                     : ('SQL Query' + (count > 0 ? ' — ' + count + ' record' + (count !== 1 ? 's' : '') : ''))}
                 </span>
                 <div style={{ display:'flex', gap:4 }}>
                     {onMinimize && <button onClick={function(){ onMinimize(); }} title="Minimize to header bar" style={{
@@ -1973,7 +2735,7 @@ function QueryPanel(props) {
                 //    the viz/result region claims the rest. Earlier we used a flat 35%
                 //    here, which left a big empty white band above the SQL when the
                 //    helper was collapsed.
-                var helperOpen = (!hideQueryHelper && showHelper) || (createHelper && chShow);
+                var helperOpen = (!hideQueryHelper && showHelper) || (createHelper && chShow) || (solveHelper && shShow) || (matchHelper && mhShow);
                 var topFlex = activeTab && !helperOpen ? '0 0 auto' : '1 1 auto';
                 var topMaxH = activeTab ? (helperOpen ? '60%' : 'none') : '100%';
                 return (
@@ -2006,43 +2768,96 @@ function QueryPanel(props) {
                                     var configs = compGrammar.configurations || [];
                                     var rows = chRows[comp] || [];
                                     var sectionColor = comp === 'NODES' ? '#0984e3' : comp === 'EDGES' ? '#e17055' : comp === 'WEIGHTS' ? '#6c5ce7' : '#636e72';
+                                    var defaultTbl = (chSectionTable && chSectionTable[comp]) || '';
+                                    var defaultTblCols = defaultTbl ? (tableColumnsCache[defaultTbl] || null) : null;
+                                    // EDGES is the only mandatory component — always rendered expanded.
+                                    // NODES / WEIGHTS / RESTRICTIONS collapse to a pull-down to save vertical
+                                    // space, auto-expanding when they have rows or a default table set
+                                    // (e.g., after Modify).
+                                    var collapsible = (comp !== 'EDGES');
+                                    var hasContent = rows.length > 0 || !!defaultTbl;
+                                    var explicit = chExpanded && Object.prototype.hasOwnProperty.call(chExpanded, comp) ? chExpanded[comp] : null;
+                                    var expanded = !collapsible || (explicit !== null ? explicit : hasContent);
                                     return <div key={comp} style={{ marginBottom:10, paddingBottom:8, borderBottom:'1px solid #f1f2f6' }}>
-                                        <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
+                                        <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom: expanded ? 6 : 0, cursor: collapsible ? 'pointer' : 'default' }} onClick={collapsible ? function(){ setChExpanded(function(prev){ var n = Object.assign({}, prev); n[comp] = !expanded; return n; }); } : null}>
+                                            {collapsible && <span style={{ fontSize:10, color:'#b2bec3', width:10, userSelect:'none' }}>{expanded ? '▼' : '▶'}</span>}
                                             <span style={{ fontWeight:800, color: sectionColor, fontSize:12, letterSpacing:0.3 }}>{comp}</span>
-                                            <select onChange={function(e){ var i = parseInt(e.target.value); if (!isNaN(i) && configs[i]) { chAddConfig(comp, configs[i].required); } e.target.value = ''; }} defaultValue="" style={{ flex:1, padding:'3px 6px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:11, background:'#fff', fontFamily:'inherit' }}>
+                                            {collapsible && !expanded && rows.length > 0 && <span style={{ fontSize:10, color:'#b2bec3' }}>{rows.length + ' row' + (rows.length !== 1 ? 's' : '')}</span>}
+                                            {expanded && <select onClick={function(e){ e.stopPropagation(); }} onChange={function(e){ var i = parseInt(e.target.value); if (!isNaN(i) && configs[i]) { chAddConfig(comp, configs[i].required, configs[i].label); } e.target.value = ''; }} defaultValue="" style={{ flex:1, padding:'3px 6px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:11, background:'#fff', fontFamily:'inherit' }}>
                                                 <option value="">Select a configuration… (+ Add)</option>
                                                 {configs.map(function(c, i){ return <option key={i} value={i}>{c.label}</option>; })}
-                                            </select>
+                                            </select>}
                                         </div>
-                                        {rows.map(function(r, idx) {
-                                            var aliasName = chGenericId(r.id, comp);
-                                            // Show the original specific name in a tooltip so the user knows
-                                            // what "kind" of column the configuration is hinting at.
-                                            var aliasTitle = aliasName !== r.id ? r.id + ' → ' + aliasName + ' (the section already conveys the component context; Kinetica infers the type from the column)' : r.id;
-                                            // Column suggestion: identify the table the user is currently typing in
-                                            // (longest schema.table prefix that matches a known table), trigger a
-                                            // one-shot column fetch if we don't have it yet, and add per-column
-                                            // entries to the datalist so the browser auto-completes column names.
-                                            var pickedTbl = chPickedTable(r.value);
-                                            var pickedCols = pickedTbl ? (tableColumnsCache[pickedTbl] || null) : null;
-                                            return <div key={idx} style={{ display:'grid', gridTemplateColumns:'1fr auto auto auto', gap:8, alignItems:'center', padding:'3px 0' }}>
-                                                <input list={'ch-tables-' + comp + '-' + idx} value={r.value} onChange={function(e){
-                                                    var v = e.target.value;
-                                                    chUpdateRow(comp, idx, v);
-                                                    // Kick off a column probe once the user has typed a known table prefix.
-                                                    var pt = chPickedTable(v);
-                                                    if (pt && onFetchTableColumns && !Object.prototype.hasOwnProperty.call(tableColumnsCache, pt)) onFetchTableColumns(pt);
-                                                }} placeholder={r.optional ? 'Optional' : 'schema.table.column'} style={{ padding:'4px 8px', border: '1px solid ' + (r.optional ? '#f1f2f6' : '#dfe6e9'), borderRadius:5, fontSize:11, fontFamily:'inherit', outline:'none', background: r.optional ? '#fafbfc' : '#fff' }}/>
-                                                <datalist id={'ch-tables-' + comp + '-' + idx}>
-                                                    {(pickedTbl && pickedCols && pickedCols.length)
-                                                        ? pickedCols.map(function(col){ return <option key={pickedTbl + '|' + col} value={pickedTbl + '.' + col}/>; })
-                                                        : availableTables.filter(function(t){ return t.type !== 'collection'; }).map(function(t){ return <option key={t.name} value={t.name + '.'}/>; })}
-                                                </datalist>
-                                                <span style={{ fontSize:10, color:'#b2bec3' }}>as</span>
-                                                <span title={aliasTitle} style={{ fontSize:11, fontWeight:700, color: r.optional ? '#b2bec3' : '#2d3436', cursor: aliasName !== r.id ? 'help' : 'default' }}>{aliasName}</span>
-                                                <span onClick={function(){ chRemoveRow(comp, idx); }} title="Remove" style={{ cursor:'pointer', color:'#d63031', fontSize:14, padding:'0 4px', userSelect:'none' }}>{'🗑'}</span>
-                                            </div>;
-                                        })}
+                                        {expanded && <React.Fragment>
+                                        {/* Section default table — when set, the row inputs accept bare column
+                                            names and are auto-joined to this table in the generated SQL. A
+                                            row can still override by typing a full schema.table.column path. */}
+                                        <div style={{ display:'grid', gridTemplateColumns:'auto 1fr auto', gap:8, alignItems:'center', padding:'3px 0 6px', fontSize:11 }}>
+                                            <label title="When set, each row below can be a bare column name (joined to this table). A row with dots is treated as a full schema.table.column override." style={{ color:'#636e72', fontWeight:700, fontSize:10, letterSpacing:0.3, textTransform:'uppercase' }}>Default table</label>
+                                            <input list={'ch-deftbl-' + comp} value={defaultTbl} onChange={function(e){
+                                                var v = e.target.value;
+                                                setChSectionTable(function(prev){ var n = Object.assign({}, prev); n[comp] = v; return n; });
+                                                if (v && onFetchTableColumns && !Object.prototype.hasOwnProperty.call(tableColumnsCache, v)) onFetchTableColumns(v);
+                                            }} placeholder="schema.table (optional)" style={{ padding:'4px 8px', border:'1px dashed #dfe6e9', borderRadius:5, fontSize:11, fontFamily:'inherit', outline:'none', background: defaultTbl ? '#f8fcff' : '#fff' }}/>
+                                            <datalist id={'ch-deftbl-' + comp}>
+                                                {availableTables.filter(function(t){ return t.type !== 'collection'; }).map(function(t){ return <option key={t.name} value={t.name}/>; })}
+                                            </datalist>
+                                            {defaultTbl && <span title="Clear default table" onClick={function(){ setChSectionTable(function(prev){ var n = Object.assign({}, prev); n[comp] = ''; return n; }); }} style={{ cursor:'pointer', color:'#b2bec3', fontSize:14, padding:'0 4px', userSelect:'none' }}>{'✕'}</span>}
+                                            {!defaultTbl && <span/>}
+                                        </div>
+                                        {(function(){
+                                            // Render rows in groups: consecutive rows that share a groupId form a
+                                            // combo block (added together by one configuration pick). A group header
+                                            // surfaces the combo label and a single "remove combo" trash that
+                                            // drops the whole block at once. Per-row trash still works for fine
+                                            // edits. Pre-existing rows without a groupId render plain.
+                                            var groups = [];
+                                            rows.forEach(function(r, idx){
+                                                var g = groups[groups.length - 1];
+                                                if (g && g.groupId === (r.groupId || null)) { g.items.push({ row: r, idx: idx }); return; }
+                                                groups.push({ groupId: r.groupId || null, groupLabel: r.groupLabel || '', items: [{ row: r, idx: idx }] });
+                                            });
+                                            return groups.map(function(group, gIdx){
+                                                var hasMultiple = group.items.length > 1;
+                                                var canRemoveAll = !!group.groupId && hasMultiple;
+                                                return <div key={'g' + gIdx} style={{ marginBottom: canRemoveAll ? 6 : 0, paddingLeft: canRemoveAll ? 6 : 0, borderLeft: canRemoveAll ? '2px solid #f1f2f6' : 'none' }}>
+                                                    {canRemoveAll && (
+                                                        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'2px 0', fontSize:10, color:'#b2bec3' }}>
+                                                            <span title={'Combo: ' + (group.groupLabel || '(unnamed)') + ' — ' + group.items.length + ' rows'} style={{ fontWeight:600, letterSpacing:0.3 }}>{group.groupLabel || 'combo'}</span>
+                                                            <span onClick={function(){ chRemoveGroup(comp, group.groupId); }} title={'Remove the entire combo (' + group.items.length + ' rows)'} style={{ cursor:'pointer', color:'#d63031', fontSize:13, padding:'0 4px', userSelect:'none' }}>{'🗑 combo'}</span>
+                                                        </div>
+                                                    )}
+                                                    {group.items.map(function(it){
+                                                        var r = it.row, idx = it.idx;
+                                                        var aliasName = chGenericId(r.id, comp);
+                                                        var aliasTitle = aliasName !== r.id ? r.id + ' → ' + aliasName + ' (the section already conveys the component context; Kinetica infers the type from the column)' : r.id;
+                                                        var pickedTbl = chPickedTable(r.value);
+                                                        var pickedCols = pickedTbl ? (tableColumnsCache[pickedTbl] || null) : null;
+                                                        var rowIsOverride = r.value && r.value.indexOf('.') !== -1;
+                                                        var usingDefault = !!defaultTbl && !rowIsOverride;
+                                                        return <div key={idx} style={{ display:'grid', gridTemplateColumns:'1fr auto auto auto', gap:8, alignItems:'center', padding:'3px 0' }}>
+                                                            <input list={'ch-tables-' + comp + '-' + idx} value={r.value} onChange={function(e){
+                                                                var v = e.target.value;
+                                                                chUpdateRow(comp, idx, v);
+                                                                var pt = chPickedTable(v);
+                                                                if (pt && onFetchTableColumns && !Object.prototype.hasOwnProperty.call(tableColumnsCache, pt)) onFetchTableColumns(pt);
+                                                            }} placeholder={r.optional ? 'Optional' : (defaultTbl ? 'column' : 'schema.table.column')} title={defaultTbl ? ('Bare column name → joined to ' + defaultTbl + '. Type with dots to override.') : 'Full path: schema.table.column'} style={{ padding:'4px 8px', border: '1px solid ' + (r.optional ? '#f1f2f6' : (usingDefault ? '#0984e3' : '#dfe6e9')), borderRadius:5, fontSize:11, fontFamily:'inherit', outline:'none', background: r.optional ? '#fafbfc' : '#fff' }}/>
+                                                            <datalist id={'ch-tables-' + comp + '-' + idx}>
+                                                                {usingDefault && defaultTblCols && defaultTblCols.length
+                                                                    ? defaultTblCols.map(function(col){ return <option key={defaultTbl + '|' + col} value={col}/>; })
+                                                                    : (pickedTbl && pickedCols && pickedCols.length)
+                                                                        ? pickedCols.map(function(col){ return <option key={pickedTbl + '|' + col} value={pickedTbl + '.' + col}/>; })
+                                                                        : availableTables.filter(function(t){ return t.type !== 'collection'; }).map(function(t){ return <option key={t.name} value={t.name + '.'}/>; })}
+                                                            </datalist>
+                                                            <span style={{ fontSize:10, color:'#b2bec3' }}>as</span>
+                                                            <span title={aliasTitle} style={{ fontSize:11, fontWeight:700, color: r.optional ? '#b2bec3' : '#2d3436', cursor: aliasName !== r.id ? 'help' : 'default' }}>{aliasName}</span>
+                                                            <span onClick={function(){ chRemoveRow(comp, idx); }} title="Remove just this row" style={{ cursor:'pointer', color:'#d63031', fontSize:14, padding:'0 4px', userSelect:'none' }}>{'🗑'}</span>
+                                                        </div>;
+                                                    })}
+                                                </div>;
+                                            });
+                                        })()}
+                                        </React.Fragment>}
                                     </div>;
                                 })}
                                 {/* OPTIONS — emitted as OPTIONS => KV_PAIRS(...) when any key/value is set. */}
@@ -2079,6 +2894,383 @@ function QueryPanel(props) {
                                 </div>
                             </div>
                         )}
+                    </div>
+                )}
+                {/* Solve Helper — grammar-driven SOLVE_GRAPH builder. Mirrors the Create
+                    Helper but iterates over endpointGrammar.solve.components (typically
+                    WEIGHTS / RESTRICTIONS / SOLVETARGETS×2) and OPTIONS are filtered by
+                    the selected solver type. Component-row UI is the same shape as
+                    Create Helper: default-table + bare-column rows, combo grouping. */}
+                {solveHelper && (
+                    <div>
+                        <div onClick={function(){ setShShow(function(p){ return !p; }); }} title="Solve Helper: pick a solver type, configure component combos, generate the SOLVE_GRAPH SQL." style={{ display:'flex', alignItems:'center', gap:6, cursor:'pointer', userSelect:'none', padding:'2px 0' }}>
+                            <span style={{ fontSize:13, fontWeight:800, color: shShow ? '#fd79a8' : '#2d3436' }}>{shShow ? '▼' : '▶'} Solve Helper</span>
+                            {!shShow && <span style={{ fontSize:10, color:'#b2bec3' }}>— solver type, component combos, options</span>}
+                        </div>
+                        {shShow && (function(){
+                            // Solver types: prefer the grammar's configuration `filtervalues` union
+                            // across all components + options; fall back to DEFAULT_SOLVERS.
+                            var solverSet = {};
+                            if (solveGr) {
+                                Object.keys(solveGr.components || {}).forEach(function(k){
+                                    (solveGr.components[k].configurations || []).forEach(function(cfg){
+                                        (cfg.filtervalues || []).forEach(function(fv){ solverSet[fv] = true; });
+                                    });
+                                });
+                                (solveGr.options || []).forEach(function(o){
+                                    (o.filtervalues || []).forEach(function(fv){ solverSet[fv] = true; });
+                                });
+                            }
+                            var solvers = Object.keys(solverSet).length ? Object.keys(solverSet).sort() : DEFAULT_SOLVERS;
+                            // Component keys to render — use grammar shape if present, else
+                            // the typical solve set so the panel is functional offline/older servers.
+                            var compKeys = (solveGr && Object.keys(solveGr.components).length) ? Object.keys(solveGr.components) : ['WEIGHTS','RESTRICTIONS','SOURCE_NODES','DESTINATION_NODES'];
+                            return <div style={{ padding:'8px 4px 4px', fontSize:12 }}>
+                                <div style={{ display:'grid', gridTemplateColumns:'auto 1fr', gap:'6px 12px', alignItems:'center', marginBottom:10 }}>
+                                    <label style={{ color:'#636e72', fontWeight:600 }}>Solver type</label>
+                                    <select value={shSolverType} onChange={function(e){ setShSolverType(e.target.value); }} style={{ padding:'4px 8px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:12, fontFamily:'inherit', outline:'none' }}>
+                                        {solvers.map(function(s){ return <option key={s} value={s}>{s}</option>; })}
+                                    </select>
+                                    <label title="Optional output table for the solve results (server creates it)." style={{ color:'#636e72', fontWeight:600 }}>Solution table</label>
+                                    <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                                        <input value={shSolutionTable} onChange={function(e){ setShSolutionTable(e.target.value); }} placeholder="schema.solution_table (optional)" style={{ flex:1, padding:'4px 8px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:12, fontFamily:'inherit', outline:'none' }}/>
+                                        <label title="Prefix generated SQL with DROP TABLE IF EXISTS <solution_table> so consecutive Runs don't fail because the table already exists." style={{ display:'inline-flex', alignItems:'center', gap:4, cursor:'pointer', fontSize:11, color:'#636e72', whiteSpace:'nowrap' }}>
+                                            <input type="checkbox" checked={shAutoDrop} onChange={function(e){ setShAutoDrop(e.target.checked); }}/> auto-drop
+                                        </label>
+                                    </div>
+                                </div>
+                                {compKeys.map(function(compKey){
+                                    var grammarComp = (solveGr && solveGr.components && solveGr.components[compKey]) || { configurations: [], optional: [], displayName: compKey };
+                                    var displayName = grammarComp.displayName || compKey;
+                                    var typeName = grammarComp.typeName || compKey;
+                                    var isSolveTarget = typeName === 'SOLVETARGETS';
+                                    var sectionMode = (shSectionMode && shSectionMode[compKey]) || 'table';
+                                    var inConstants = isSolveTarget && sectionMode === 'constants';
+                                    // Filter configurations by the selected solver, AND drop any that
+                                    // require NODE_X / NODE_Y — those XY-pair identifiers break the
+                                    // generic NODE collapse and are rarely used in modern graphs.
+                                    var allConfigs = grammarComp.configurations || [];
+                                    var configs = allConfigs
+                                        .filter(function(c){ return !c.filtervalues || !c.filtervalues.length || c.filtervalues.indexOf(shSolverType) !== -1; })
+                                        .filter(function(c){ var ids = c.required || []; return ids.indexOf('NODE_X') === -1 && ids.indexOf('NODE_Y') === -1; });
+                                    var rows = shRows[compKey] || [];
+                                    var defaultTbl = (shSectionTable && shSectionTable[compKey]) || '';
+                                    var defaultTblCols = defaultTbl ? (tableColumnsCache[defaultTbl] || null) : null;
+                                    var sectionColor = displayName === 'WEIGHTS' ? '#6c5ce7' : displayName === 'RESTRICTIONS' ? '#636e72' : '#fd79a8';
+                                    // Collapse empty sections (auto-expand when populated).
+                                    var hasContent = rows.length > 0 || (!inConstants && !!defaultTbl);
+                                    var explicit = shExpanded && Object.prototype.hasOwnProperty.call(shExpanded, compKey) ? shExpanded[compKey] : null;
+                                    var expanded = explicit !== null ? explicit : hasContent;
+                                    return <div key={compKey} style={{ marginBottom:10, paddingBottom:8, borderBottom:'1px solid #f1f2f6' }}>
+                                        <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom: expanded ? 6 : 0, cursor:'pointer' }} onClick={function(){ setShExpanded(function(prev){ var n = Object.assign({}, prev); n[compKey] = !expanded; return n; }); }}>
+                                            <span style={{ fontSize:10, color:'#b2bec3', width:10, userSelect:'none' }}>{expanded ? '▼' : '▶'}</span>
+                                            <span style={{ fontWeight:800, color: sectionColor, fontSize:12, letterSpacing:0.3 }}>{displayName}</span>
+                                            {!expanded && rows.length > 0 && <span style={{ fontSize:10, color:'#b2bec3' }}>{rows.length + ' row' + (rows.length !== 1 ? 's' : '')}</span>}
+                                            {/* Table | Constants mode toggle (SOLVETARGETS sections only). */}
+                                            {expanded && isSolveTarget && (
+                                                <div onClick={function(e){ e.stopPropagation(); }} style={{ display:'inline-flex', gap:0, marginLeft:'auto', border:'1px solid #dfe6e9', borderRadius:5, overflow:'hidden', fontSize:10 }}>
+                                                    {['table','constants'].map(function(m){
+                                                        var active = sectionMode === m;
+                                                        return <span key={m} onClick={function(){ setShSectionMode(function(prev){ var n = Object.assign({}, prev); n[compKey] = m; return n; }); }} title={m === 'table' ? 'Rows are column references against a table' : "Rows are literal SQL expressions (e.g. 'Bill', ST_geomFromText('POINT(-122 37)'))"} style={{ padding:'2px 8px', cursor:'pointer', background: active ? '#fd79a8' : '#fff', color: active ? '#fff' : '#636e72', fontWeight: active ? 700 : 600, userSelect:'none' }}>{m}</span>;
+                                                    })}
+                                                </div>
+                                            )}
+                                            {expanded && configs.length > 0 && <select onClick={function(e){ e.stopPropagation(); }} onChange={function(e){ var i = parseInt(e.target.value); if (!isNaN(i) && configs[i]) { shAddConfig(compKey, configs[i].required, configs[i].label); } e.target.value = ''; }} defaultValue="" style={{ flex:1, padding:'3px 6px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:11, background:'#fff', fontFamily:'inherit' }}>
+                                                <option value="">Select a configuration… (+ Add)</option>
+                                                {configs.map(function(c, i){ return <option key={i} value={i}>{c.label}</option>; })}
+                                            </select>}
+                                        </div>
+                                        {expanded && <React.Fragment>
+                                            {/* Default-table input — hidden in constants mode where each row is its own literal sub-select. */}
+                                            {!inConstants && <div style={{ display:'grid', gridTemplateColumns:'auto 1fr auto', gap:8, alignItems:'center', padding:'3px 0 6px', fontSize:11 }}>
+                                                <label style={{ color:'#636e72', fontWeight:700, fontSize:10, letterSpacing:0.3, textTransform:'uppercase' }}>Default table</label>
+                                                <input list={'sh-deftbl-' + compKey} value={defaultTbl} onChange={function(e){
+                                                    var v = e.target.value;
+                                                    setShSectionTable(function(prev){ var n = Object.assign({}, prev); n[compKey] = v; return n; });
+                                                    if (v && onFetchTableColumns && !Object.prototype.hasOwnProperty.call(tableColumnsCache, v)) onFetchTableColumns(v);
+                                                }} placeholder="schema.table (optional)" style={{ padding:'4px 8px', border:'1px dashed #dfe6e9', borderRadius:5, fontSize:11, fontFamily:'inherit', outline:'none', background: defaultTbl ? '#fff7fb' : '#fff' }}/>
+                                                <datalist id={'sh-deftbl-' + compKey}>
+                                                    {availableTables.filter(function(t){ return t.type !== 'collection'; }).map(function(t){ return <option key={t.name} value={t.name}/>; })}
+                                                </datalist>
+                                                {defaultTbl && <span title="Clear default table" onClick={function(){ setShSectionTable(function(prev){ var n = Object.assign({}, prev); n[compKey] = ''; return n; }); }} style={{ cursor:'pointer', color:'#b2bec3', fontSize:14, padding:'0 4px', userSelect:'none' }}>{'✕'}</span>}
+                                                {!defaultTbl && <span/>}
+                                            </div>}
+                                            {/* Constants-mode hint + free Add Constant button (no configuration picker dependency). */}
+                                            {inConstants && (
+                                                <div style={{ display:'flex', alignItems:'center', gap:8, padding:'3px 0 6px', fontSize:11, color:'#636e72' }}>
+                                                    <span title="Pick a configuration above to spawn an n-tuple combo (its rows are bundled into one (SELECT a, b, c) sub-select). The button below adds a quick single-literal row.">Pick a configuration ↑ for n-tuples, or:</span>
+                                                    <button onClick={function(){ shAddConfig(compKey, ['NODE_NAME'], 'literal'); }} style={{ padding:'3px 8px', border:'1px solid #dfe6e9', borderRadius:5, cursor:'pointer', fontSize:11, background:'#fff', fontFamily:'inherit', color:'#2d3436' }}>+ Add single literal</button>
+                                                </div>
+                                            )}
+                                            {(function(){
+                                                var groups = [];
+                                                rows.forEach(function(r, idx){
+                                                    var g = groups[groups.length - 1];
+                                                    if (g && g.groupId === (r.groupId || null)) { g.items.push({ row: r, idx: idx }); return; }
+                                                    groups.push({ groupId: r.groupId || null, groupLabel: r.groupLabel || '', items: [{ row: r, idx: idx }] });
+                                                });
+                                                return groups.map(function(group, gIdx){
+                                                    var canRemoveAll = !!group.groupId && group.items.length > 1;
+                                                    return <div key={'sg' + gIdx} style={{ marginBottom: canRemoveAll ? 6 : 0, paddingLeft: canRemoveAll ? 6 : 0, borderLeft: canRemoveAll ? '2px solid #f1f2f6' : 'none' }}>
+                                                        {canRemoveAll && (
+                                                            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'2px 0', fontSize:10, color:'#b2bec3' }}>
+                                                                <span style={{ fontWeight:600, letterSpacing:0.3 }}>{group.groupLabel || 'combo'}</span>
+                                                                <span onClick={function(){ shRemoveGroup(compKey, group.groupId); }} title={'Remove the entire combo (' + group.items.length + ' rows)'} style={{ cursor:'pointer', color:'#d63031', fontSize:13, padding:'0 4px', userSelect:'none' }}>{'🗑 combo'}</span>
+                                                            </div>
+                                                        )}
+                                                        {group.items.map(function(it){
+                                                            var r = it.row, idx = it.idx;
+                                                            var aliasName = shAliasFor(compKey, r.id);
+                                                            var aliasTitle = aliasName !== r.id ? r.id + ' → ' + aliasName + ' (Kinetica infers the typed variant from the column data)' : r.id;
+                                                            var rowIsOverride = r.value && r.value.indexOf('.') !== -1;
+                                                            var usingDefault = !!defaultTbl && !rowIsOverride && !inConstants;
+                                                            var pickedTbl = chPickedTable(r.value);
+                                                            var pickedCols = pickedTbl ? (tableColumnsCache[pickedTbl] || null) : null;
+                                                            var ph = inConstants
+                                                                ? ('e.g. ' + constantHintFor(aliasName))
+                                                                : (r.optional ? 'Optional' : (defaultTbl ? 'column' : 'schema.table.column'));
+                                                            var ttl = inConstants
+                                                                ? ('Literal SQL expression for AS ' + aliasName + '. Rows sharing a configuration combo emit as one (SELECT a, b, c) n-tuple sub-select.')
+                                                                : (defaultTbl ? ('Bare column name → joined to ' + defaultTbl + '. Type with dots to override.') : 'Full path: schema.table.column');
+                                                            return <div key={idx} style={{ display:'grid', gridTemplateColumns:'1fr auto auto auto', gap:8, alignItems:'center', padding:'3px 0' }}>
+                                                                <input list={inConstants ? null : ('sh-tables-' + compKey + '-' + idx)} value={r.value} onChange={function(e){
+                                                                    var v = e.target.value;
+                                                                    shUpdateRow(compKey, idx, v);
+                                                                    if (!inConstants) {
+                                                                        var pt = chPickedTable(v);
+                                                                        if (pt && onFetchTableColumns && !Object.prototype.hasOwnProperty.call(tableColumnsCache, pt)) onFetchTableColumns(pt);
+                                                                    }
+                                                                }} placeholder={ph} title={ttl} style={{ padding:'4px 8px', border: '1px solid ' + (r.optional ? '#f1f2f6' : (inConstants || usingDefault ? '#fd79a8' : '#dfe6e9')), borderRadius:5, fontSize:11, fontFamily: inConstants ? 'monospace' : 'inherit', outline:'none', background: r.optional ? '#fafbfc' : '#fff' }}/>
+                                                                {!inConstants && <datalist id={'sh-tables-' + compKey + '-' + idx}>
+                                                                    {usingDefault && defaultTblCols && defaultTblCols.length
+                                                                        ? defaultTblCols.map(function(col){ return <option key={defaultTbl + '|' + col} value={col}/>; })
+                                                                        : (pickedTbl && pickedCols && pickedCols.length)
+                                                                            ? pickedCols.map(function(col){ return <option key={pickedTbl + '|' + col} value={pickedTbl + '.' + col}/>; })
+                                                                            : availableTables.filter(function(t){ return t.type !== 'collection'; }).map(function(t){ return <option key={t.name} value={t.name + '.'}/>; })}
+                                                                </datalist>}
+                                                                <span style={{ fontSize:10, color:'#b2bec3' }}>as</span>
+                                                                <span title={aliasTitle} style={{ fontSize:11, fontWeight:700, color: r.optional ? '#b2bec3' : '#2d3436', cursor: aliasName !== r.id ? 'help' : 'default' }}>{aliasName}</span>
+                                                                <span onClick={function(){ shRemoveRow(compKey, idx); }} title="Remove just this row" style={{ cursor:'pointer', color:'#d63031', fontSize:14, padding:'0 4px', userSelect:'none' }}>{'🗑'}</span>
+                                                            </div>;
+                                                        })}
+                                                    </div>;
+                                                });
+                                            })()}
+                                        </React.Fragment>}
+                                    </div>;
+                                })}
+                                {/* OPTIONS — filtered to those applicable to the selected solver type. */}
+                                <div style={{ marginBottom:10, paddingBottom:8, borderBottom:'1px solid #f1f2f6' }}>
+                                    <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
+                                        <span style={{ fontWeight:800, color:'#fdcb6e', fontSize:12, letterSpacing:0.3 }}>OPTIONS</span>
+                                        <button onClick={shAddOption} title="Add a key/value option" style={{ padding:'3px 8px', border:'1px solid #dfe6e9', borderRadius:5, cursor:'pointer', fontSize:11, background:'#fff', fontFamily:'inherit', color:'#2d3436' }}>+ Add option</button>
+                                        {!(shOptions && shOptions.length) && <span style={{ fontSize:10, color:'#b2bec3' }}>OPTIONS =&gt; KV_PAIRS(key = 'value', …)</span>}
+                                    </div>
+                                    {(shOptions || []).map(function(o, idx){
+                                        return <div key={idx} style={{ display:'grid', gridTemplateColumns:'1fr 1fr auto', gap:8, alignItems:'center', padding:'3px 0' }}>
+                                            <input list="sh-option-keys" value={o.key || ''} onChange={function(e){ shUpdateOption(idx, 'key', e.target.value); }} placeholder="option key" style={{ padding:'4px 8px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:11, fontFamily:'inherit', outline:'none' }}/>
+                                            <input value={o.value || ''} onChange={function(e){ shUpdateOption(idx, 'value', e.target.value); }} placeholder="value" style={{ padding:'4px 8px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:11, fontFamily:'inherit', outline:'none' }}/>
+                                            <span onClick={function(){ shRemoveOption(idx); }} title="Remove" style={{ cursor:'pointer', color:'#d63031', fontSize:14, padding:'0 4px', userSelect:'none' }}>{'🗑'}</span>
+                                        </div>;
+                                    })}
+                                    <datalist id="sh-option-keys">
+                                        {(function(){
+                                            // Only suggest options applicable to the current solver type.
+                                            var opts = (solveGr && solveGr.options) || [];
+                                            return opts
+                                                .filter(function(o){ return !o.filtervalues || !o.filtervalues.length || o.filtervalues.indexOf(shSolverType) !== -1; })
+                                                .map(function(o){ return <option key={o.name} value={o.name}>{o.type + (o.default ? ' (default: ' + o.default + ')' : '')}</option>; });
+                                        })()}
+                                    </datalist>
+                                </div>
+                                <div style={{ display:'flex', gap:6, paddingTop:4 }}>
+                                    <button onClick={shGenerate} style={{ padding:'6px 14px', border:'none', borderRadius:5, cursor:'pointer', fontWeight:700, color:'#fff', background:'#fd79a8', fontSize:12, fontFamily:'inherit' }}>Generate</button>
+                                    <span style={{ fontSize:10, color:'#b2bec3', alignSelf:'center' }}>edits the SQL below — refine manually before Run</span>
+                                </div>
+                            </div>;
+                        })()}
+                    </div>
+                )}
+                {/* Match Helper — orange-accent grammar-driven MATCH_GRAPH builder.
+                    Mirrors the Solve Helper but uses endpointGrammar.match (single
+                    SAMPLES component → SAMPLE_POINTS SQL keyword; filterparam is
+                    `solve_method`: markov_chain / match_supply_demand / …). */}
+                {matchHelper && (
+                    <div>
+                        <div onClick={function(){ setMhShow(function(p){ return !p; }); }} title="Match Helper: pick a solve method, configure sample combos, generate the MATCH_GRAPH SQL." style={{ display:'flex', alignItems:'center', gap:6, cursor:'pointer', userSelect:'none', padding:'2px 0' }}>
+                            <span style={{ fontSize:13, fontWeight:800, color: mhShow ? '#e17055' : '#2d3436' }}>{mhShow ? '▼' : '▶'} Match Helper</span>
+                            {!mhShow && <span style={{ fontSize:10, color:'#b2bec3' }}>— solve method, sample combos, options</span>}
+                        </div>
+                        {mhShow && (function(){
+                            var methodSet = {};
+                            if (matchGr) {
+                                Object.keys(matchGr.components || {}).forEach(function(k){
+                                    (matchGr.components[k].configurations || []).forEach(function(cfg){
+                                        (cfg.filtervalues || []).forEach(function(fv){ methodSet[fv] = true; });
+                                    });
+                                });
+                                (matchGr.options || []).forEach(function(o){
+                                    (o.filtervalues || []).forEach(function(fv){ methodSet[fv] = true; });
+                                });
+                            }
+                            var methods = Object.keys(methodSet).length ? Object.keys(methodSet).sort() : DEFAULT_MATCH_METHODS;
+                            var compKeys = (matchGr && Object.keys(matchGr.components).length) ? Object.keys(matchGr.components) : ['SAMPLE_POINTS'];
+                            return <div style={{ padding:'8px 4px 4px', fontSize:12 }}>
+                                <div style={{ display:'grid', gridTemplateColumns:'auto 1fr', gap:'6px 12px', alignItems:'center', marginBottom:10 }}>
+                                    <label style={{ color:'#636e72', fontWeight:600 }}>Solve method</label>
+                                    <select value={mhSolveMethod} onChange={function(e){ setMhSolveMethod(e.target.value); }} style={{ padding:'4px 8px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:12, fontFamily:'inherit', outline:'none' }}>
+                                        {methods.map(function(s){ return <option key={s} value={s}>{s}</option>; })}
+                                    </select>
+                                    <label title="Optional output table for the match results (server creates it)." style={{ color:'#636e72', fontWeight:600 }}>Solution table</label>
+                                    <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                                        <input value={mhSolutionTable} onChange={function(e){ setMhSolutionTable(e.target.value); }} placeholder="schema.solution_table (optional)" style={{ flex:1, padding:'4px 8px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:12, fontFamily:'inherit', outline:'none' }}/>
+                                        <label title="Prefix generated SQL with DROP TABLE IF EXISTS <solution_table>." style={{ display:'inline-flex', alignItems:'center', gap:4, cursor:'pointer', fontSize:11, color:'#636e72', whiteSpace:'nowrap' }}>
+                                            <input type="checkbox" checked={mhAutoDrop} onChange={function(e){ setMhAutoDrop(e.target.checked); }}/> auto-drop
+                                        </label>
+                                    </div>
+                                </div>
+                                {compKeys.map(function(compKey){
+                                    var grammarComp = (matchGr && matchGr.components && matchGr.components[compKey]) || { configurations: [], optional: [], displayName: compKey };
+                                    var displayName = grammarComp.displayName || compKey;
+                                    var typeName = grammarComp.typeName || compKey;
+                                    var isSamples = typeName === 'SAMPLES';
+                                    var sectionMode = (mhSectionMode && mhSectionMode[compKey]) || 'table';
+                                    var inConstants = isSamples && sectionMode === 'constants';
+                                    var allConfigs = grammarComp.configurations || [];
+                                    var configs = allConfigs
+                                        .filter(function(c){ return !c.filtervalues || !c.filtervalues.length || c.filtervalues.indexOf(mhSolveMethod) !== -1; })
+                                        .filter(function(c){ var ids = c.required || []; return ids.indexOf('SAMPLE_X') === -1 && ids.indexOf('SAMPLE_Y') === -1; });
+                                    var rows = mhRows[compKey] || [];
+                                    var defaultTbl = (mhSectionTable && mhSectionTable[compKey]) || '';
+                                    var defaultTblCols = defaultTbl ? (tableColumnsCache[defaultTbl] || null) : null;
+                                    var sectionColor = '#e17055';
+                                    var hasContent = rows.length > 0 || (!inConstants && !!defaultTbl);
+                                    var explicit = mhExpanded && Object.prototype.hasOwnProperty.call(mhExpanded, compKey) ? mhExpanded[compKey] : null;
+                                    var expanded = explicit !== null ? explicit : (hasContent || isSamples);
+                                    return <div key={compKey} style={{ marginBottom:10, paddingBottom:8, borderBottom:'1px solid #f1f2f6' }}>
+                                        <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom: expanded ? 6 : 0, cursor:'pointer' }} onClick={function(){ setMhExpanded(function(prev){ var n = Object.assign({}, prev); n[compKey] = !expanded; return n; }); }}>
+                                            <span style={{ fontSize:10, color:'#b2bec3', width:10, userSelect:'none' }}>{expanded ? '▼' : '▶'}</span>
+                                            <span style={{ fontWeight:800, color: sectionColor, fontSize:12, letterSpacing:0.3 }}>{displayName}</span>
+                                            {!expanded && rows.length > 0 && <span style={{ fontSize:10, color:'#b2bec3' }}>{rows.length + ' row' + (rows.length !== 1 ? 's' : '')}</span>}
+                                            {expanded && isSamples && (
+                                                <div onClick={function(e){ e.stopPropagation(); }} style={{ display:'inline-flex', gap:0, marginLeft:'auto', border:'1px solid #dfe6e9', borderRadius:5, overflow:'hidden', fontSize:10 }}>
+                                                    {['table','constants'].map(function(m){
+                                                        var active = sectionMode === m;
+                                                        return <span key={m} onClick={function(){ setMhSectionMode(function(prev){ var n = Object.assign({}, prev); n[compKey] = m; return n; }); }} title={m === 'table' ? 'Rows are column references against a table' : "Rows are literal SQL expressions (e.g. ST_GEOMFROMTEXT('POINT(...)'))"} style={{ padding:'2px 8px', cursor:'pointer', background: active ? '#e17055' : '#fff', color: active ? '#fff' : '#636e72', fontWeight: active ? 700 : 600, userSelect:'none' }}>{m}</span>;
+                                                    })}
+                                                </div>
+                                            )}
+                                            {expanded && configs.length > 0 && <select onClick={function(e){ e.stopPropagation(); }} onChange={function(e){ var i = parseInt(e.target.value); if (!isNaN(i) && configs[i]) { mhAddConfig(compKey, configs[i].required, configs[i].label); } e.target.value = ''; }} defaultValue="" style={{ flex:1, padding:'3px 6px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:11, background:'#fff', fontFamily:'inherit' }}>
+                                                <option value="">Select a configuration… (+ Add)</option>
+                                                {configs.map(function(c, i){ return <option key={i} value={i}>{c.label}</option>; })}
+                                            </select>}
+                                        </div>
+                                        {expanded && <React.Fragment>
+                                            {!inConstants && <div style={{ display:'grid', gridTemplateColumns:'auto 1fr auto', gap:8, alignItems:'center', padding:'3px 0 6px', fontSize:11 }}>
+                                                <label style={{ color:'#636e72', fontWeight:700, fontSize:10, letterSpacing:0.3, textTransform:'uppercase' }}>Default table</label>
+                                                <input list={'mh-deftbl-' + compKey} value={defaultTbl} onChange={function(e){
+                                                    var v = e.target.value;
+                                                    setMhSectionTable(function(prev){ var n = Object.assign({}, prev); n[compKey] = v; return n; });
+                                                    if (v && onFetchTableColumns && !Object.prototype.hasOwnProperty.call(tableColumnsCache, v)) onFetchTableColumns(v);
+                                                }} placeholder="schema.table (optional)" style={{ padding:'4px 8px', border:'1px dashed #dfe6e9', borderRadius:5, fontSize:11, fontFamily:'inherit', outline:'none', background: defaultTbl ? '#fff7f3' : '#fff' }}/>
+                                                <datalist id={'mh-deftbl-' + compKey}>
+                                                    {availableTables.filter(function(t){ return t.type !== 'collection'; }).map(function(t){ return <option key={t.name} value={t.name}/>; })}
+                                                </datalist>
+                                                {defaultTbl && <span title="Clear default table" onClick={function(){ setMhSectionTable(function(prev){ var n = Object.assign({}, prev); n[compKey] = ''; return n; }); }} style={{ cursor:'pointer', color:'#b2bec3', fontSize:14, padding:'0 4px', userSelect:'none' }}>{'✕'}</span>}
+                                                {!defaultTbl && <span/>}
+                                            </div>}
+                                            {inConstants && (
+                                                <div style={{ display:'flex', alignItems:'center', gap:8, padding:'3px 0 6px', fontSize:11, color:'#636e72' }}>
+                                                    <span title="Pick a configuration above (e.g., SAMPLE_ID + SAMPLE_WKTPOINT) to spawn an n-tuple combo — its rows bundle into one (SELECT 1 AS ID, ST_GEOMFROMTEXT('POINT(...)') AS WKTPOINT) sub-select. The button below adds a quick single-literal row.">Pick a configuration ↑ for n-tuples, or:</span>
+                                                    <button onClick={function(){ mhAddConfig(compKey, ['SAMPLE_WKTPOINT'], 'literal'); }} style={{ padding:'3px 8px', border:'1px solid #dfe6e9', borderRadius:5, cursor:'pointer', fontSize:11, background:'#fff', fontFamily:'inherit', color:'#2d3436' }}>+ Add single literal</button>
+                                                </div>
+                                            )}
+                                            {(function(){
+                                                var groups = [];
+                                                rows.forEach(function(r, idx){
+                                                    var g = groups[groups.length - 1];
+                                                    if (g && g.groupId === (r.groupId || null)) { g.items.push({ row: r, idx: idx }); return; }
+                                                    groups.push({ groupId: r.groupId || null, groupLabel: r.groupLabel || '', items: [{ row: r, idx: idx }] });
+                                                });
+                                                return groups.map(function(group, gIdx){
+                                                    var canRemoveAll = !!group.groupId && group.items.length > 1;
+                                                    return <div key={'mg' + gIdx} style={{ marginBottom: canRemoveAll ? 6 : 0, paddingLeft: canRemoveAll ? 6 : 0, borderLeft: canRemoveAll ? '2px solid #f1f2f6' : 'none' }}>
+                                                        {canRemoveAll && (
+                                                            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'2px 0', fontSize:10, color:'#b2bec3' }}>
+                                                                <span style={{ fontWeight:600, letterSpacing:0.3 }}>{group.groupLabel || 'combo'}</span>
+                                                                <span onClick={function(){ mhRemoveGroup(compKey, group.groupId); }} title={'Remove the entire combo (' + group.items.length + ' rows)'} style={{ cursor:'pointer', color:'#d63031', fontSize:13, padding:'0 4px', userSelect:'none' }}>{'🗑 combo'}</span>
+                                                            </div>
+                                                        )}
+                                                        {group.items.map(function(it){
+                                                            var r = it.row, idx = it.idx;
+                                                            var aliasName = mhAliasFor(compKey, r.id);
+                                                            var aliasTitle = aliasName !== r.id ? r.id + ' → ' + aliasName + ' (SAMPLE_ prefix stripped; Kinetica infers the typed variant from the column data)' : r.id;
+                                                            var rowIsOverride = r.value && r.value.indexOf('.') !== -1;
+                                                            var usingDefault = !!defaultTbl && !rowIsOverride && !inConstants;
+                                                            var pickedTbl = chPickedTable(r.value);
+                                                            var pickedCols = pickedTbl ? (tableColumnsCache[pickedTbl] || null) : null;
+                                                            var ph = inConstants
+                                                                ? ('e.g. ' + constantHintFor(aliasName))
+                                                                : (r.optional ? 'Optional' : (defaultTbl ? 'column' : 'schema.table.column'));
+                                                            var ttl = inConstants
+                                                                ? ('Literal SQL expression for AS ' + aliasName + '. Rows sharing a configuration combo emit as one (SELECT a, b, c) n-tuple sub-select.')
+                                                                : (defaultTbl ? ('Bare column name → joined to ' + defaultTbl + '. Type with dots to override.') : 'Full path: schema.table.column');
+                                                            return <div key={idx} style={{ display:'grid', gridTemplateColumns:'1fr auto auto auto', gap:8, alignItems:'center', padding:'3px 0' }}>
+                                                                <input list={inConstants ? null : ('mh-tables-' + compKey + '-' + idx)} value={r.value} onChange={function(e){
+                                                                    var v = e.target.value;
+                                                                    mhUpdateRow(compKey, idx, v);
+                                                                    if (!inConstants) {
+                                                                        var pt = chPickedTable(v);
+                                                                        if (pt && onFetchTableColumns && !Object.prototype.hasOwnProperty.call(tableColumnsCache, pt)) onFetchTableColumns(pt);
+                                                                    }
+                                                                }} placeholder={ph} title={ttl} style={{ padding:'4px 8px', border: '1px solid ' + (r.optional ? '#f1f2f6' : (inConstants || usingDefault ? '#e17055' : '#dfe6e9')), borderRadius:5, fontSize:11, fontFamily: inConstants ? 'monospace' : 'inherit', outline:'none', background: r.optional ? '#fafbfc' : '#fff' }}/>
+                                                                {!inConstants && <datalist id={'mh-tables-' + compKey + '-' + idx}>
+                                                                    {usingDefault && defaultTblCols && defaultTblCols.length
+                                                                        ? defaultTblCols.map(function(col){ return <option key={defaultTbl + '|' + col} value={col}/>; })
+                                                                        : (pickedTbl && pickedCols && pickedCols.length)
+                                                                            ? pickedCols.map(function(col){ return <option key={pickedTbl + '|' + col} value={pickedTbl + '.' + col}/>; })
+                                                                            : availableTables.filter(function(t){ return t.type !== 'collection'; }).map(function(t){ return <option key={t.name} value={t.name + '.'}/>; })}
+                                                                </datalist>}
+                                                                <span style={{ fontSize:10, color:'#b2bec3' }}>as</span>
+                                                                <span title={aliasTitle} style={{ fontSize:11, fontWeight:700, color: r.optional ? '#b2bec3' : '#2d3436', cursor: aliasName !== r.id ? 'help' : 'default' }}>{aliasName}</span>
+                                                                <span onClick={function(){ mhRemoveRow(compKey, idx); }} title="Remove just this row" style={{ cursor:'pointer', color:'#d63031', fontSize:14, padding:'0 4px', userSelect:'none' }}>{'🗑'}</span>
+                                                            </div>;
+                                                        })}
+                                                    </div>;
+                                                });
+                                            })()}
+                                        </React.Fragment>}
+                                    </div>;
+                                })}
+                                {/* OPTIONS — filtered to those applicable to the selected solve_method. */}
+                                <div style={{ marginBottom:10, paddingBottom:8, borderBottom:'1px solid #f1f2f6' }}>
+                                    <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
+                                        <span style={{ fontWeight:800, color:'#fdcb6e', fontSize:12, letterSpacing:0.3 }}>OPTIONS</span>
+                                        <button onClick={mhAddOption} title="Add a key/value option" style={{ padding:'3px 8px', border:'1px solid #dfe6e9', borderRadius:5, cursor:'pointer', fontSize:11, background:'#fff', fontFamily:'inherit', color:'#2d3436' }}>+ Add option</button>
+                                        {!(mhOptions && mhOptions.length) && <span style={{ fontSize:10, color:'#b2bec3' }}>OPTIONS =&gt; KV_PAIRS(key = 'value', …)</span>}
+                                    </div>
+                                    {(mhOptions || []).map(function(o, idx){
+                                        return <div key={idx} style={{ display:'grid', gridTemplateColumns:'1fr 1fr auto', gap:8, alignItems:'center', padding:'3px 0' }}>
+                                            <input list="mh-option-keys" value={o.key || ''} onChange={function(e){ mhUpdateOption(idx, 'key', e.target.value); }} placeholder="option key" style={{ padding:'4px 8px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:11, fontFamily:'inherit', outline:'none' }}/>
+                                            <input value={o.value || ''} onChange={function(e){ mhUpdateOption(idx, 'value', e.target.value); }} placeholder="value" style={{ padding:'4px 8px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:11, fontFamily:'inherit', outline:'none' }}/>
+                                            <span onClick={function(){ mhRemoveOption(idx); }} title="Remove" style={{ cursor:'pointer', color:'#d63031', fontSize:14, padding:'0 4px', userSelect:'none' }}>{'🗑'}</span>
+                                        </div>;
+                                    })}
+                                    <datalist id="mh-option-keys">
+                                        {(function(){
+                                            var opts = (matchGr && matchGr.options) || [];
+                                            return opts
+                                                .filter(function(o){ return !o.filtervalues || !o.filtervalues.length || o.filtervalues.indexOf(mhSolveMethod) !== -1; })
+                                                .map(function(o){ return <option key={o.name} value={o.name}>{o.type + (o.default ? ' (default: ' + o.default + ')' : '')}</option>; });
+                                        })()}
+                                    </datalist>
+                                </div>
+                                <div style={{ display:'flex', gap:6, paddingTop:4 }}>
+                                    <button onClick={mhGenerate} style={{ padding:'6px 14px', border:'none', borderRadius:5, cursor:'pointer', fontWeight:700, color:'#fff', background:'#e17055', fontSize:12, fontFamily:'inherit' }}>Generate</button>
+                                    <span style={{ fontSize:10, color:'#b2bec3', alignSelf:'center' }}>edits the SQL below — refine manually before Run</span>
+                                </div>
+                            </div>;
+                        })()}
                     </div>
                 )}
                 {/* Query Helper (suppressed when panel opened from a Table — Helper is for GQL/graph use only) */}
@@ -2190,10 +3382,14 @@ function QueryPanel(props) {
                     placeholder="Enter SQL query... (Ctrl+Enter to run)"
                     spellCheck="false"
                     style={{
-                        resize:'none', border:'1px solid #dfe6e9', borderRadius:6,
+                        // Flex-grow inside the top region so it takes whatever
+                        // vertical space the helper isn't using. minHeight keeps
+                        // a comfortable floor; resize:vertical lets the user grow
+                        // it past the panel's allowance when needed.
+                        resize:'vertical', border:'1px solid #dfe6e9', borderRadius:6,
                         padding:10, fontFamily:'monospace', fontSize:12, outline:'none',
-                        flexShrink:0,
-                        minHeight: activeTab ? 80 : 120, maxHeight: activeTab ? 120 : 200, background:'#fafafa',
+                        flex:'1 1 ' + (activeTab ? '160px' : '180px'),
+                        minHeight: activeTab ? 100 : 140, maxHeight: 'none', background:'#fafafa',
                     }}
                 />
                 <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
@@ -2213,7 +3409,8 @@ function QueryPanel(props) {
             {result && hasResults && (
                 <div style={{ display:'flex', gap:6, padding:'6px 10px', flexShrink:0, borderTop:'1px solid #eee' }}>
                     {tableData.rows.length > 0 && tabBtn('results', 'View Results (' + tableData.rows.length + ')')}
-                    {hasHops && tabBtn('graph', 'Visualization (' + graphData.nodes.length + ' nodes)')}
+                    {hasVizData && tabBtn('graph', 'Visualization (' + effectiveGraphData.nodes.length + ' nodes' + (hasSolvePath ? ', ' + tableData.rows.length + ' paths' : '') + ')')}
+                    {hasSolveMap && tabBtn('map', 'Map (' + tableData.rows.length + (xyCols && !wktRouteCol ? ' points' : ' rows') + ')')}
                 </div>
             )}
 
@@ -2290,6 +3487,15 @@ function QueryPanel(props) {
                             )}
                         </div>
                     )}
+                </div>
+            )}
+
+            {/* Map tab — Deck.gl PathLayer for solve WKT routes. Only rendered
+                when activeTab === 'map' so we don't pay deck.gl init cost
+                otherwise. SolveMapView handles its own MapLibre + Deck setup. */}
+            {activeTab === 'map' && hasSolveMap && (
+                <div style={{ flex:1, display:'flex', flexDirection:'column', minHeight:0, position:'relative' }}>
+                    <SolveMapView rows={tableData.rows} wktCol={wktRouteCol} xyCols={xyCols} basemapStyle="light"/>
                 </div>
             )}
 
@@ -4857,6 +6063,11 @@ function App() {
         },
     };
     const [graphGrammar, setGraphGrammar] = useState(DEFAULT_GRAMMAR);
+    // Full per-endpoint grammar from /show/graph/grammar. Shape:
+    //   { create:{components,filterparams,options}, solve:{...}, match:{...}, query:{...} }
+    // Populated on Connect; consumed by SolvePanel/MatchPanel (to come). The
+    // Create Helper still uses the legacy `graphGrammar` view above.
+    const [endpointGrammar, setEndpointGrammar] = useState({});
     // Lazy column cache for the Create Helper: { 'schema.table': ['col1','col2',...] }.
     // Empty array entries denote either a fetch in-flight or "fetched, no columns".
     // We populate on demand when the user types a known table name followed by a dot.
@@ -5010,6 +6221,40 @@ function App() {
     // Open a new Query panel with the CREATE GRAPH template + Create Helper UI.
     // Hides the Query Helper (which is for GQL/select queries); the user can pick
     // nodes/edges tables in the helper and click Generate to rewrite the SQL.
+    // Open a new QueryPanel in SolveHelper mode. The panel reuses the Create-Helper
+    // section UI but iterates over `endpointGrammar.solve.components` (typically
+    // WEIGHTS, RESTRICTIONS, SOLVETARGETS×2) and generates an
+    // `EXECUTE FUNCTION SOLVE_GRAPH(GRAPH => '<active>', SOLVER_TYPE => '<x>', …)` SQL.
+    function openSolvePanel() {
+        var name = activeGraph || '<graph_name>';
+        var template = "EXECUTE FUNCTION SOLVE_GRAPH(\n" +
+                       "    GRAPH => '" + name + "',\n" +
+                       "    SOLVER_TYPE => 'SHORTEST_PATH'\n" +
+                       ");";
+        queryIdCounter.current++;
+        setQueryPanels(function(prev){ return prev.concat([{
+            id: queryIdCounter.current,
+            initialSql: template, initialTab: null, stateRef: { current: null },
+            autoRun: false, hideQueryHelper: true, solveHelper: true,
+        }]); });
+    }
+    // Open a new QueryPanel in MatchHelper mode against `endpointGrammar.match`.
+    // Single component (SAMPLES → SAMPLE_POINTS); filterparam is `solve_method`
+    // (markov_chain / match_supply_demand / match_od_pairs / match_loops /
+    // match_charging_stations / match_route_detour / …).
+    function openMatchPanel() {
+        var name = activeGraph || '<graph_name>';
+        var template = "EXECUTE FUNCTION MATCH_GRAPH(\n" +
+                       "    GRAPH => '" + name + "',\n" +
+                       "    SOLVE_METHOD => 'markov_chain'\n" +
+                       ");";
+        queryIdCounter.current++;
+        setQueryPanels(function(prev){ return prev.concat([{
+            id: queryIdCounter.current,
+            initialSql: template, initialTab: null, stateRef: { current: null },
+            autoRun: false, hideQueryHelper: true, matchHelper: true,
+        }]); });
+    }
     function openCreateGraphPanel() {
         var template = 'CREATE OR REPLACE DIRECTED GRAPH new_graph (\n' +
                        '    NODES => INPUT_TABLES(\n' +
@@ -5117,6 +6362,7 @@ function App() {
     // Generate. Each component section groups rows by table and emits one
     // (SELECT col AS alias, … FROM table) sub-select per group.
     function buildAlterSqlFromCh(ch) {
+        var sectionTable = ch.sectionTable || {};
         var parseRef = function(s) {
             var t = String(s || '').trim();
             var i = t.lastIndexOf('.');
@@ -5125,9 +6371,12 @@ function App() {
         var buildSection = function(comp) {
             var rows = (ch.rows[comp] || []).filter(function(r){ return r.value && r.value.trim(); });
             if (!rows.length) return '';
+            var defaultTbl = (sectionTable[comp] || '').trim();
             var byTable = {};
             rows.forEach(function(r){
                 var ref = parseRef(r.value);
+                // Bare column → join to section default table (if set).
+                if (!ref.table && defaultTbl) { ref = { table: defaultTbl, column: r.value.trim() }; }
                 if (!ref.table || !ref.column) return;
                 (byTable[ref.table] = byTable[ref.table] || []).push({ id: r.id, col: ref.column });
             });
@@ -5170,8 +6419,33 @@ function App() {
                 openCreateGraphPanel();
                 return;
             }
+            // When all rows in a component reference one table, fold that table into
+            // `sectionTable` and strip the path off each row's value so the user sees
+            // bare column names. Mixed-table sections leave full paths in place.
+            var sectionTable = { NODES:'', EDGES:'', WEIGHTS:'', RESTRICTIONS:'' };
+            ['NODES','EDGES','WEIGHTS','RESTRICTIONS'].forEach(function(c){
+                var arr = ch.rows[c] || []; if (!arr.length) return;
+                var tables = {};
+                arr.forEach(function(r){
+                    var v = String(r.value || ''); var i = v.lastIndexOf('.');
+                    if (i < 0) return;
+                    tables[v.slice(0, i)] = true;
+                });
+                var keys = Object.keys(tables);
+                if (keys.length === 1) {
+                    var t = keys[0];
+                    sectionTable[c] = t;
+                    arr.forEach(function(r){
+                        var v = String(r.value || ''); var i = v.lastIndexOf('.');
+                        if (i < 0) return;
+                        var rowTbl = v.slice(0, i);
+                        if (rowTbl === t) r.value = v.slice(i + 1);
+                    });
+                }
+            });
+            ch.sectionTable = sectionTable;
             queryIdCounter.current++;
-            var initialHelper = { create: { show: true, graphName: ch.graphName, directed: ch.directed, rows: ch.rows, options: ch.options, mode: 'modify' } };
+            var initialHelper = { create: { show: true, graphName: ch.graphName, directed: ch.directed, rows: ch.rows, sectionTable: sectionTable, options: ch.options, mode: 'modify' } };
             // Pre-generate the ALTER GRAPH form from the parsed rows so the textarea
             // opens with the right SQL — otherwise the panel boots showing the raw
             // CREATE OR REPLACE that came from /show/graph (the user would have to
@@ -5266,64 +6540,170 @@ function App() {
                 setTables(rows);
             }
         } catch(e) { /* ignore — Tables tab will show empty */ }
-        // Best-effort fetch of the graph component/identifier grammar. Various
-        // shapes are accepted (server format may differ across versions); we
-        // normalise to { COMPONENT: { configurations: [{label, required}], optional: [...] } }.
-        // On any failure or missing component, the DEFAULT_GRAMMAR fallback applies.
+        // Best-effort fetch of the per-endpoint graph component/identifier grammar.
+        // The server (`/show/graph/grammar` → `components_json`) returns the shape:
+        //   {
+        //     "endpoints": {
+        //       "/create/graph": { components:[{name, identifiers, configurations:[{identifiers, filtervalues}], addons}], filterparams, options:[{name, type, default, filtervalues, internal}], outputs },
+        //       "/match/graph":  { ... filterparams:["solve_method"] ... },
+        //       "/query/graph":  { ... },
+        //       "/solve/graph":  { ... filterparams:["solver_type"] ... }
+        //     }
+        //   }
+        // We normalise each endpoint to:
+        //   { components: { NODES: { configurations:[{label, required, filtervalues}], optional:[ids] }, ... },
+        //     filterparams: [...],
+        //     options: [{name, type, default, filtervalues, internal}] }
+        // The Create Helper consumes `endpointGrammar.create.components` (also exposed
+        // as the legacy `graphGrammar` for backward compat); the SolvePanel/MatchPanel
+        // consume the equivalent slot for their respective endpoints. Older servers
+        // returning the flat `component_grammar` shape are still supported as a
+        // fallback for the create endpoint.
+        // Endpoint-specific role names for components that appear more than once.
+        // The grammar reports the component *type* (e.g., SOLVETARGETS for solve),
+        // but the SQL keyword (and the matching request schema field) uses role
+        // names — for /solve/graph that's SOURCE_NODES (1st SOLVETARGETS) and
+        // DESTINATION_NODES (2nd). `displayName` is what we both render in the UI
+        // and emit in the generated `<NAME> => INPUT_TABLES(...)` SQL clause.
+        var ENDPOINT_ROLE_NAMES = {
+            '/solve/graph': { 'SOLVETARGETS': ['SOURCE_NODES', 'DESTINATION_NODES'] },
+            // /match/graph has a single SAMPLES component; the SQL keyword is
+            // SAMPLE_POINTS (see TestSolver6 EXECUTE FUNCTION MATCH_GRAPH example).
+            '/match/graph': { 'SAMPLES': ['SAMPLE_POINTS'] },
+        };
+        var normalizeEndpoint = function(endpointJson, endpointPath) {
+            // `outputs` is an array of column-schemas (multiple output shapes per
+            // solver category); each entry is a list of `{name, type, format, filtervalues}`.
+            // Empty `{"name":"", ...}` placeholder slots are dropped here so downstream
+            // code only sees real columns.
+            var outputs = (endpointJson.outputs || []).map(function(schema){
+                return (schema || []).filter(function(c){ return c && c.name; }).map(function(c){
+                    return { name: c.name, type: c.type || '', format: c.format || '', filtervalues: c.filtervalues || [] };
+                });
+            });
+            var out = { components: {}, filterparams: endpointJson.filterparams || [], options: endpointJson.options || [], outputs: outputs };
+            var comps = endpointJson.components || [];
+            var roleMap = ENDPOINT_ROLE_NAMES[endpointPath] || {};
+            var seenCount = {}; // component type → how many we've already seen for this endpoint
+            comps.forEach(function(c, idx) {
+                if (!c || !c.name) return;
+                var typeName = c.name;
+                var occur = seenCount[typeName] || 0;
+                seenCount[typeName] = occur + 1;
+                // Resolve display/SQL name: role-rename if defined, else suffix duplicates.
+                var displayName;
+                if (roleMap[typeName] && roleMap[typeName][occur]) {
+                    displayName = roleMap[typeName][occur];
+                } else if (occur > 0) {
+                    displayName = typeName + '_' + (occur + 1);
+                } else {
+                    displayName = typeName;
+                }
+                // Object key — must be unique. Prefer the displayName so callers can
+                // address SOURCE_NODES / DESTINATION_NODES directly.
+                var key = displayName;
+                if (out.components[key]) key = displayName + '_' + idx;
+                out.components[key] = {
+                    displayName: displayName,
+                    typeName: typeName, // original component type from the grammar
+                    configurations: (c.configurations || []).map(function(cfg) {
+                        var ids = cfg.identifiers || cfg.required || [];
+                        return {
+                            label: cfg.label || ids.join(' + '),
+                            required: ids,
+                            filtervalues: cfg.filtervalues || [],
+                        };
+                    }),
+                    optional: c.addons || c.optional || [],
+                };
+            });
+            return out;
+        };
         try {
             var gr = await api.request(creds.url + '/show/graph/grammar', { options:{} }, creds);
             if (!gr._cancelled) {
                 var grOuter = safeParse(gr.data_str) || gr || {};
-                var raw = grOuter.component_grammar || grOuter.components || null;
-                if (raw) {
-                    var merged = JSON.parse(JSON.stringify(DEFAULT_GRAMMAR));
-                    var normalize = function(comp, src) {
-                        if (!src) return;
-                        if (Array.isArray(src)) {
-                            // Old/flat shape: array of {label, identifiers} — treat each
-                            // entry as a configuration where all identifiers are required.
-                            merged[comp] = { configurations: src.map(function(e) {
-                                var ids = e.identifiers || e.required || [];
-                                return { label: e.label || ids.join(' + '), required: ids };
-                            }), optional: (merged[comp] && merged[comp].optional) || [] };
-                        } else if (src.configurations || src.required) {
-                            merged[comp] = {
-                                configurations: (src.configurations || []).map(function(cfg) {
-                                    var ids = cfg.required || cfg.identifiers || [];
-                                    return { label: cfg.label || ids.join(' + '), required: ids };
-                                }),
-                                optional: src.optional || [],
+                // New shape: { endpoints: { '/create/graph': {...}, '/solve/graph': {...}, ... } }
+                // Older builds: shipped `component_grammar` keyed by component name (create only).
+                var endpointsRoot = grOuter.endpoints || (grOuter.components_json && (safeParse(grOuter.components_json) || {}).endpoints) || null;
+                if (endpointsRoot) {
+                    var ep = {};
+                    var keyMap = { '/create/graph': 'create', '/solve/graph': 'solve', '/match/graph': 'match', '/query/graph': 'query' };
+                    Object.keys(endpointsRoot).forEach(function(k){
+                        var alias = keyMap[k] || k.replace('/', '').replace('/', '_');
+                        ep[alias] = normalizeEndpoint(endpointsRoot[k] || {}, k);
+                    });
+                    setEndpointGrammar(ep);
+                    // Maintain the legacy `graphGrammar` view used by the Create Helper.
+                    if (ep.create && ep.create.components) {
+                        var merged = JSON.parse(JSON.stringify(DEFAULT_GRAMMAR));
+                        Object.keys(ep.create.components).forEach(function(k){
+                            merged[k] = {
+                                configurations: ep.create.components[k].configurations || [],
+                                optional: ep.create.components[k].optional || [],
                             };
-                        }
-                    };
-                    if (Array.isArray(raw)) {
-                        raw.forEach(function(c){ if (c && c.name) normalize(c.name, c); });
-                    } else {
-                        Object.keys(raw).forEach(function(k){ normalize(k, raw[k]); });
+                        });
+                        setGraphGrammar(merged);
                     }
-                    setGraphGrammar(merged);
+                } else {
+                    // Legacy fallback path — only covers /create/graph.
+                    var raw = grOuter.component_grammar || grOuter.components || null;
+                    if (raw) {
+                        var merged2 = JSON.parse(JSON.stringify(DEFAULT_GRAMMAR));
+                        var normalize = function(comp, src) {
+                            if (!src) return;
+                            if (Array.isArray(src)) {
+                                merged2[comp] = { configurations: src.map(function(e) {
+                                    var ids = e.identifiers || e.required || [];
+                                    return { label: e.label || ids.join(' + '), required: ids };
+                                }), optional: (merged2[comp] && merged2[comp].optional) || [] };
+                            } else if (src.configurations || src.required) {
+                                merged2[comp] = {
+                                    configurations: (src.configurations || []).map(function(cfg) {
+                                        var ids = cfg.required || cfg.identifiers || [];
+                                        return { label: cfg.label || ids.join(' + '), required: ids };
+                                    }),
+                                    optional: src.optional || [],
+                                };
+                            }
+                        };
+                        if (Array.isArray(raw)) {
+                            raw.forEach(function(c){ if (c && c.name) normalize(c.name, c); });
+                        } else {
+                            Object.keys(raw).forEach(function(k){ normalize(k, raw[k]); });
+                        }
+                        setGraphGrammar(merged2);
+                    }
                 }
             }
         } catch(e) { /* keep defaults */ }
     };
 
     /* Load label counts (fast refresh) */
-    var loadGraphDetails = useCallback(async function(graphName) {
+    var loadGraphDetails = useCallback(async function(graphName, loadOpts) {
         if (!graphName || !credentials.url) return;
         var graphChanged = graphName !== activeGraph;
+        var preservePanels = !!(loadOpts && loadOpts.preservePanels);
         setActiveGraph(graphName);
         if (graphChanged) {
             setDotString(null); setShowOntology(false);
             setLabelData({ total_labeled_nodes:0, total_unlabeled_nodes:0, total_labeled_edges:0, total_unlabeled_edges:0 });
             setSelectedNodeLabels([]); setSelectedEdgeLabels([]);
-            // Keep graph-independent panels (Create-Helper, Table previews) — minimize
-            // them to a pill so they survive the switch. Plain Query panels reference
-            // the previous active graph in their GQL, so those are dropped.
-            setQueryPanels(function(prev){
-                return prev
-                    .filter(function(p){ return p.createHelper || p.hideQueryHelper; })
-                    .map(function(p){ return Object.assign({}, p, { minimized: true, autoRun: false }); });
-            });
+            // Default: drop every panel — the user is navigating to a different
+            // graph context, and stale S*/C*/T*/Q* panels referencing the old
+            // graph are noise. The one exception is `preservePanels: true`,
+            // which the post-create-Open flow uses to keep the just-created C*
+            // panel alive (its state was just captured by onMinimize → the user
+            // expects to find their just-finished work as a minimized pill).
+            if (preservePanels) {
+                setQueryPanels(function(prev){
+                    return prev
+                        .filter(function(p){ return p.createHelper || p.solveHelper || p.matchHelper || p.hideQueryHelper; })
+                        .map(function(p){ return Object.assign({}, p, { minimized: true, autoRun: false }); });
+                });
+            } else {
+                setQueryPanels([]);
+            }
             setGraphTableData(null); setGraphTableError(null);
             setShowForceGraph(false); setFetchProgress(null);
             setGraphCounts({ nodes:0, edges:0 });
@@ -6360,7 +7740,10 @@ function App() {
             queries: queryPanels.map(function(panel) {
                 var s = panel.stateRef && panel.stateRef.current;
                 var h = s && s.helper ? s.helper : null;
-                var kind = panel.createHelper ? 'create' : (panel.hideQueryHelper ? 'table' : 'query');
+                var kind = panel.createHelper ? 'create'
+                         : panel.solveHelper ? 'solve'
+                         : panel.matchHelper ? 'match'
+                         : (panel.hideQueryHelper ? 'table' : 'query');
                 return { kind: kind, sql: s ? s.sql : panel.initialSql, activeTab: s ? s.activeTab : panel.initialTab, helper: h };
             }).filter(function(q) {
                 // Persist only panels that actually have user content for their kind.
@@ -6381,6 +7764,30 @@ function App() {
                 if (q.kind === 'table') {
                     // Table panels always carry their own SQL (SELECT * / DESCRIBE) — keep if SQL present.
                     return !!(q.sql && q.sql.trim());
+                }
+                if (q.kind === 'solve') {
+                    // Solve panels: keep when SQL is present OR the helper has any rows/options.
+                    if (q.sql && q.sql.trim()) return true;
+                    var sh = q.helper && q.helper.solve;
+                    if (sh && sh.rows) {
+                        for (var sk in sh.rows) {
+                            var sarr = sh.rows[sk] || [];
+                            for (var si = 0; si < sarr.length; si++) if (sarr[si] && sarr[si].value && String(sarr[si].value).trim()) return true;
+                        }
+                    }
+                    return false;
+                }
+                if (q.kind === 'match') {
+                    // Match panels: same keep-rule shape as solve.
+                    if (q.sql && q.sql.trim()) return true;
+                    var mh = q.helper && q.helper.match;
+                    if (mh && mh.rows) {
+                        for (var mk in mh.rows) {
+                            var marr = mh.rows[mk] || [];
+                            for (var mi = 0; mi < marr.length; mi++) if (marr[mi] && marr[mi].value && String(marr[mi].value).trim()) return true;
+                        }
+                    }
+                    return false;
                 }
                 // 'query' kind: keep when SQL is non-empty, OR Query Helper has selections.
                 if (q.sql && q.sql.trim()) return true;
@@ -6447,8 +7854,10 @@ function App() {
                             var panels = session.queries.map(function(q) {
                                 queryIdCounter.current++;
                                 var isCreate = q.kind === 'create' || !!q.createHelper;
+                                var isSolve = q.kind === 'solve' || !!q.solveHelper;
+                                var isMatch = q.kind === 'match' || !!q.matchHelper;
                                 var isTable = q.kind === 'table';
-                                return { id: queryIdCounter.current, initialSql: q.sql || '', initialTab: null, stateRef: { current: null }, autoRun: false, initialHelper: q.helper || null, createHelper: isCreate, hideQueryHelper: isCreate || isTable };
+                                return { id: queryIdCounter.current, initialSql: q.sql || '', initialTab: null, stateRef: { current: null }, autoRun: false, initialHelper: q.helper || null, createHelper: isCreate, solveHelper: isSolve, matchHelper: isMatch, hideQueryHelper: isCreate || isSolve || isMatch || isTable };
                             });
                             setQueryPanels(panels);
                         }
@@ -6474,8 +7883,10 @@ function App() {
                             var panels = session.queries.map(function(q) {
                                 queryIdCounter.current++;
                                 var isCreate = q.kind === 'create' || !!q.createHelper;
+                                var isSolve = q.kind === 'solve' || !!q.solveHelper;
+                                var isMatch = q.kind === 'match' || !!q.matchHelper;
                                 var isTable = q.kind === 'table';
-                                return { id: queryIdCounter.current, initialSql: q.sql || '', initialTab: q.activeTab || null, stateRef: { current: null }, autoRun: isCreate ? false : autoRunQueries, initialHelper: q.helper || null, createHelper: isCreate, hideQueryHelper: isCreate || isTable };
+                                return { id: queryIdCounter.current, initialSql: q.sql || '', initialTab: q.activeTab || null, stateRef: { current: null }, autoRun: (isCreate || isSolve || isMatch) ? false : autoRunQueries, initialHelper: q.helper || null, createHelper: isCreate, solveHelper: isSolve, matchHelper: isMatch, hideQueryHelper: isCreate || isSolve || isMatch || isTable };
                             });
                             setQueryPanels(panels);
                         }
@@ -6590,7 +8001,6 @@ function App() {
                 tables={tables} listMode={listMode} onChangeListMode={setListMode}
                 onSelectTable={function(name){ openQueryWithSql('SELECT * FROM ' + name + ' LIMIT 100', true); }}
                 onContextItem={function(item){ setCtxMenu(item); }}
-                onNewGraph={openCreateGraphPanel}
                 loading={api.loading} onLoad={function(file){ confirmSessionChange(function(){ loadSession(file); }); }} onSave={saveSession}
                 autoRunQueries={autoRunQueries} onToggleAutoRun={function(){ setAutoRunQueries(function(p){ return !p; }); }} />
 
@@ -6616,6 +8026,9 @@ function App() {
                             pickingEnabled={pickingEnabled} onTogglePicking={function(){ setPicking(function(p){ return !p; }); }}
                             onRefresh={function(){ loadGraphDetails(activeGraph); }}
                             onQuery={function(){ queryIdCounter.current++; setQueryPanels(function(prev){ return prev.concat([{ id: queryIdCounter.current, initialSql: '', initialTab: null, stateRef: { current: null } }]); }); }}
+                            onCreate={openCreateGraphPanel}
+                            onSolve={openSolvePanel}
+                            onMatch={openMatchPanel}
                             onVisualize={function(){ var n=graphCounts.nodes||0, e=graphCounts.edges||0; if (bigGraphThreshold > 0 && (n > bigGraphThreshold || e > bigGraphThreshold)) { setVizConfirm({nodes:n, edges:e, threshold:bigGraphThreshold}); return; } fetchGraphData(); setShowForceGraph(true); }}
                             bigGraphThreshold={bigGraphThreshold} onChangeBigGraphThreshold={setBigGraphThreshold}
                             loading={api.loading} fetchProgress={fetchProgress}
@@ -6626,9 +8039,9 @@ function App() {
                                 // Per-kind sequential numbering based on each panel's index
                                 // among all panels of its kind (T1/T2 for tables,
                                 // Q1/Q2 for queries, C1/C2 for create-graph panels).
-                                var kindOf = function(p){ return p.createHelper ? 'create' : (p.hideQueryHelper ? 'table' : 'query'); };
-                                var prefix = { create: 'C', table: 'T', query: 'Q' };
-                                var nByKind = { create: 0, table: 0, query: 0 };
+                                var kindOf = function(p){ return p.createHelper ? 'create' : p.solveHelper ? 'solve' : p.matchHelper ? 'match' : (p.hideQueryHelper ? 'table' : 'query'); };
+                                var prefix = { create: 'C', solve: 'S', match: 'M', table: 'T', query: 'Q' };
+                                var nByKind = { create: 0, solve: 0, match: 0, table: 0, query: 0 };
                                 var labelById = {};
                                 queryPanels.forEach(function(p){
                                     var k = kindOf(p);
@@ -6639,7 +8052,7 @@ function App() {
                                     return { id: p.id, label: labelById[p.id] };
                                 });
                             })()}
-                            onRestorePanel={function(id){ setQueryPanels(function(prev){ return prev.map(function(p){ if (p.id !== id) return p; return Object.assign({}, p, { minimized: false, autoRun: !p.createHelper }); }); }); }}
+                            onRestorePanel={function(id){ setQueryPanels(function(prev){ return prev.map(function(p){ if (p.id !== id) return p; return Object.assign({}, p, { minimized: false, autoRun: !p.createHelper && !p.solveHelper && !p.matchHelper }); }); }); }}
                         />
 
                         {toast && (
@@ -6755,7 +8168,7 @@ function App() {
                 )}
             </div>
             {queryPanels.filter(function(p){ return !p.minimized; }).map(function(panel, idx) {
-                return <QueryPanel key={panel.id} panelIndex={idx} credentials={credentials} labelData={labelData} dotString={dotString} activeGraph={activeGraph} graphDirected={graphDirected} nodeSourceTable={nodeSourceTable} initialSql={panel.initialSql} initialTab={panel.initialTab} initialHelper={panel.initialHelper} stateRef={panel.stateRef} autoRun={panel.autoRun} hideQueryHelper={panel.hideQueryHelper} createHelper={panel.createHelper} tables={tables} graphGrammar={graphGrammar} tableColumnsCache={tableColumnsCache} onFetchTableColumns={fetchTableColumns} onGraphCreated={refreshGraphsList} onOpenCreatedGraph={function(n){ if (n === activeGraph) { loadGraphDetails(n); } else { confirmSessionChange(function(){ loadGraphDetails(n); }); } }}
+                return <QueryPanel key={panel.id} panelIndex={idx} credentials={credentials} labelData={labelData} dotString={dotString} activeGraph={activeGraph} graphDirected={graphDirected} nodeSourceTable={nodeSourceTable} initialSql={panel.initialSql} initialTab={panel.initialTab} initialHelper={panel.initialHelper} stateRef={panel.stateRef} autoRun={panel.autoRun} hideQueryHelper={panel.hideQueryHelper} createHelper={panel.createHelper} solveHelper={panel.solveHelper} matchHelper={panel.matchHelper} tables={tables} graphGrammar={graphGrammar} endpointGrammar={endpointGrammar} tableColumnsCache={tableColumnsCache} onFetchTableColumns={fetchTableColumns} onGraphCreated={refreshGraphsList} onOpenCreatedGraph={function(n){ if (n === activeGraph) { loadGraphDetails(n, { preservePanels: true }); } else { confirmSessionChange(function(){ loadGraphDetails(n, { preservePanels: true }); }); } }}
                     onMinimize={function(){
                         // Save current state before minimizing so it can be restored
                         var s = panel.stateRef && panel.stateRef.current;

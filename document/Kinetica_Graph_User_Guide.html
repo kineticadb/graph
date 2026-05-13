@@ -1776,6 +1776,7 @@ Kinetica Graph Explorer is a zero-install, browser-based tool for exploring grap
 3. Click **Connect & List** — the sidebar fills with both graphs and tables in a single round-trip.
 4. Toggle `[Graphs N] [Tables M]` to switch what the list shows. Use the filter input to narrow by substring.
 5. Click any graph to explore, or right-click a row for actions (Open, Show Create Statement, Modify, Delete…, Copy name).
+6. From the dashboard header, use **+ Create** (green), **+ Query** (purple), **+ Solve** (pink), or **+ Match** (orange) to open grammar-driven helpers for the corresponding endpoint.
 
 No build step, no dependencies to install, no server to run.
 
@@ -1789,25 +1790,60 @@ No build step, no dependencies to install, no server to run.
   <br/><em>Query Helper generates GQL from ontology labels. Multiple query panels with path visualization, force-graph canvas, and node detail lookup.</em>
 </p>
 
+<p align="center">
+  <img src="images/explorer/explorer_helpers_panels.webp" alt="Graph Explorer — Create / Query / Solve / Match helpers open over ki_home.dc" width="900"/>
+  <br/><em>The four grammar-driven helpers in action against <code>ki_home.dc</code>: Create (green, scaffolds a <code>CREATE OR REPLACE DIRECTED GRAPH</code>), Solve (pink, <code>SHORTEST_PATH</code> rendered as colored polylines on Deck.gl), and two Match panels (orange) — <code>match_isochrone</code> rendered first as a polygon and then as a scatter of 7,296 boundary points. Each helper auto-fetches its <code>SOLUTION_TABLE</code> and switches to a Map tab; the DC road network underneath stays interactive throughout.</em>
+</p>
+
 ### Features
 
 #### Sidebar — Browse, Filter, Manage
 - **`Connect & List`** issues `/show/graph` plus a SQL query against `INFORMATION_SCHEMA.TABLES` so you see graphs and tables side-by-side. System schemas (`SYSTEM`, `sys_sql_temp`, `pg_catalog`, `information_schema`) are filtered out.
 - **Tabbed list `[Graphs N] [Tables M]`** flips the visible list. The filter input applies case-insensitive substring matching; switching tabs clears it.
-- **`+ New`** opens a Create-Helper query panel pre-filled with an empty `CREATE OR REPLACE DIRECTED GRAPH …` template (see [Graph Authoring](#graph-authoring--create--modify) below).
-- **Right-click context menu** — graph rows expose **Open**, **Show Create Statement**, **Modify**, **Delete…** (red, with confirmation), and **Copy name**. Table rows expose **Open (Preview rows)**, **Schema (DESCRIBE)**, and **Copy name**. The schema-action panel auto-runs `SELECT * FROM <table> LIMIT 100` or `DESCRIBE <table>`.
+- **Right-click context menu** — graph rows expose **Open**, **Show Create Statement**, **Modify**, **Delete…** (red, with confirmation), and **Copy name**. Table rows expose **Open (Preview rows)**, **Schema (DESCRIBE)**, and **Copy name** — the preview action opens a Query panel that auto-runs `SELECT * FROM <table> LIMIT 100`; the schema action runs `DESCRIBE <table>` and lands the result in the same panel kind.
 - **Show Create Statement** opens a read-only modal with the original `CREATE GRAPH …` text. Backing table names found inside `NODES => INPUT_TABLES(...)` / `EDGES => INPUT_TABLES(...)` are highlighted; **Copy** writes the cleaned SQL to the clipboard.
 - **📖 Docs** button (sidebar header) links to this user guide in a new tab when it's deployed alongside the Explorer.
+- Authoring buttons (`+ Create`, `+ Query`, `+ Solve`, `+ Match`) **live in the dashboard header**, not the sidebar — see [Dashboard Helpers](#dashboard-helpers--create--query--solve--match) below.
 
-#### Graph Authoring — Create / Modify
-The Create Helper replaces the Query Helper in the same floating panel and lets you author or edit a graph without writing the SQL by hand.
+#### Dashboard Helpers — Create / Query / Solve / Match
+The dashboard header carries four color-coded action buttons that open grammar-driven floating panels. All four share the same chrome — draggable, resizable, minimizable to a kind-tagged pill (`C*` green, `Q*` purple, `T*` purple, `S*` pink, `M*` orange) — and all four route their generated SQL through the same `Run` flow with multi-statement support and an auto-fetch of the result table.
+
+##### + Create (green) — author or modify a graph
+The Create Helper scaffolds a valid `CREATE OR REPLACE [DIRECTED|UNDIRECTED] GRAPH …` (or `ALTER GRAPH … MODIFY` in Modify mode) without writing the SQL by hand.
 
 - **Per-component sections** — `NODES`, `EDGES`, `WEIGHTS`, `RESTRICTIONS`. Each has a **Configuration** dropdown (populated from `/show/graph/grammar`) that spawns the required identifier rows plus optional add-ons (e.g. picking `EDGES → NODE1 + NODE2 (string)` adds `EDGE_ID`, `LABEL`, `WEIGHT`, `PARTITION`, `NODE1_LABEL`, `NODE2_LABEL` as optional rows; empty optional rows are dropped on **Generate**).
-- **OPTIONS** section — `+ Add option` lets you add arbitrary `key = 'value'` pairs that get emitted as `OPTIONS => KV_PAIRS(...)`. A shared datalist suggests common option keys.
+- **Collapsible NODES / WEIGHTS / RESTRICTIONS** — only `EDGES` is mandatory and stays open; the other three auto-collapse to a single-line pull-down header when empty so the panel doesn't grow tall for nothing.
+- **Combo grouping** — every configuration pick tags its row block with a single label header and a `🗑 combo` button that drops the whole group at once. Per-row trash icons still work for fine edits.
+- **Default table per section** — type a `schema.table` at the top of any section and the rows accept bare column names; the generator joins them into a single `(SELECT col AS ALIAS, … FROM <default>)` sub-select. Rows that contain a dot are treated as full overrides and split into their own sub-selects (split-table sections still work).
+- **OPTIONS** — `+ Add option` lets you add arbitrary `key = 'value'` pairs that get emitted as `OPTIONS => KV_PAIRS(...)`. A shared datalist suggests common option keys.
 - **Schema-aware column auto-complete** — `schema.table.column` inputs probe the table via `/get/records limit:1` once you've typed a known table prefix, then suggest column names in the datalist. The cache makes repeated edits instant.
 - **Action toggle `Recreate | Modify`** at the top of the helper switches between generating `CREATE OR REPLACE [DIRECTED|UNDIRECTED] GRAPH …` and `ALTER GRAPH <name> MODIFY ( … )` (the Modify view hides the directionality row, since alter cannot change it).
 - **Modify from existing graph** — right-click → **Modify** parses the recorded create statement (balanced-paren capture of each component block + sub-select projections + `KV_PAIRS` options), rehydrates the helper, and boots the panel in Modify mode.
 - **Run flow** — Generate fills the SQL textarea; the textarea + Run row stay pinned to the bottom of the panel regardless of how many helper rows you've added. After a successful CREATE/ALTER, a green ✓ banner appears with an **Open** button that switches the dashboard to the new graph while keeping the Create panel minimized as a `C*` pill (so unfinished edits aren't lost).
+
+##### + Query (purple) — GQL with the Query Helper
+See [SQL / GQL Query](#sql--gql-query) below for the full description. The same panel kind is also reused for **table previews** (`T*` pill, opened from the sidebar's right-click → Open Preview rows / Schema), in which case the Query Helper is hidden.
+
+##### + Solve (pink) — `SOLVE_GRAPH` builder
+A grammar-driven helper for the `/solve/graph` endpoint that mirrors the Create Helper's UX for non-NODES/EDGES components.
+
+- **Solver type** dropdown (`SHORTEST_PATH`, `PAGE_RANK`, `STATS_ALL`, …) drives configuration filtering throughout the panel — only configurations and OPTIONS whose `filtervalues` include the selected solver are offered.
+- **Optional `Solution table`** for the result, with an **auto-drop** checkbox (default on) that prefixes the generated SQL with `DROP TABLE IF EXISTS <solution_table>;` so consecutive Runs don't trip on the table left behind by the previous call.
+- **Component sections** — `WEIGHTS`, `RESTRICTIONS`, `SOURCE_NODES`, `DESTINATION_NODES`. Same UX as the Create Helper (configuration dropdowns, default-table, combo grouping, column auto-complete, collapsible headers). For `SOURCE_NODES` / `DESTINATION_NODES` the row alias collapses to the generic `NODE` — Kinetica infers ID / NAME / WKTPOINT from the column data.
+- **Constants mode** (`SOURCE_NODES` / `DESTINATION_NODES`) — each section has a `Table | Constants` toggle in its header. Constants mode hides the default-table input and treats each row's value as a literal SQL expression; placeholders adapt per alias (WKT aliases hint `ST_GEOMFROMTEXT('POINT(-122 37)')`, `_ID` aliases hint integers, `_NAME` hints quoted strings, `_TIME` hints timestamps). N-tuple configurations (e.g. `NODE_ID + NODE_WKTPOINT`) collapse into a single combined sub-select: `(SELECT 1 AS ID, ST_GEOMFROMTEXT('POINT(-122 37)') AS WKTPOINT)`.
+- **OPTIONS** — key datalist filtered to options applicable to the selected solver (e.g. `convergence_limit` only appears under `PAGE_RANK`).
+- **Run flow** — multi-statement execution splits on `;` (stripping `--` and `/* */` comments) and runs each statement sequentially. After a successful solve with `SOLUTION_TABLE`, the panel auto-runs `SELECT * FROM <solution_table> LIMIT 10000` and lands the rows in the **View Results** tab — same flow as a GQL query's hop results.
+- **Path visualization** (force-graph) — when the auto-fetched rows include a `nameroute` column (emitted by `SHORTEST_PATH`, `INVERSE_SHORTEST_PATH`, `ALLPATHS`, `MULTIPLE_ROUTING`, `BACKHAUL_ROUTING`) a Visualization tab appears with each row as one colored path.
+- **Map visualization** (Deck.gl `SolveMapView`) — a **Map** tab appears whenever the rows include either a WKT column (`wktroute`, `wkt`, `polygon`, `geom`, or any column starting with `LINESTRING(` / `POLYGON(` / `MULTILINESTRING(` / `POINT(` / `MULTIPOLYGON(`) or a plain x,y coordinate pair (`x`+`y`, `lon`+`lat`, `longitude`+`latitude`, case-insensitive). All three layer types coexist on one map: `PathLayer` (polylines), `PolygonLayer` (alpha-filled shapes with holes), and `ScatterplotLayer` (circles). Auto-fits the viewport to the union bbox. Click any feature for the full source row in a detail strip below the map.
+- The helper auto-collapses (`▶ Solve Helper`) once a viz tab is shown so the result claims the full top region. Click the header to re-expand and tweak.
+
+##### + Match (orange) — `MATCH_GRAPH` builder
+Mirror of the Solve Helper for the `/match/graph` endpoint.
+
+- **Solve method** dropdown (`markov_chain` for GPS map-matching, `match_supply_demand`, `match_od_pairs`, `match_loops`, `match_charging_stations`, `match_route_detour`, `match_isochrone`, …) drives configuration, option, and add-on filtering.
+- Single component **`SAMPLE_POINTS`** — same UX as Solve's `SOURCE_NODES` (configuration dropdown filtered by method, default-table, combo grouping, `Table | Constants` toggle). The `SAMPLE_` prefix is stripped from row aliases (e.g. `SAMPLE_WKTPOINT` → `WKTPOINT`, `SAMPLE_ORIGIN_WKTPOINT` → `ORIGIN_WKTPOINT`).
+- **Add-on filtering by domain** — picking a configuration only spawns optional rows whose prefix matches the method's domain (`SAMPLE_SUPPLY_*` only for `match_supply_demand`, `SAMPLE_PICKUP_*` for `match_pickup_dropoff`, `SAMPLE_OD_*` for `match_od_pairs`, etc.) — no 20-row noise on simple methods.
+- Same auto-drop, multi-statement Run, auto-fetch solution rows, and Path / Map viz tabs as Solve. For `match_isochrone` with `result_table_index = '2'`, the auto-fetch targets the `<solution_table>_polygons` sibling (with an `INFORMATION_SCHEMA.TABLES LIKE '<solution_table>_%'` probe fallback when the suffix mapping misses).
 
 #### Graph Overview
 - **Label Distribution** — Interactive doughnut charts and sortable tables for node and edge labels, with counts and percentages.
@@ -1870,7 +1906,8 @@ Label-filter selections in the doughnut charts are pushed into all three paths �
 #### Cross-View Picking and UI
 - **Pick** mode enables bidirectional highlighting: clicking ontology elements highlights the label chart; hovering chart rows highlights ontology nodes/edges.
 - **Auto-refresh** polling toggle (5 s – 5 min) for live label-count monitoring.
-- **Resizable split panes**, **floating query panels** (minimize → kind-aware pill — `Q*` query, `T*` table preview, `C*` create-graph — maximize, restore, close), color-coded **progress bar** during data fetch, click-anywhere **node detail strip**, and tooltips on every control.
+- **Resizable split panes**, **floating helper panels** (minimize → kind-aware color-coded pill — `C*` create / green, `Q*` query / purple, `T*` table preview / purple, `S*` solve / pink, `M*` match / orange — maximize, restore, close), color-coded **progress bar** during data fetch, click-anywhere **node detail strip**, and tooltips on every control.
+- **Per-kind sequential numbering** — `C1/C2…`, `Q1/Q2…`, etc., is stable across the full panel list (not just minimized ones), so a pill keeps the same label across minimize / restore cycles.
 
 ### Architecture
 
@@ -1883,7 +1920,7 @@ A single HTML file with inline CSS and JSX (transpiled in-browser by Babel). All
 | Chart.js | Doughnut charts for label distribution |
 | @hpcc-js/wasm (Graphviz) | DOT → SVG layout for ontology rendering |
 | force-graph | Canvas-based force-directed graph visualization (non-geo) |
-| deck.gl v9 | WebGL GPU-accelerated geo visualization (`LineLayer` for millions of edges) |
+| deck.gl v9 | WebGL GPU-accelerated geo visualization (`LineLayer` for graph edges; `PathLayer` + `PolygonLayer` + `ScatterplotLayer` in `SolveMapView` for Solve / Match outputs) |
 | MapLibre GL v4 | Open-source basemap engine — CartoDB `light_all` and `rastertiles/voyager` tiles, no API key |
 
 ### Kinetica API Endpoints
