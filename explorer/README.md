@@ -67,7 +67,10 @@ Static hosting (nginx, S3, GitHub Pages, etc.) works identically as long as the 
 
 ### Browsing Graphs and Tables
 - **Sidebar tab toggle** — switch the connected-server list between **Graphs** (default) and **Tables**. Tables come from `INFORMATION_SCHEMA.TABLES` (system schemas filtered out).
+- **Collapsible sidebar** — a small chevron handle (`‹` / `›`) sits half-attached to the sidebar's right border, IDE-style. Click it to collapse the whole left panel into a 28-px rail (just a vertical "Graph Explorer" label) so the workspace gets the full window width; click `›` on the rail to bring it back.
 - **Search filter** — instant client-side filter for the current list. The list title row is omitted to maximize vertical room.
+- **Edge-count badge** — each graph row carries a small green badge with the compact edge count (`491k`, `13.1M`). Hover for the full nodes+edges tooltip. Sourced from `/show/graph`'s aligned `num_nodes`/`num_edges` arrays — no extra round trips.
+- **Sort toggle** — a tiny `A↓Z` ↔ `#↓` button next to the filter flips the Graphs list between alphabetical (default) and edges-desc.
 - **Right-click context menu** — kind-aware actions on any list row:
   - On a **graph**: `Open` (select & load), `Show Create Statement` (modal), `Modify` (opens a Create-Helper panel pre-filled by parsing the graph's CREATE SQL), `Delete…` (red, confirmation modal then `/drop/graph`), `Copy name`
   - On a **table**: `Open Preview rows` (opens a Query panel with `SELECT * FROM <t> LIMIT 100`), `Schema DESCRIBE`, `Copy name`

@@ -1434,6 +1434,9 @@ No build step, no dependencies to install, no server to run.
 #### Sidebar — Browse, Filter, Manage
 - **`Connect & List`** issues `/show/graph` plus a SQL query against `INFORMATION_SCHEMA.TABLES` so you see graphs and tables side-by-side. System schemas (`SYSTEM`, `sys_sql_temp`, `pg_catalog`, `information_schema`) are filtered out.
 - **Tabbed list `[Graphs N] [Tables M]`** flips the visible list. The filter input applies case-insensitive substring matching; switching tabs clears it.
+- **Edge-count badge on graph rows** — each graph row carries a small green badge with the compact edge count (`491k`, `13.1M`, …). Hover for the full nodes + edges tooltip. Counts come from `/show/graph`'s aligned `num_nodes` / `num_edges` arrays at connect / refresh time — no extra round trips.
+- **Sort toggle `A↓Z ↔ #↓`** sits next to the filter input and flips the Graphs list between alphabetical (default) and edges-descending (stable tiebreak by name).
+- **Collapsible sidebar** — a small chevron handle (`‹` / `›`) is half-attached to the sidebar's right border, IDE-style. Click it to collapse the whole panel into a 28-px rail (just a vertical "Graph Explorer" label) so the workspace claims the full window width; click `›` on the rail to bring it back.
 - **Right-click context menu** — graph rows expose **Open**, **Show Create Statement**, **Modify**, **Delete…** (red, with confirmation), and **Copy name**. Table rows expose **Open (Preview rows)**, **Schema (DESCRIBE)**, and **Copy name** — the preview action opens a Query panel that auto-runs `SELECT * FROM <table> LIMIT 100`; the schema action runs `DESCRIBE <table>` and lands the result in the same panel kind.
 - **Show Create Statement** opens a read-only modal with the original `CREATE GRAPH …` text. Backing table names found inside `NODES => INPUT_TABLES(...)` / `EDGES => INPUT_TABLES(...)` are highlighted; **Copy** writes the cleaned SQL to the clipboard.
 - **📖 Docs** button (sidebar header) links to this user guide in a new tab when it's deployed alongside the Explorer.
@@ -1490,7 +1493,7 @@ Mirror of the Solve Helper for the `/match/graph` endpoint.
 - **⤢ Maximize** for a full-viewport view (Esc or **▣ Restore** to return).
 
 #### Graph Visualization
-- **↻ Pull + Visualize** fetches graph nodes and edges via `/get/graph/entities` (with batching for large graphs > 500 K edges, fallback to `/get/records`). Renderer-toggle clicks (Auto / Canvas / Deck.gl / WMS) only switch the rendering mode — they don't auto-fetch. Switching between Canvas ↔ Deck.gl reuses already-fetched data.
+- **↻ Pull + Visualize** fetches graph nodes and edges via `/get/graph/entities` (with batching for large graphs > 500 K edges, fallback to `/get/records`). Renderer-toggle clicks (Auto / Canvas / Deck.gl / WMS) only switch the rendering mode — they don't auto-fetch. Switching between Canvas ↔ Deck.gl reuses already-fetched data, and round-tripping through WMS (Deck/Canvas → WMS → back) preserves the entity data too — the previous payload is stashed on WMS entry and restored on exit so you don't need to re-pull.
 - **CanvasGraph** (non-WKT graphs) — force-directed visualization with colors matching label charts. Click a node to fetch its full record from the source table. Node/edge limit sliders and a viz-limit dropdown live in the header.
 - **Viz-limit guard** — the limit dropdown (10 K / 100 K / 1 M / 10 M / 100 M / ∞) gates `Pull + Visualize` across all renderers. When the graph exceeds the chosen limit, a red `[Continue] [Cancel]` banner appears.
 - **Geo graph renderers** — for WKT graphs the header shows a `Auto | Canvas | Deck.gl | WMS` toggle, covering both client-side and server-side paths (see [Geo Rendering](#geo-rendering) below).

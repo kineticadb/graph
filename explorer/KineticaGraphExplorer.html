@@ -402,7 +402,8 @@ function Label(props) {
 
 /* ═══════════════════ Sidebar ═════════════════════════════ */
 function Sidebar(props) {
-    var onConnect = props.onConnect, onClearGraphs = props.onClearGraphs, graphs = props.graphs, activeGraph = props.activeGraph, onSelectGraph = props.onSelectGraph, loading = props.loading, onLoad = props.onLoad, onSave = props.onSave, autoRunQueries = props.autoRunQueries, onToggleAutoRun = props.onToggleAutoRun;
+    var onConnect = props.onConnect, onClearGraphs = props.onClearGraphs, graphs = props.graphs, graphSizes = props.graphSizes || {}, activeGraph = props.activeGraph, onSelectGraph = props.onSelectGraph, loading = props.loading, onLoad = props.onLoad, onSave = props.onSave, autoRunQueries = props.autoRunQueries, onToggleAutoRun = props.onToggleAutoRun;
+    var collapsed = !!props.collapsed, onToggleCollapsed = props.onToggleCollapsed;
     var tables = props.tables || [], listMode = props.listMode || 'graphs', onChangeListMode = props.onChangeListMode;
     var onSelectTable = props.onSelectTable, onContextItem = props.onContextItem;
     const [profileIdx, setProfileIdx] = useState(0);
@@ -412,6 +413,16 @@ function Sidebar(props) {
     const [showPass, setShowPass] = useState(false);
     const [status, setStatus] = useState({ text:'', error:false });
     const [filter, setFilter] = useState('');
+    // Sidebar sort: 'name' (alphabetical) or 'size' (edges desc). Clicking the
+    // small toggle cycles between the two. Applies to the Graphs list only.
+    const [sortMode, setSortMode] = useState('name');
+    var compactNum = function(n) {
+        n = Number(n) || 0;
+        if (n < 1000) return String(n);
+        if (n < 1e6) return (n / 1e3).toFixed(n < 1e4 ? 1 : 0).replace(/\.0$/, '') + 'k';
+        if (n < 1e9) return (n / 1e6).toFixed(n < 1e7 ? 1 : 0).replace(/\.0$/, '') + 'M';
+        return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
+    };
 
     var handleProfile = function(e) {
         var idx = parseInt(e.target.value);
@@ -461,8 +472,42 @@ function Sidebar(props) {
         return function() { cancelled = true; };
     }, []);
 
+    // SVG chevron tab — sits half on the sidebar's right border so it reads as a
+    // divider handle, like an IDE's collapse rail. Direction flips with state.
+    // Uses position: fixed because the sidebar's overflowY: auto would otherwise
+    // clip an absolutely-positioned overflowing child.
+    var collapseHandleLeft = collapsed ? 16 : 308;  // (sidebar width) - half of handle
+    var collapseHandle = onToggleCollapsed ? (
+        <button onClick={onToggleCollapsed} title={collapsed ? 'Expand sidebar' : 'Collapse sidebar — reclaim space for the workspace'} style={{
+            position:'fixed', left: collapseHandleLeft, top:'50%', transform:'translateY(-50%)', zIndex:12,
+            width:24, height:56, padding:0,
+            border:'1px solid #dfe6e9', borderLeft:'none',
+            borderRadius:'0 8px 8px 0',
+            cursor:'pointer', background:'#fff', color:'#0984e3',
+            display:'flex', alignItems:'center', justifyContent:'center',
+            boxShadow:'2px 0 6px rgba(0,0,0,0.08)',
+        }}>
+            <svg width="10" height="16" viewBox="0 0 10 16" style={{ display:'block' }}>
+                <polyline
+                    points={collapsed ? '3,2 8,8 3,14' : '7,2 2,8 7,14'}
+                    fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+        </button>
+    ) : null;
+    // Collapsed sidebar: a thin vertical rail with the expand handle on its
+    // right edge so the workspace gets the full window width.
+    if (collapsed) {
+        return (
+            <div style={{ width:28, minWidth:28, background:'#fff', borderRight:'1px solid #dfe6e9', display:'flex', flexDirection:'column', alignItems:'center', padding:'10px 0', boxShadow:'2px 0 8px rgba(0,0,0,0.04)', zIndex:10, height:'100vh', boxSizing:'border-box', flexShrink:0 }}>
+                {collapseHandle}
+                {/* Vertical "Graph Explorer" label so the user can read what they collapsed. */}
+                <div style={{ writingMode:'vertical-rl', transform:'rotate(180deg)', marginTop:18, fontWeight:700, fontSize:11, color:'#b2bec3', letterSpacing:1, userSelect:'none' }}>Graph Explorer</div>
+            </div>
+        );
+    }
     return (
         <div style={{ width:320, minWidth:320, background:'#fff', borderRight:'1px solid #dfe6e9', display:'flex', flexDirection:'column', padding:20, boxShadow:'2px 0 8px rgba(0,0,0,0.04)', zIndex:10, height:'100vh', boxSizing:'border-box', overflowY:'auto' }}>
+            {collapseHandle}
             <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:24, flexShrink:0 }}>
                 <img src="kinetica_graph_logo.png" style={{ height:32, width:'auto' }} alt="Logo" onError={function(e){ e.target.style.display='none'; }} />
                 <span style={{ fontWeight:700, fontSize:17, color:'#0984e3', letterSpacing:-0.3 }}>Graph Explorer</span>
@@ -515,11 +560,22 @@ function Sidebar(props) {
                     </div>
                     <input value={filter} onChange={function(e){ setFilter(e.target.value); }} placeholder="Filter…" style={{ flex:1, padding:'4px 8px', border:'1px solid #dfe6e9', borderRadius:6, fontSize:11, background:'#fff', outline:'none', fontFamily:'inherit', minWidth:0 }}/>
                     {filter && <span onClick={function(){ setFilter(''); }} title="Clear filter" style={{ fontSize:10, color:'#636e72', cursor:'pointer', padding:'2px 4px', userSelect:'none' }}>{'✕'}</span>}
+                    {listMode === 'graphs' && <span onClick={function(){ setSortMode(function(p){ return p === 'name' ? 'size' : 'name'; }); }} title={'Sort by ' + (sortMode === 'name' ? 'size (edges, desc)' : 'name (alphabetical)') + ' — click to toggle'} style={{ fontSize:10, fontWeight:700, color:'#636e72', cursor:'pointer', padding:'2px 6px', userSelect:'none', border:'1px solid #dfe6e9', borderRadius:4, background:'#fff' }}>{sortMode === 'name' ? 'A↓Z' : '#↓'}</span>}
                 </div>
             )}
             {(function() {
                 var fn = (filter || '').trim().toLowerCase();
-                var filteredGraphs = fn ? graphs.filter(function(n){ return n.toLowerCase().indexOf(fn) >= 0; }) : graphs;
+                var filteredGraphs = fn ? graphs.filter(function(n){ return n.toLowerCase().indexOf(fn) >= 0; }) : graphs.slice();
+                if (sortMode === 'size') {
+                    filteredGraphs.sort(function(a, b){
+                        var ea = (graphSizes[a] && graphSizes[a].edges) || 0;
+                        var eb = (graphSizes[b] && graphSizes[b].edges) || 0;
+                        if (eb !== ea) return eb - ea;
+                        return a.localeCompare(b);
+                    });
+                } else {
+                    filteredGraphs.sort(function(a, b){ return a.localeCompare(b); });
+                }
                 var filteredTables = fn ? tables.filter(function(t){ return t.name.toLowerCase().indexOf(fn) >= 0; }) : tables;
                 var emptyMsg = graphs.length === 0 && tables.length === 0 ? 'No active connection'
                               : fn ? 'No matches'
@@ -529,13 +585,21 @@ function Sidebar(props) {
                         {(listMode === 'graphs' ? filteredGraphs.length : filteredTables.length) === 0
                             ? <p style={{ padding:24, color:'#b2bec3', fontSize:12, textAlign:'center' }}>{emptyMsg}</p>
                             : (listMode === 'graphs' ? filteredGraphs.map(function(name) {
+                                var sz = graphSizes[name];
+                                var edges = sz ? sz.edges : 0;
+                                var nodes = sz ? sz.nodes : 0;
+                                var sizeTitle = sz ? (nodes.toLocaleString() + ' nodes, ' + edges.toLocaleString() + ' edges') : '';
                                 return (
                                     <div key={name} onClick={function(){ onSelectGraph(name); }}
                                         onContextMenu={function(e){ e.preventDefault(); if (onContextItem) onContextItem({ kind:'graph', name: name, x: e.clientX, y: e.clientY }); }} style={{
-                                        padding:'12px 14px', borderBottom:'1px solid #f1f2f6', cursor:'pointer', fontSize:13, transition:'0.15s',
+                                        padding:'10px 14px', borderBottom:'1px solid #f1f2f6', cursor:'pointer', fontSize:13, transition:'0.15s',
                                         fontWeight: activeGraph===name ? 700:400, background: activeGraph===name ? '#eef2f7':'transparent',
                                         color: activeGraph===name ? '#0984e3':'#2d3436', borderLeft: activeGraph===name ? '4px solid #0984e3':'4px solid transparent',
-                                    }}>{name}</div>
+                                        display:'flex', alignItems:'center', gap:8,
+                                    }}>
+                                        <span style={{ flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{name}</span>
+                                        {sz && <span title={sizeTitle} style={{ flexShrink:0, fontSize:10, fontWeight:600, color:'#00b894', background:'#e6f9f3', padding:'1px 6px', borderRadius:8, fontFamily:'inherit' }}>{compactNum(edges)}</span>}
+                                    </div>
                                 );
                             }) : filteredTables.map(function(t) {
                                 var iconColor = t.type === 'collection' ? '#6c5ce7' : t.type === 'view' ? '#00b894' : '#636e72';
@@ -6016,6 +6080,21 @@ function CanvasGraph(props) {
 
 function App() {
     const [graphs, setGraphs]             = useState([]);
+    // Sidebar collapse — when true, the left rail shrinks to a 28-px strip
+    // with just a `›` expand button so the workspace claims the full width.
+    const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+    // Per-graph size map: { name: { nodes, edges } } built from /show/graph's
+    // aligned num_nodes/num_edges arrays. Used by the sidebar to show a small
+    // edge-count badge on each row and to enable size-based sorting.
+    const [graphSizes, setGraphSizes]     = useState({});
+    var buildGraphSizes = function(outer) {
+        var out = {};
+        var names = (outer && outer.graph_names) || [];
+        var nn = (outer && outer.num_nodes) || [];
+        var ne = (outer && outer.num_edges) || [];
+        for (var i = 0; i < names.length; i++) out[names[i]] = { nodes: nn[i] || 0, edges: ne[i] || 0 };
+        return out;
+    };
     const [tables, setTables]             = useState([]); // [{name, type_id, ...}] from /show/table
     const [listMode, setListMode]         = useState('graphs'); // 'graphs' | 'tables'
     // Graph grammar: which identifier combinations are valid for each component.
@@ -6491,7 +6570,7 @@ function App() {
     const mainContentRef = useRef(null);
 
     var clearGraphs = useCallback(function() {
-        setGraphs([]); setTables([]); setListMode('graphs'); setActiveGraph(''); setLabelData(null); setDotString(null); setShowOntology(false); setAutoRefresh(false); setGraphTable(null); setGraphTableData(null); setGraphTableError(null); setShowForceGraph(false); setSelectedNodeLabels([]); setSelectedEdgeLabels([]); setFetchProgress(null); setQueryPanels([]); setMaximizedPanel(null); setGraphCounts({ nodes:0, edges:0 }); setNodeSourceTable(null); setEdgeSourceTable(null);
+        setGraphs([]); setGraphSizes({}); setTables([]); setListMode('graphs'); setActiveGraph(''); setLabelData(null); setDotString(null); setShowOntology(false); setAutoRefresh(false); setGraphTable(null); setGraphTableData(null); setGraphTableError(null); setShowForceGraph(false); setSelectedNodeLabels([]); setSelectedEdgeLabels([]); setFetchProgress(null); setQueryPanels([]); setMaximizedPanel(null); setGraphCounts({ nodes:0, edges:0 }); setNodeSourceTable(null); setEdgeSourceTable(null);
     }, []);
 
     /* Lightweight refresh of just the graphs list — called after a successful
@@ -6504,7 +6583,10 @@ function App() {
             var result = await api.request(credentials.url + '/show/graph', { graph_name:'', options:{} }, credentials);
             if (result._cancelled) return;
             var outer = safeParse(result.data_str);
-            if (outer && outer.graph_names) setGraphs(outer.graph_names);
+            if (outer && outer.graph_names) {
+                setGraphs(outer.graph_names);
+                setGraphSizes(buildGraphSizes(outer));
+            }
         } catch(e) { /* silent */ }
     }, [credentials]);
 
@@ -6517,6 +6599,7 @@ function App() {
         var outer = safeParse(result.data_str);
         if (!outer || !outer.graph_names) throw new Error('Unexpected response format.');
         setGraphs(outer.graph_names);
+        setGraphSizes(buildGraphSizes(outer));
         // Fetch tables list too — used by the sidebar's Tables tab. We use SQL
         // against INFORMATION_SCHEMA.TABLES because /show/table with empty name
         // returns *schemas* (e.g., "expero", "ki_home"), not the underlying tables.
@@ -8016,7 +8099,8 @@ function App() {
             <Sidebar
                 onConnect={function(creds){ confirmSessionChange(function(){ handleConnect(creds); }); }}
                 onClearGraphs={function(){ confirmSessionChange(function(){ clearGraphs(); }); }}
-                graphs={graphs} activeGraph={activeGraph}
+                graphs={graphs} graphSizes={graphSizes} activeGraph={activeGraph}
+                collapsed={sidebarCollapsed} onToggleCollapsed={function(){ setSidebarCollapsed(function(p){ return !p; }); }}
                 onSelectGraph={function(name){ if (name === activeGraph) { loadGraphDetails(name); return; } confirmSessionChange(function(){ loadGraphDetails(name); }); }}
                 tables={tables} listMode={listMode} onChangeListMode={setListMode}
                 onSelectTable={function(name){ openQueryWithSql('SELECT * FROM ' + name + ' LIMIT 100', true); }}
