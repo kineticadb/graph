@@ -6710,6 +6710,9 @@ function App() {
             setMaximizedPanel(null);
             setNodeSourceTable(null); setEdgeSourceTable(null);
             setGeoRenderMode('auto');
+            // Clear the WMS-roundtrip data stash so we don't restore a previous
+            // graph's nodes/edges when the user toggles renderer modes on this graph.
+            if (preWmsDataRef && preWmsDataRef.current) preWmsDataRef.current = null;
         }
         var opts = { export_graph_schema: 'true' };
         if (!schemaNodeLabelkeys) opts.schema_node_labelkeys = 'false';
@@ -7649,19 +7652,36 @@ function App() {
                                   to actually fetch. The previous auto-pull path was
                                   too racy on fresh MapView mounts (chunks dropped while
                                   drawChunkRef.current was being set up), so we removed it. */
+    // Stash for entity-mode graphTableData while we're temporarily in WMS, so
+    // toggling DeckGL/Canvas ↔ WMS ↔ DeckGL/Canvas doesn't lose the already-
+    // fetched nodes/edges. Cleared on graph switch (see loadGraphDetails).
+    var preWmsDataRef = useRef(null);
     var handleChangeGeoRenderMode = useCallback(function(m) {
         setGeoRenderMode(m);
         if (m === 'wms') {
+            // Save the entity-mode data (if any) before WMS overwrites graphTableData.
+            if (graphTableData && !graphTableData.wmsMode) {
+                preWmsDataRef.current = graphTableData;
+            }
             setupWmsMode();
         } else if (graphTableData && graphTableData.wmsMode) {
-            // Leaving WMS without re-fetching would leave us showing a stale WMS view
-            // — clear so the user sees the placeholder + Pull+Visualize button.
-            setGraphTableData(null);
-            setShowForceGraph(false);
-            // Also exit maximized view if active — the maximized overlay's render
-            // condition includes `&& graphTableData`, so without this it'd unmount
-            // and look like the window "disappeared".
-            setMaximizedPanel(null);
+            // Leaving WMS: restore the stashed entity data if we have it. The
+            // WMS render shape (`wmsMode` payload) doesn't carry the parsed
+            // nodes/edges, so without this restore the user would have to
+            // Pull+Visualize again.
+            if (preWmsDataRef.current) {
+                setGraphTableData(preWmsDataRef.current);
+                preWmsDataRef.current = null;
+            } else {
+                // Truly no prior entity data (user went straight to WMS first).
+                // Clear so the placeholder + Pull+Visualize button shows.
+                setGraphTableData(null);
+                setShowForceGraph(false);
+                // Also exit maximized view — the maximized overlay's render
+                // condition is `&& graphTableData`, so without this it'd unmount
+                // and look like the window "disappeared".
+                setMaximizedPanel(null);
+            }
         }
     }, [graphTableData, setupWmsMode]);
 
