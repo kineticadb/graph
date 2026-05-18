@@ -141,6 +141,45 @@ function extractNodeSourceTable(originalRequest, graphName) {
 }
 
 // Extract the edge source table and ID column from the graph creation statement
+// Pull the WKT column name from a /show/table response — the most reliable
+// signal because Kinetica tags geometry columns with the `wkt` property in the
+// type schema. `resp` is the unwrapped /show/table inner JSON. Returns the
+// first column whose `properties[0][col]` array includes 'wkt', or null.
+function detectWktColumnFromShowTable(resp) {
+    if (!resp) return null;
+    var props = resp.properties || (resp[0] && resp[0].properties);
+    if (!props || !props.length) return null;
+    var colMap = props[0] || {};
+    var cols = Object.keys(colMap);
+    for (var i = 0; i < cols.length; i++) {
+        var arr = colMap[cols[i]] || [];
+        for (var j = 0; j < arr.length; j++) {
+            if (String(arr[j]).toLowerCase() === 'wkt') return cols[i];
+        }
+    }
+    return null;
+}
+
+// Auto-detect a WKT geometry column from a sampled record. Two-stage:
+//   1. Prefer canonical Kinetica geometry column names (case-insensitive match).
+//   2. Fall back to ANY column whose first row value starts with a WKT token —
+//      handles custom names (geom, geometry, the_geom, track, route, …) so
+//      `SELECT * FROM <foo>` create statements still get a usable GEO_ATTR.
+// Returns the source column name (preserving case) or null if no match.
+function detectWktColumn(record) {
+    if (!record) return null;
+    var cols = Object.keys(record);
+    var WKT_RE = /^\s*(POINT|LINESTRING|POLYGON|MULTIPOINT|MULTILINESTRING|MULTIPOLYGON)\s*\(/i;
+    var isWktVal = function(v) { return typeof v === 'string' && WKT_RE.test(v); };
+    var canonical = ['WKTLINE', 'EDGE_WKTLINE', 'NODE1_WKTPOINT', 'EDGE_NODE1_WKTPOINT', 'WKT', 'wkt', 'kiGeometry', 'geom', 'geometry', 'the_geom'];
+    var byName = resolveCol(cols, canonical);
+    if (byName && isWktVal(record[byName])) return byName;
+    for (var i = 0; i < cols.length; i++) {
+        if (isWktVal(record[cols[i]])) return cols[i];
+    }
+    return null;
+}
+
 function extractEdgeSourceTable(originalRequest, graphName) {
     if (!originalRequest || !originalRequest.length) return null;
     var entry = originalRequest[0];
@@ -173,8 +212,12 @@ function extractEdgeSourceTable(originalRequest, graphName) {
     }
     var idMatch = inner.match(/(\w+)\s+as\s+(?:EDGE_ID|ID)\b/i);
     var idCol = idMatch ? idMatch[1] : null;
-    // Extract WKT geometry column (aliased as EDGE_WKTLINE, WKTLINE, WKTPOINT, NODE1_NAME, or NODE1)
-    var wktMatch = inner.match(/(\w+)\s+as\s+(?:EDGE_WKTLINE|WKTLINE|WKTPOINT|NODE1_WKTPOINT|EDGE_NODE1_WKTPOINT)\b/i);
+    // Extract WKT geometry column from any of the valid CREATE GRAPH EDGES
+    // aliases. Order doesn't matter (regex returns first source-position match);
+    // the full list is: full-line (EDGE_WKTLINE / WKTLINE), single point
+    // (EDGE_WKTPOINT / WKTPOINT), and the start/end endpoint pair
+    // (EDGE_NODE1_WKTPOINT / NODE1_WKTPOINT, EDGE_NODE2_WKTPOINT / NODE2_WKTPOINT).
+    var wktMatch = inner.match(/(\w+)\s+as\s+(?:EDGE_WKTLINE|WKTLINE|EDGE_WKTPOINT|WKTPOINT|EDGE_NODE1_WKTPOINT|NODE1_WKTPOINT|EDGE_NODE2_WKTPOINT|NODE2_WKTPOINT)\b/i);
     var wktCol = wktMatch ? wktMatch[1] : null;
     // Extract label column (aliased as LABEL or EDGE_LABEL)
     // Handles: "col AS LABEL", "func(col) AS LABEL", "CAST(col AS type) AS LABEL"
@@ -5261,25 +5304,46 @@ function MapView(props) {
         var styleName = useHeatmap ? 'heatmap' : (useCbRaster ? 'cb_raster' : 'raster');
         setWmsActiveStyle(styleName);
         if (zoomEl) zoomEl.textContent = zoomRatio.toFixed(1) + 'x ' + styleName;
-        // Fetch tile
+        // Fetch tile. Browsers can't attach an `Authorization: Basic` header to
+        // a plain `<img src>` GET, so deployments with auth (e.g., the demo
+        // cluster) return 401. Use `fetch()` instead — it carries the header —
+        // then convert the response to a blob URL the <img> element can display.
+        // The previous blob URL is revoked when the new one is ready to avoid
+        // leaks across rapid zoom/pan tile reloads.
         if (wmsImgRef.current) {
             setWmsLoading(true);
-            // Load into offscreen image first, then swap — avoids flash/blank during load
-            var offscreen = new Image();
-            offscreen.onload = function() {
-                wmsImgRef.current.src = offscreen.src;
-                setWmsLoading(false);
-                // Remember the exact aspect-adjusted bbox + container size this tile
-                // was rendered with so the picked-edge SVG projects against the same
-                // basis (otherwise sub-pixel rounding leaves the highlight slightly
-                // parallel to the road).
-                wmsViewRef.current.renderedBbox = bbox;
-                wmsViewRef.current.renderedW = w;
-                wmsViewRef.current.renderedH = h;
-                if (redrawWmsPickOverlayRef.current) redrawWmsPickOverlayRef.current();
-            };
-            offscreen.onerror = function() { setWmsLoading(false); };
-            offscreen.src = url;
+            var wmsHdrs = {};
+            if (credentials && (credentials.user || credentials.pass)) {
+                wmsHdrs['Authorization'] = 'Basic ' + btoa(credentials.user + ':' + credentials.pass);
+            }
+            var prevBlobUrl = wmsImgRef.current.dataset && wmsImgRef.current.dataset.blobUrl;
+            fetch(url, { method: 'GET', headers: wmsHdrs })
+                .then(function(res){ if (!res.ok) throw new Error('HTTP ' + res.status); return res.blob(); })
+                .then(function(blob){
+                    var blobUrl = URL.createObjectURL(blob);
+                    var offscreen = new Image();
+                    offscreen.onload = function() {
+                        if (!wmsImgRef.current) { URL.revokeObjectURL(blobUrl); return; }
+                        wmsImgRef.current.src = blobUrl;
+                        if (wmsImgRef.current.dataset) wmsImgRef.current.dataset.blobUrl = blobUrl;
+                        if (prevBlobUrl) URL.revokeObjectURL(prevBlobUrl);
+                        setWmsLoading(false);
+                        // Remember the exact aspect-adjusted bbox + container size this tile
+                        // was rendered with so the picked-edge SVG projects against the same
+                        // basis (otherwise sub-pixel rounding leaves the highlight slightly
+                        // parallel to the road).
+                        wmsViewRef.current.renderedBbox = bbox;
+                        wmsViewRef.current.renderedW = w;
+                        wmsViewRef.current.renderedH = h;
+                        if (redrawWmsPickOverlayRef.current) redrawWmsPickOverlayRef.current();
+                    };
+                    offscreen.onerror = function() { URL.revokeObjectURL(blobUrl); setWmsLoading(false); };
+                    offscreen.src = blobUrl;
+                })
+                .catch(function(err){
+                    setWmsLoading(false);
+                    if (typeof showToast === 'function') showToast('⚠️ WMS tile failed: ' + (err && err.message ? err.message : err), 'error');
+                });
         }
     }, [wmsMode, credentials, wmsStyleOverride, selectedEdgeLabels]);
     useEffect(function() { fetchWmsTileRef.current = fetchWmsTile; }, [fetchWmsTile]);
@@ -6822,24 +6886,35 @@ function App() {
         var nst = extractNodeSourceTable(origReq, graphName);
         setNodeSourceTable(nst);
         var est = extractEdgeSourceTable(origReq, graphName);
-        // If wktCol not found from create statement, probe the table for WKT columns
+        // If wktCol not found from create statement (e.g., `SELECT * FROM …`
+        // with no explicit `AS EDGE_WKTLINE` alias), probe the source table.
+        // Two-stage detection:
+        //   1) /show/table — Kinetica tags geometry columns with the 'wkt'
+        //      property; this is the authoritative signal and works even when
+        //      rows are null or the column name is non-canonical.
+        //   2) /get/records limit:1 — fall back to scanning every column for
+        //      a WKT-shaped value in the first row.
         if (est && !est.wktCol) {
             try {
                 var wktProbeHdrs = { 'Content-Type': 'application/json' };
                 if (credentials.user || credentials.pass) wktProbeHdrs['Authorization'] = 'Basic ' + btoa(credentials.user + ':' + credentials.pass);
-                var wktProbe = await fetch(credentials.url + '/get/records', { method: 'POST', headers: wktProbeHdrs, body: JSON.stringify({ table_name: est.table, offset: 0, limit: 1, encoding: 'json', options: {} }) });
+                var showResp = await fetch(credentials.url + '/show/table', { method: 'POST', headers: wktProbeHdrs, body: JSON.stringify({ table_name: est.table, options: {} }) });
+                if (showResp.ok) {
+                    var stData = await showResp.json();
+                    var stInner = safeParse(stData.data_str) || stData;
+                    est.wktCol = detectWktColumnFromShowTable(stInner);
+                }
+            } catch(e) {}
+        }
+        if (est && !est.wktCol) {
+            try {
+                var wktProbeHdrs2 = { 'Content-Type': 'application/json' };
+                if (credentials.user || credentials.pass) wktProbeHdrs2['Authorization'] = 'Basic ' + btoa(credentials.user + ':' + credentials.pass);
+                var wktProbe = await fetch(credentials.url + '/get/records', { method: 'POST', headers: wktProbeHdrs2, body: JSON.stringify({ table_name: est.table, offset: 0, limit: 1, encoding: 'json', options: {} }) });
                 if (wktProbe.ok) {
                     var wpData = await wktProbe.json(); var wpInner = safeParse(wpData.data_str) || wpData;
                     var wpRecs = (wpInner.records_json || []).map(function(r) { return safeParse(r, r); });
-                    if (wpRecs.length > 0) {
-                        var wpCols = Object.keys(wpRecs[0]);
-                        var wktFound = resolveCol(wpCols, ['WKTLINE', 'EDGE_WKTLINE', 'NODE1_WKTPOINT', 'EDGE_NODE1_WKTPOINT', 'wkt', 'kiGeometry']);
-                        // Only set wktCol if the column actually has WKT data (not just the column name exists)
-                        if (wktFound) {
-                            var val = wpRecs[0][wktFound];
-                            if (val && typeof val === 'string' && /^(POINT|LINESTRING|POLYGON)\s*\(/i.test(val.trim())) est.wktCol = wktFound;
-                        }
-                    }
+                    if (wpRecs.length > 0) est.wktCol = detectWktColumn(wpRecs[0]);
                 }
             } catch(e) {}
         }
@@ -7684,19 +7759,40 @@ function App() {
         var authHeaders = { 'Content-Type': 'application/json' };
         if (credentials.user || credentials.pass) authHeaders['Authorization'] = 'Basic ' + btoa(credentials.user + ':' + credentials.pass);
         var numEdges = (labelData && (labelData.total_labeled_edges + labelData.total_unlabeled_edges)) || 0;
-        // Find WKT geometry column
+        // Find WKT geometry column for the GEO_ATTR parameter of /wms.
+        //   1. Use the wktCol that the create-statement parse / loadGraphDetails
+        //      probes already resolved (preferred — typically the 'wkt'
+        //      property from /show/table).
+        //   2. If still empty, do an in-handler /show/table probe (authoritative).
+        //   3. Last resort: scan one row's values for a WKT shape.
         var geoCol = edgeSourceTable.wktCol;
+        if (!geoCol) {
+            try {
+                var stProbe = await fetch(credentials.url + '/show/table', { method: 'POST', headers: authHeaders, body: JSON.stringify({ table_name: edgeSourceTable.table, options: {} }) });
+                if (stProbe.ok) {
+                    var stPD = await stProbe.json();
+                    var stPI = safeParse(stPD.data_str) || stPD;
+                    geoCol = detectWktColumnFromShowTable(stPI);
+                }
+            } catch(e) {}
+        }
         if (!geoCol) {
             try {
                 var colProbe = await fetch(credentials.url + '/get/records', { method: 'POST', headers: authHeaders, body: JSON.stringify({ table_name: edgeSourceTable.table, offset: 0, limit: 1, encoding: 'json', options: {} }) });
                 if (colProbe.ok) {
                     var colData = await colProbe.json(); var colInner = safeParse(colData.data_str) || colData;
                     var colRecs = (colInner.records_json || []).map(function(r) { return safeParse(r, r); });
-                    if (colRecs.length > 0) geoCol = resolveCol(Object.keys(colRecs[0]), ['WKTLINE', 'EDGE_WKTLINE', 'NODE1_WKTPOINT', 'EDGE_NODE1_WKTPOINT', 'NODE2_WKTPOINT', 'EDGE_NODE2_WKTPOINT', 'wkt', 'kiGeometry', 'geom', 'geometry', 'segment']);
+                    if (colRecs.length > 0) geoCol = detectWktColumn(colRecs[0]);
                 }
             } catch(e) {}
         }
-        if (!geoCol) geoCol = 'WKTLINE';
+        if (!geoCol) {
+            // Don't silently fall back to a guess that won't exist server-side.
+            // Tell the user what's missing so they can either rerun the create
+            // statement with an explicit AS WKTLINE alias or pick another mode.
+            showToast('⚠️ WMS: no WKT geometry column detected on ' + edgeSourceTable.table + '. Add an explicit `AS EDGE_WKTLINE` alias in the CREATE GRAPH (or use Deck.gl / Canvas).', 'warn');
+            return;
+        }
         // Query bounds
         var wmsBbox = '-125,24,-66,50';
         try {
