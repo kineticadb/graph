@@ -1146,7 +1146,7 @@ function SolveMapView(props) {
         var paths = [], polygons = [], points = [];
         for (var i = 0; i < rows.length; i++) {
             var color = hexToRgb(PALETTE[i % PALETTE.length].solid);
-            // WKT branch (LINESTRING / POLYGON).
+            // WKT branch (LINESTRING / POLYGON / POINT / MULTIPOINT).
             if (wktCol) {
                 var wkt = rows[i] && rows[i][wktCol];
                 if (wkt) {
@@ -1162,6 +1162,45 @@ function SolveMapView(props) {
                         var ringStrs = mPoly[1].match(/\([^)]+\)/g) || [];
                         var rings = ringStrs.map(function(rs){ return parseCoordList(rs.slice(1, -1)); }).filter(function(r){ return r.length >= 3; });
                         if (rings.length) polygons.push({ polygon: rings, color: color, pathIdx: i });
+                        continue;
+                    }
+                    var mPt = s.match(/^POINT\s*\(\s*([-\d.eE+]+)\s+([-\d.eE+]+)/i);
+                    if (mPt) {
+                        var px = parseFloat(mPt[1]), py = parseFloat(mPt[2]);
+                        if (!isNaN(px) && !isNaN(py)) points.push({ position: [px, py], color: color, pathIdx: i });
+                        continue;
+                    }
+                    var mMP = s.match(/^MULTIPOINT\s*\(\s*([\s\S]+?)\s*\)\s*$/i);
+                    if (mMP) {
+                        // MULTIPOINT can be `((x y),(x y),...)` or `(x y, x y, ...)`
+                        var body = mMP[1].replace(/[()]/g, '');
+                        var mpCoords = parseCoordList(body);
+                        for (var mi = 0; mi < mpCoords.length; mi++) {
+                            points.push({ position: mpCoords[mi], color: color, pathIdx: i });
+                        }
+                        continue;
+                    }
+                    // MULTILINESTRING — multi_supply_demand's ROUTE_WKT etc. — emit one PathLayer
+                    // feature per inner `(x y, x y, ...)` group, all sharing the row's color.
+                    var mMLine = s.match(/^MULTILINESTRING\s*\(\s*([\s\S]+)\s*\)\s*$/i);
+                    if (mMLine) {
+                        var lineStrs = mMLine[1].match(/\([^)]+\)/g) || [];
+                        lineStrs.forEach(function(ls) {
+                            var coords = parseCoordList(ls.slice(1, -1));
+                            if (coords.length) paths.push({ path: coords, color: color, pathIdx: i });
+                        });
+                        continue;
+                    }
+                    // MULTIPOLYGON — split on top-level `)),((` boundary to get each polygon's
+                    // ring set, then reuse the POLYGON-with-holes parser per polygon.
+                    var mMPoly = s.match(/^MULTIPOLYGON\s*\(\s*\(([\s\S]+)\)\s*\)\s*$/i);
+                    if (mMPoly) {
+                        var polyBlocks = mMPoly[1].split(/\)\s*\)\s*,\s*\(\s*\(/);
+                        polyBlocks.forEach(function(blk) {
+                            var ringStrs = ('(' + blk + ')').match(/\([^)]+\)/g) || [];
+                            var rings = ringStrs.map(function(rs){ return parseCoordList(rs.slice(1, -1)); }).filter(function(r){ return r.length >= 3; });
+                            if (rings.length) polygons.push({ polygon: rings, color: color, pathIdx: i });
+                        });
                         continue;
                     }
                 }
@@ -1225,8 +1264,8 @@ function SolveMapView(props) {
             getPath: function(d) { return d.path; },
             getColor: function(d) { return d.color; },
             widthUnits: 'pixels',
-            getWidth: 5,
-            widthMinPixels: 4,
+            getWidth: 2,
+            widthMinPixels: 1,
             jointRounded: true,
             capRounded: true,
             pickable: true,
@@ -1241,9 +1280,9 @@ function SolveMapView(props) {
             getPolygon: function(d) { return d.polygon; },
             getFillColor: function(d) { return [d.color[0], d.color[1], d.color[2], 80]; },
             getLineColor: function(d) { return d.color; },
-            getLineWidth: 2,
+            getLineWidth: 1,
             lineWidthUnits: 'pixels',
-            lineWidthMinPixels: 2,
+            lineWidthMinPixels: 1,
             stroked: true,
             filled: true,
             pickable: true,
@@ -1375,6 +1414,17 @@ function QueryPanel(props) {
     const [error, setError] = useState(null);
     const [loading, setLoading] = useState(false);
     const [pos, setPos] = useState({ x: 120 + panelIndex * 30, y: 60 + panelIndex * 30 });
+    // If a restored/initial position is off-viewport (e.g., loaded from a
+    // session that was saved on a wider monitor, or re-opened after a window
+    // resize), snap the title bar back into reach on mount.
+    useEffect(function() {
+        if (typeof window === 'undefined') return;
+        var maxY = Math.max(0, window.innerHeight - 32);
+        var maxX = Math.max(0, window.innerWidth  - 60);
+        if (pos.y < 0 || pos.y > maxY || pos.x > maxX) {
+            setPos({ x: Math.max(0, Math.min(pos.x, maxX)), y: Math.max(0, Math.min(pos.y, maxY)) });
+        }
+    }, []);
     // The Create Helper has many rows (NODES/EDGES/WEIGHTS/RESTRICTIONS with optional
     // add-ons) — give it a taller default so the whole flow + SQL preview is visible.
     const [size, setSize] = useState({ w: 640, h: (!!props.createHelper || !!props.solveHelper || !!props.matchHelper) ? 780 : 620 });
@@ -1430,6 +1480,10 @@ function QueryPanel(props) {
     // <solution_table>;` so consecutive Runs don't fail because the solution
     // table from the prior run already exists.
     const [shAutoDrop, setShAutoDrop] = useState(initSH.autoDrop !== false);
+    // result_table_index — picked via a top-level dropdown next to the
+    // Solution table input (server uses index 1 by default; non-empty value
+    // gets injected as `result_table_index = 'N'` into OPTIONS at SQL emit).
+    const [shResultTableIdx, setShResultTableIdx] = useState(initSH.resultTableIdx || '');
     function shAddConfig(compKey, configRequired, configLabel) {
         if (!configRequired || !configRequired.length) return;
         var grammarComp = solveGr && solveGr.components && solveGr.components[compKey];
@@ -1453,9 +1507,12 @@ function QueryPanel(props) {
         if (!groupId) return;
         setShRows(function(prev){ var arr = (prev[compKey] || []).filter(function(r){ return r.groupId !== groupId; }); var n = Object.assign({}, prev); n[compKey] = arr; return n; });
     }
-    function shAddOption() { setShOptions(function(prev){ return (prev || []).concat([{ key: '', value: '' }]); }); }
+    // New rows the user adds are tagged `from: 'user'` so they survive solver
+    // changes; auto-populated rows (see useEffect below) are `from: 'grammar'`
+    // and get refreshed on solver-type switch.
+    function shAddOption() { setShOptions(function(prev){ return (prev || []).concat([{ key: '', value: '', from: 'user' }]); }); }
     function shUpdateOption(idx, field, val) {
-        setShOptions(function(prev){ var arr = (prev || []).slice(); arr[idx] = Object.assign({}, arr[idx], (field === 'key' ? { key: val } : { value: val })); return arr; });
+        setShOptions(function(prev){ var arr = (prev || []).slice(); arr[idx] = Object.assign({}, arr[idx], (field === 'key' ? { key: val } : { value: val }), { from: 'user' }); return arr; });
     }
     function shRemoveOption(idx) {
         setShOptions(function(prev){ var arr = (prev || []).slice(); arr.splice(idx, 1); return arr; });
@@ -1518,6 +1575,7 @@ function QueryPanel(props) {
     }
     function shGenerate() {
         var solver = (shSolverType || 'SHORTEST_PATH').trim();
+        var hasSolTbl = !!(shSolutionTable && shSolutionTable.trim());
         var parts = [
             "    GRAPH => '" + (activeGraph || '<graph>') + "'",
             "    SOLVER_TYPE => '" + solver + "'",
@@ -1528,19 +1586,31 @@ function QueryPanel(props) {
             var s = shBuildSection(ck);
             if (s) parts.push(s);
         });
-        if (shSolutionTable && shSolutionTable.trim()) {
+        if (hasSolTbl) {
             parts.push("    SOLUTION_TABLE => '" + shSolutionTable.trim() + "'");
         }
         var opts = (shOptions || []).filter(function(o){ return o && o.key && o.key.trim() && o.value !== undefined && String(o.value).trim() !== ''; });
+        // The Output dropdown (next to Solution table) is the authoritative
+        // source for `result_table_index` — strip any same-key entry from the
+        // OPTIONS list and re-inject the dropdown value if set.
+        if (shResultTableIdx && String(shResultTableIdx).trim()) {
+            opts = opts.filter(function(o){ return String(o.key).toLowerCase() !== 'result_table_index'; });
+            opts.push({ key: 'result_table_index', value: String(shResultTableIdx).trim() });
+        }
         if (opts.length) {
             var lines = opts.map(function(o){ return "        " + o.key.trim() + " = '" + String(o.value).replace(/'/g, "''") + "'"; });
             parts.push('    OPTIONS => KV_PAIRS(\n' + lines.join(',\n') + '\n    )');
         }
-        var sql = 'EXECUTE FUNCTION SOLVE_GRAPH(\n' + parts.join(',\n') + '\n);';
-        // Prefix with DROP TABLE IF EXISTS so consecutive Runs against the same
-        // SOLUTION_TABLE don't fail — SOLVE_GRAPH won't replace an existing one.
-        if (shAutoDrop && shSolutionTable && shSolutionTable.trim()) {
-            sql = 'DROP TABLE IF EXISTS ' + shSolutionTable.trim() + ';\n' + sql;
+        var sql;
+        if (hasSolTbl) {
+            // EXECUTE FUNCTION form — persists results into SOLUTION_TABLE.
+            sql = 'EXECUTE FUNCTION SOLVE_GRAPH(\n' + parts.join(',\n') + '\n);';
+            // Prefix with DROP TABLE IF EXISTS so consecutive Runs don't fail.
+            if (shAutoDrop) sql = 'DROP TABLE IF EXISTS ' + shSolutionTable.trim() + ';\n' + sql;
+        } else {
+            // Inline `SELECT * FROM SOLVE_GRAPH(...)` — returns the rows directly
+            // without materializing a persistent solution table.
+            sql = 'SELECT * FROM SOLVE_GRAPH(\n' + parts.join(',\n') + '\n);';
         }
         setSql(sql);
     }
@@ -1561,6 +1631,94 @@ function QueryPanel(props) {
     const [mhOptions, setMhOptions] = useState(initMH.options || []);
     const [mhExpanded, setMhExpanded] = useState(initMH.expanded || {});
     const [mhAutoDrop, setMhAutoDrop] = useState(initMH.autoDrop !== false);
+    const [mhResultTableIdx, setMhResultTableIdx] = useState(initMH.resultTableIdx || '');
+
+    // Auto-populate OPTIONS from the grammar based on the current solver/method.
+    // Only options whose `filtervalues` explicitly lists the current method are
+    // pulled in (broadly-applicable options with empty filtervalues are skipped
+    // to avoid clutter; the user can still add them via `+ Add option`).
+    // Each auto-added entry is tagged `from: 'grammar'` so it gets refreshed
+    // when the user picks a different solver/method; user-added or user-edited
+    // entries (`from: 'user'`) survive.
+    var applicableGrammarOptions = function(gr, method) {
+        if (!gr || !gr.options || !method) return [];
+        return gr.options
+            .filter(function(o){ return o && o.name && o.internal !== 'true' && o.filtervalues && o.filtervalues.length && o.filtervalues.indexOf(method) !== -1; })
+            .map(function(o){ return { key: o.name, value: o.default || '', from: 'grammar' }; });
+    };
+    // For solve_graph / match_graph, the grammar's `outputs` is an array of
+    // column-schemas. After filtering each schema's columns by the current
+    // solve_method/solver_type, `result_table_index` is the 1-based position
+    // among the *applicable* schemas — NOT the position within the global
+    // outputs array. (E.g. `match_isochrone`'s POLYGON schema is index 2,
+    // not 16, even if it's the 16th entry overall.)
+    // Returns: [{ index, columns: [{name, type, format, …}], summary }, …]
+    var outputSchemasForMethod = function(gr, method) {
+        if (!gr || !gr.outputs || !gr.outputs.length || !method) return [];
+        var out = [];
+        var applicableIdx = 0;
+        gr.outputs.forEach(function(cols) {
+            var applicable = (cols || []).filter(function(c){ return !c.filtervalues || !c.filtervalues.length || c.filtervalues.indexOf(method) !== -1; });
+            if (applicable.length === 0) return;
+            applicableIdx++;
+            var names = applicable.map(function(c){ return c.name + (c.format === 'wkt' ? ' (wkt)' : ''); });
+            var summary = names.slice(0, 6).join(', ') + (names.length > 6 ? ', …' : '');
+            out.push({ index: applicableIdx, columns: applicable, summary: summary });
+        });
+        return out;
+    };
+    var mergeGrammarOptions = function(prev, grammarOpts) {
+        var userAdded = (prev || []).filter(function(o){ return o && o.from !== 'grammar'; });
+        var userKeys = {};
+        userAdded.forEach(function(o){ if (o.key) userKeys[String(o.key).toLowerCase()] = true; });
+        var deduped = grammarOpts.filter(function(o){ return !userKeys[String(o.key).toLowerCase()]; });
+        return deduped.concat(userAdded);
+    };
+    useEffect(function() {
+        if (!solveHelper) return;
+        setShOptions(function(prev){ return mergeGrammarOptions(prev, applicableGrammarOptions(solveGr, shSolverType)); });
+    }, [solveHelper, shSolverType, solveGr]);
+    useEffect(function() {
+        if (!matchHelper) return;
+        setMhOptions(function(prev){ return mergeGrammarOptions(prev, applicableGrammarOptions(matchGr, mhSolveMethod)); });
+    }, [matchHelper, mhSolveMethod, matchGr]);
+
+    // Default solution-table name = `<schema>.solution_<graph_name>_<solver>`
+    // (or `solution_<graph_name>_<solver>` when the graph is unqualified). Pre-
+    // fills the empty field on panel open and refreshes when the user picks a
+    // different solver — but only if the current value still matches the
+    // auto-default pattern so we don't clobber a user-customized name.
+    var defaultSolutionTable = function(graph, methodOrSolver) {
+        if (!graph) return '';
+        var s = String(methodOrSolver || '').toLowerCase().trim();
+        var parts = String(graph).split('.');
+        var schema = parts.length > 1 ? parts[0] : '';
+        var name = parts[parts.length - 1];
+        var tbl = 'solution_' + name + (s ? '_' + s : '');
+        return schema ? (schema + '.' + tbl) : tbl;
+    };
+    var isAutoSolutionTable = function(val, graph) {
+        if (!val || !graph) return false;
+        var parts = String(graph).split('.');
+        var name = parts[parts.length - 1];
+        // Allow optional schema. prefix; bareName followed by an underscore + something.
+        var re = new RegExp('^(?:[\\w]+\\.)?solution_' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '_[\\w_]+$', 'i');
+        return re.test(String(val).trim());
+    };
+    useEffect(function() {
+        if (!solveHelper || !activeGraph) return;
+        var current = (shSolutionTable || '').trim();
+        if (!current || isAutoSolutionTable(current, activeGraph)) {
+            setShSolutionTable(defaultSolutionTable(activeGraph, shSolverType));
+        }
+    }, [solveHelper, activeGraph, shSolverType]);
+    useEffect(function() {
+        if (!matchHelper || !activeGraph) return;
+        var current = (mhSolutionTable || '').trim();
+        if (!current || isAutoSolutionTable(current, activeGraph)) {
+            setMhSolutionTable(defaultSolutionTable(activeGraph, mhSolveMethod));
+        }
+    }, [matchHelper, activeGraph, mhSolveMethod]);
     // The grammar's `addons` list is flat with no per-addon filtervalues, so
     // we apply a name-based heuristic to drop SAMPLE_<DOMAIN>_* identifiers
     // that clearly belong to other solve methods (e.g., SAMPLE_SUPPLY_* only
@@ -1611,9 +1769,9 @@ function QueryPanel(props) {
         if (!groupId) return;
         setMhRows(function(prev){ var arr = (prev[compKey] || []).filter(function(r){ return r.groupId !== groupId; }); var n = Object.assign({}, prev); n[compKey] = arr; return n; });
     }
-    function mhAddOption() { setMhOptions(function(prev){ return (prev || []).concat([{ key: '', value: '' }]); }); }
+    function mhAddOption() { setMhOptions(function(prev){ return (prev || []).concat([{ key: '', value: '', from: 'user' }]); }); }
     function mhUpdateOption(idx, field, val) {
-        setMhOptions(function(prev){ var arr = (prev || []).slice(); arr[idx] = Object.assign({}, arr[idx], (field === 'key' ? { key: val } : { value: val })); return arr; });
+        setMhOptions(function(prev){ var arr = (prev || []).slice(); arr[idx] = Object.assign({}, arr[idx], (field === 'key' ? { key: val } : { value: val }), { from: 'user' }); return arr; });
     }
     function mhRemoveOption(idx) {
         setMhOptions(function(prev){ var arr = (prev || []).slice(); arr.splice(idx, 1); return arr; });
@@ -1676,17 +1834,28 @@ function QueryPanel(props) {
             var s = mhBuildSection(ck);
             if (s) parts.push(s);
         });
-        if (mhSolutionTable && mhSolutionTable.trim()) {
+        var hasSolTbl = !!(mhSolutionTable && mhSolutionTable.trim());
+        if (hasSolTbl) {
             parts.push("    SOLUTION_TABLE => '" + mhSolutionTable.trim() + "'");
         }
         var opts = (mhOptions || []).filter(function(o){ return o && o.key && o.key.trim() && o.value !== undefined && String(o.value).trim() !== ''; });
+        if (mhResultTableIdx && String(mhResultTableIdx).trim()) {
+            opts = opts.filter(function(o){ return String(o.key).toLowerCase() !== 'result_table_index'; });
+            opts.push({ key: 'result_table_index', value: String(mhResultTableIdx).trim() });
+        }
         if (opts.length) {
             var lines = opts.map(function(o){ return "        " + o.key.trim() + " = '" + String(o.value).replace(/'/g, "''") + "'"; });
             parts.push('    OPTIONS => KV_PAIRS(\n' + lines.join(',\n') + '\n    )');
         }
-        var sql = 'EXECUTE FUNCTION MATCH_GRAPH(\n' + parts.join(',\n') + '\n);';
-        if (mhAutoDrop && mhSolutionTable && mhSolutionTable.trim()) {
-            sql = 'DROP TABLE IF EXISTS ' + mhSolutionTable.trim() + ';\n' + sql;
+        var sql;
+        if (hasSolTbl) {
+            // EXECUTE FUNCTION form — persists results into SOLUTION_TABLE.
+            sql = 'EXECUTE FUNCTION MATCH_GRAPH(\n' + parts.join(',\n') + '\n);';
+            if (mhAutoDrop) sql = 'DROP TABLE IF EXISTS ' + mhSolutionTable.trim() + ';\n' + sql;
+        } else {
+            // Inline `SELECT * FROM MATCH_GRAPH(...)` — returns rows directly
+            // without a persistent solution table.
+            sql = 'SELECT * FROM MATCH_GRAPH(\n' + parts.join(',\n') + '\n);';
         }
         setSql(sql);
     }
@@ -1766,6 +1935,27 @@ function QueryPanel(props) {
             var arr = (prev[component] || []).slice(); arr.splice(idx, 1);
             var next = Object.assign({}, prev); next[component] = arr; return next;
         });
+    }
+    // After auto-filling a template into an empty Constants-mode input, select
+    // the bit the user is most likely to edit (the numeric coords / id / etc.)
+    // so a single keystroke replaces it. Returns [start, end] indices or null.
+    function templateEditableRange(template) {
+        if (!template) return null;
+        // Highest priority: coordinates inside `POINT(... ...)`.
+        var pt = template.match(/POINT\s*\(\s*([^)]+?)\s*\)/i);
+        if (pt) {
+            var i = template.indexOf(pt[1]);
+            if (i >= 0) return [i, i + pt[1].length];
+        }
+        // Anything inside the outermost `(...)` (e.g. ST_GEOMFROMTEXT('...')).
+        var par = template.indexOf('(');
+        var parEnd = template.lastIndexOf(')');
+        if (par >= 0 && parEnd > par) return [par + 1, parEnd];
+        // Anything inside the outermost single quotes.
+        var q1 = template.indexOf("'");
+        var q2 = template.lastIndexOf("'");
+        if (q1 >= 0 && q2 > q1) return [q1 + 1, q2];
+        return [0, template.length];
     }
     // Per-alias example hint for Constants-mode row inputs. Picked by alias
     // name keyword so the user sees a relevant SQL literal for each row
@@ -2280,11 +2470,11 @@ function QueryPanel(props) {
                 // panel can be restored mid-iteration. Note: we DON'T auto-run on
                 // restore — the user reruns intentionally to (re-)create the graph.
                 create: createHelper ? { show: chShow, graphName: chGraphName, directed: chDirected, rows: chRows, sectionTable: chSectionTable, options: chOptions, mode: chMode, expanded: chExpanded } : undefined,
-                solve: solveHelper ? { show: shShow, solverType: shSolverType, solutionTable: shSolutionTable, rows: shRows, sectionTable: shSectionTable, sectionMode: shSectionMode, options: shOptions, expanded: shExpanded, autoDrop: shAutoDrop } : undefined,
-                match: matchHelper ? { show: mhShow, solveMethod: mhSolveMethod, solutionTable: mhSolutionTable, rows: mhRows, sectionTable: mhSectionTable, sectionMode: mhSectionMode, options: mhOptions, expanded: mhExpanded, autoDrop: mhAutoDrop } : undefined
+                solve: solveHelper ? { show: shShow, solverType: shSolverType, solutionTable: shSolutionTable, rows: shRows, sectionTable: shSectionTable, sectionMode: shSectionMode, options: shOptions, expanded: shExpanded, autoDrop: shAutoDrop, resultTableIdx: shResultTableIdx } : undefined,
+                match: matchHelper ? { show: mhShow, solveMethod: mhSolveMethod, solutionTable: mhSolutionTable, rows: mhRows, sectionTable: mhSectionTable, sectionMode: mhSectionMode, options: mhOptions, expanded: mhExpanded, autoDrop: mhAutoDrop, resultTableIdx: mhResultTableIdx } : undefined
             }
         };
-    }, [sql, activeTab, stateRef, chShow, chGraphName, chDirected, chRows, chSectionTable, chOptions, chMode, chExpanded, shShow, shSolverType, shSolutionTable, shRows, shSectionTable, shSectionMode, shOptions, shExpanded, shAutoDrop, mhShow, mhSolveMethod, mhSolutionTable, mhRows, mhSectionTable, mhSectionMode, mhOptions, mhExpanded, mhAutoDrop]);
+    }, [sql, activeTab, stateRef, chShow, chGraphName, chDirected, chRows, chSectionTable, chOptions, chMode, chExpanded, shShow, shSolverType, shSolutionTable, shRows, shSectionTable, shSectionMode, shOptions, shExpanded, shAutoDrop, shResultTableIdx, mhShow, mhSolveMethod, mhSolutionTable, mhRows, mhSectionTable, mhSectionMode, mhOptions, mhExpanded, mhAutoDrop, mhResultTableIdx]);
 
     // Execute query — supports multi-statement input (split on top-level ; after
     // stripping --line and /* block */ comments). Statements run sequentially;
@@ -2334,6 +2524,18 @@ function QueryPanel(props) {
             // actual solver/match output rather than just the function's status row.
             var mSolveTbl = /EXECUTE\s+FUNCTION\s+(?:SOLVE_GRAPH|MATCH_GRAPH)\s*\([\s\S]*?SOLUTION_TABLE\s*=>\s*'([^']+)'/i.exec(lastStmt);
             if (mSolveTbl) {
+                // Stash the EXECUTE FUNCTION's `info` map (svg / status / etc.)
+                // — the upcoming SELECT * roundtrip replaces `data`, and the
+                // SELECT response doesn't carry the function's info. We splice
+                // the saved info back onto the SELECT data_str so downstream
+                // viz code (Video tab from `info.svg`, etc.) still sees it.
+                var preservedInfo = null;
+                if (data && data.data_str) {
+                    try {
+                        var execInner = safeParse(data.data_str);
+                        if (execInner && execInner.info) preservedInfo = execInner.info;
+                    } catch(_e) {}
+                }
                 try {
                     var tbl = mSolveTbl[1];
                     // result_table_index option (when set) tells the server to return
@@ -2384,6 +2586,16 @@ function QueryPanel(props) {
                     // (e.g., permissions, no rows). Surface a non-fatal warning.
                     setError('Run succeeded but SELECT * FROM <solution_table> failed: ' + sErr.message);
                 }
+                // Splice the preserved function-call info into whatever the
+                // current `data` is (the SELECT's response, or the original
+                // EXECUTE FUNCTION response if the SELECT failed).
+                if (preservedInfo && data && data.data_str) {
+                    try {
+                        var withInfo = safeParse(data.data_str) || {};
+                        withInfo.info = Object.assign({}, withInfo.info || {}, preservedInfo);
+                        data = Object.assign({}, data, { data_str: JSON.stringify(withInfo) });
+                    } catch(_e) {}
+                }
             }
             setResult(data);
             // Detect a successful CREATE/ALTER on a graph — surface a success banner
@@ -2408,11 +2620,27 @@ function QueryPanel(props) {
         finally { setLoading(false); }
     };
 
-    // Draggable title bar
+    // Draggable title bar — clamps position so the title bar (where the drag
+    // handle lives) always stays within the viewport. Without clamping the
+    // user could drag the panel up past the top edge and lose the only handle
+    // they could use to drag it back down.
     var handleDragStart = function(e) {
         e.preventDefault();
         var startX = e.clientX, startY = e.clientY, startPos = { x: pos.x, y: pos.y };
-        var onMove = function(ev) { setPos({ x: startPos.x + ev.clientX - startX, y: startPos.y + ev.clientY - startY }); };
+        var onMove = function(ev) {
+            var nx = startPos.x + ev.clientX - startX;
+            var ny = startPos.y + ev.clientY - startY;
+            // Keep at least a 60-px-wide title strip on screen so we always
+            // have something to grab. Title bar is ~32 px tall; require it
+            // to stay between 0 and (viewportH - 32).
+            var maxY = Math.max(0, (typeof window !== 'undefined' ? window.innerHeight : 800) - 32);
+            var maxX = Math.max(0, (typeof window !== 'undefined' ? window.innerWidth  : 1200) - 60);
+            if (ny < 0) ny = 0;
+            if (ny > maxY) ny = maxY;
+            if (nx < -(size.w - 60)) nx = -(size.w - 60); // allow off-left, keep 60 px visible
+            if (nx > maxX) nx = maxX;
+            setPos({ x: nx, y: ny });
+        };
         var onUp = function() { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
         document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp);
     };
@@ -2504,10 +2732,24 @@ function QueryPanel(props) {
     // `wktroute` by the solver; sniff first row as fallback so any column
     // whose value starts with LINESTRING/POINT/etc. is picked up).
     var wktRouteCol = (function(){
-        var hdrs = tableData.headers || [], rows = tableData.rows || [];
+        var hdrs = tableData.headers || [];
+        var dts = tableData.datatypes || [];
+        var rows = tableData.rows || [];
+        // 1. Column DATATYPE check — most reliable. Kinetica reports geometry
+        //    columns with datatype strings containing `wkt` or `geometry`
+        //    (e.g., 'geometry', 'string,wkt'). This trumps the name and value
+        //    sniff because it's schema-authoritative regardless of column name.
+        var typeLike = /wkt|geometry|geom/i;
         for (var i = 0; i < hdrs.length; i++) {
-            if (/^(wktroute|wkt|polygon|geom)$/i.test(hdrs[i])) return hdrs[i];
+            if (typeLike.test(String(dts[i] || ''))) return hdrs[i];
         }
+        // 2. Header substring match (when datatype isn't reported, e.g., older
+        //    server responses).
+        var nameLike = /wkt|geom|polygon|linestring|multilinestring/i;
+        for (var k = 0; k < hdrs.length; k++) {
+            if (nameLike.test(hdrs[k])) return hdrs[k];
+        }
+        // 3. Value sniff fallback — first column whose first row is a WKT string.
         if (rows.length > 0) {
             for (var j = 0; j < hdrs.length; j++) {
                 var v = rows[0][hdrs[j]];
@@ -2555,7 +2797,7 @@ function QueryPanel(props) {
             if (matchHelper) setMhShow(false);
             if (size.h < 500) setSize(function(s) { return { w: Math.max(s.w, 640), h: 560 }; });
         } else {
-            if (activeTab === 'graph' || activeTab === 'map') setActiveTab(null);
+            if (activeTab === 'graph' || activeTab === 'map' || activeTab === 'video') setActiveTab(null);
             if (graphRef.current) { graphRef.current._destructor && graphRef.current._destructor(); graphRef.current = null; }
             if (graphContainerRef.current) graphContainerRef.current.innerHTML = '';
         }
@@ -2995,9 +3237,9 @@ function QueryPanel(props) {
                                         <option value="use_rtree"/>
                                     </datalist>
                                 </div>
-                                <div style={{ display:'flex', gap:6, paddingTop:4 }}>
+                                <div style={{ display:'flex', gap:6, alignItems:'center', position:'sticky', bottom:0, background:'#fff', padding:'6px 0', borderTop:'1px solid #f1f2f6', zIndex:2 }}>
                                     <button onClick={chGenerate} style={{ padding:'6px 14px', border:'none', borderRadius:5, cursor:'pointer', fontWeight:700, color:'#fff', background:'#00b894', fontSize:12, fontFamily:'inherit' }}>Generate</button>
-                                    <span style={{ fontSize:10, color:'#b2bec3', alignSelf:'center' }}>edits the SQL below — refine manually before Run</span>
+                                    <span style={{ fontSize:10, color:'#b2bec3' }}>edits the SQL below — refine manually before Run</span>
                                 </div>
                             </div>
                         )}
@@ -3038,9 +3280,23 @@ function QueryPanel(props) {
                                     <select value={shSolverType} onChange={function(e){ setShSolverType(e.target.value); }} style={{ padding:'4px 8px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:12, fontFamily:'inherit', outline:'none' }}>
                                         {solvers.map(function(s){ return <option key={s} value={s}>{s}</option>; })}
                                     </select>
-                                    <label title="Optional output table for the solve results (server creates it)." style={{ color:'#636e72', fontWeight:600 }}>Solution table</label>
+                                    <label title="Optional output table for the solve results (server creates it). Clear the field to switch to the inline `SELECT * FROM SOLVE_GRAPH(...)` form (rows returned directly, no persistent table)." style={{ color:'#636e72', fontWeight:600 }}>Solution table</label>
                                     <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                                        <input value={shSolutionTable} onChange={function(e){ setShSolutionTable(e.target.value); }} placeholder="schema.solution_table (optional)" style={{ flex:1, padding:'4px 8px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:12, fontFamily:'inherit', outline:'none' }}/>
+                                        <input value={shSolutionTable} onChange={function(e){ setShSolutionTable(e.target.value); }} placeholder="schema.solution_table (clear → inline SELECT)" style={{ flex:1, padding:'4px 8px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:12, fontFamily:'inherit', outline:'none' }}/>
+                                        {(function(){
+                                            // Output dropdown — pulls applicable schemas from the
+                                            // grammar's `outputs` array, 1-based, filtered by
+                                            // current solver. Empty = server default (typically 1).
+                                            var schemas = outputSchemasForMethod(solveGr, shSolverType);
+                                            if (schemas.length < 2) return null;
+                                            return <label title="result_table_index — which output schema to return for this solver." style={{ display:'inline-flex', alignItems:'center', gap:4, fontSize:11, color:'#636e72', whiteSpace:'nowrap' }}>
+                                                Output
+                                                <select value={shResultTableIdx} onChange={function(e){ setShResultTableIdx(e.target.value); }} style={{ padding:'3px 6px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:11, fontFamily:'inherit', background:'#fff' }}>
+                                                    <option value="">default</option>
+                                                    {schemas.map(function(sc){ return <option key={sc.index} value={String(sc.index)}>{sc.index}: {sc.summary}</option>; })}
+                                                </select>
+                                            </label>;
+                                        })()}
                                         <label title="Prefix generated SQL with DROP TABLE IF EXISTS <solution_table> so consecutive Runs don't fail because the table already exists." style={{ display:'inline-flex', alignItems:'center', gap:4, cursor:'pointer', fontSize:11, color:'#636e72', whiteSpace:'nowrap' }}>
                                             <input type="checkbox" checked={shAutoDrop} onChange={function(e){ setShAutoDrop(e.target.checked); }}/> auto-drop
                                         </label>
@@ -3133,8 +3389,11 @@ function QueryPanel(props) {
                                                             var usingDefault = !!defaultTbl && !rowIsOverride && !inConstants;
                                                             var pickedTbl = chPickedTable(r.value);
                                                             var pickedCols = pickedTbl ? (tableColumnsCache[pickedTbl] || null) : null;
+                                                            // Use the original identifier (r.id, e.g. NODE_WKTPOINT) for the
+                                                            // hint — the displayed alias is collapsed to bare `NODE` and
+                                                            // would lose the WKT/ID/NAME type context otherwise.
                                                             var ph = inConstants
-                                                                ? ('e.g. ' + constantHintFor(aliasName))
+                                                                ? ('e.g. ' + constantHintFor(r.id))
                                                                 : (r.optional ? 'Optional' : (defaultTbl ? 'column' : 'schema.table.column'));
                                                             var ttl = inConstants
                                                                 ? ('Literal SQL expression for AS ' + aliasName + '. Rows sharing a configuration combo emit as one (SELECT a, b, c) n-tuple sub-select.')
@@ -3147,7 +3406,18 @@ function QueryPanel(props) {
                                                                         var pt = chPickedTable(v);
                                                                         if (pt && onFetchTableColumns && !Object.prototype.hasOwnProperty.call(tableColumnsCache, pt)) onFetchTableColumns(pt);
                                                                     }
-                                                                }} placeholder={ph} title={ttl} style={{ padding:'4px 8px', border: '1px solid ' + (r.optional ? '#f1f2f6' : (inConstants || usingDefault ? '#fd79a8' : '#dfe6e9')), borderRadius:5, fontSize:11, fontFamily: inConstants ? 'monospace' : 'inherit', outline:'none', background: r.optional ? '#fafbfc' : '#fff' }}/>
+                                                                }} onFocus={inConstants ? function(e){
+                                                                    // Focus an empty constants row → drop in the alias-specific
+                                                                    // template (e.g. ST_GEOMFROMTEXT('POINT(-122 37)')) and
+                                                                    // pre-select the editable bit (the coords) so the user
+                                                                    // types over them instead of writing the boilerplate.
+                                                                    if (r.value) return;
+                                                                    var hint = constantHintFor(r.id);
+                                                                    if (!hint || hint === 'literal value') return;
+                                                                    shUpdateRow(compKey, idx, hint);
+                                                                    var el = e.target, rng = templateEditableRange(hint);
+                                                                    setTimeout(function(){ try { el.setSelectionRange(rng[0], rng[1]); } catch(err){} }, 0);
+                                                                } : null} placeholder={ph} title={ttl} style={{ padding:'4px 8px', border: '1px solid ' + (r.optional ? '#f1f2f6' : (inConstants || usingDefault ? '#fd79a8' : '#dfe6e9')), borderRadius:5, fontSize:11, fontFamily: inConstants ? 'monospace' : 'inherit', outline:'none', background: r.optional ? '#fafbfc' : '#fff' }}/>
                                                                 {!inConstants && <datalist id={'sh-tables-' + compKey + '-' + idx}>
                                                                     {usingDefault && defaultTblCols && defaultTblCols.length
                                                                         ? defaultTblCols.map(function(col){ return <option key={defaultTbl + '|' + col} value={col}/>; })
@@ -3174,9 +3444,20 @@ function QueryPanel(props) {
                                         {!(shOptions && shOptions.length) && <span style={{ fontSize:10, color:'#b2bec3' }}>OPTIONS =&gt; KV_PAIRS(key = 'value', …)</span>}
                                     </div>
                                     {(shOptions || []).map(function(o, idx){
+                                        // If the grammar reports this option's type as `boolean`,
+                                        // render a small true/false dropdown instead of a free-form
+                                        // input — saves the user typing common defaults.
+                                        var grammarOpt = ((solveGr && solveGr.options) || []).find(function(g){ return g && g.name && String(g.name).toLowerCase() === String(o.key || '').toLowerCase(); });
+                                        var isBool = grammarOpt && String(grammarOpt.type).toLowerCase() === 'boolean';
                                         return <div key={idx} style={{ display:'grid', gridTemplateColumns:'1fr 1fr auto', gap:8, alignItems:'center', padding:'3px 0' }}>
                                             <input list="sh-option-keys" value={o.key || ''} onChange={function(e){ shUpdateOption(idx, 'key', e.target.value); }} placeholder="option key" style={{ padding:'4px 8px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:11, fontFamily:'inherit', outline:'none' }}/>
-                                            <input value={o.value || ''} onChange={function(e){ shUpdateOption(idx, 'value', e.target.value); }} placeholder="value" style={{ padding:'4px 8px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:11, fontFamily:'inherit', outline:'none' }}/>
+                                            {isBool
+                                                ? <select value={o.value || ''} onChange={function(e){ shUpdateOption(idx, 'value', e.target.value); }} style={{ padding:'4px 8px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:11, fontFamily:'inherit', outline:'none', background:'#fff' }}>
+                                                    <option value="true">true</option>
+                                                    <option value="false">false</option>
+                                                </select>
+                                                : <input value={o.value || ''} onChange={function(e){ shUpdateOption(idx, 'value', e.target.value); }} placeholder="value" style={{ padding:'4px 8px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:11, fontFamily:'inherit', outline:'none' }}/>
+                                            }
                                             <span onClick={function(){ shRemoveOption(idx); }} title="Remove" style={{ cursor:'pointer', color:'#d63031', fontSize:14, padding:'0 4px', userSelect:'none' }}>{'🗑'}</span>
                                         </div>;
                                     })}
@@ -3190,9 +3471,9 @@ function QueryPanel(props) {
                                         })()}
                                     </datalist>
                                 </div>
-                                <div style={{ display:'flex', gap:6, paddingTop:4 }}>
+                                <div style={{ display:'flex', gap:6, alignItems:'center', position:'sticky', bottom:0, background:'#fff', padding:'6px 0', borderTop:'1px solid #f1f2f6', zIndex:2 }}>
                                     <button onClick={shGenerate} style={{ padding:'6px 14px', border:'none', borderRadius:5, cursor:'pointer', fontWeight:700, color:'#fff', background:'#fd79a8', fontSize:12, fontFamily:'inherit' }}>Generate</button>
-                                    <span style={{ fontSize:10, color:'#b2bec3', alignSelf:'center' }}>edits the SQL below — refine manually before Run</span>
+                                    <span style={{ fontSize:10, color:'#b2bec3' }}>edits the SQL below — refine manually before Run</span>
                                 </div>
                             </div>;
                         })()}
@@ -3228,9 +3509,23 @@ function QueryPanel(props) {
                                     <select value={mhSolveMethod} onChange={function(e){ setMhSolveMethod(e.target.value); }} style={{ padding:'4px 8px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:12, fontFamily:'inherit', outline:'none' }}>
                                         {methods.map(function(s){ return <option key={s} value={s}>{s}</option>; })}
                                     </select>
-                                    <label title="Optional output table for the match results (server creates it)." style={{ color:'#636e72', fontWeight:600 }}>Solution table</label>
+                                    <label title="Optional output table for the match results (server creates it). Clear the field to switch to the inline `SELECT * FROM MATCH_GRAPH(...)` form." style={{ color:'#636e72', fontWeight:600 }}>Solution table</label>
                                     <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                                        <input value={mhSolutionTable} onChange={function(e){ setMhSolutionTable(e.target.value); }} placeholder="schema.solution_table (optional)" style={{ flex:1, padding:'4px 8px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:12, fontFamily:'inherit', outline:'none' }}/>
+                                        <input value={mhSolutionTable} onChange={function(e){ setMhSolutionTable(e.target.value); }} placeholder="schema.solution_table (clear → inline SELECT)" style={{ flex:1, padding:'4px 8px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:12, fontFamily:'inherit', outline:'none' }}/>
+                                        {(function(){
+                                            // Output dropdown — schemas pulled from matchGr.outputs
+                                            // filtered by current solve_method. Only shown when ≥2
+                                            // schemas apply (otherwise picking is moot).
+                                            var schemas = outputSchemasForMethod(matchGr, mhSolveMethod);
+                                            if (schemas.length < 2) return null;
+                                            return <label title="result_table_index — which output schema to return for this method." style={{ display:'inline-flex', alignItems:'center', gap:4, fontSize:11, color:'#636e72', whiteSpace:'nowrap' }}>
+                                                Output
+                                                <select value={mhResultTableIdx} onChange={function(e){ setMhResultTableIdx(e.target.value); }} style={{ padding:'3px 6px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:11, fontFamily:'inherit', background:'#fff' }}>
+                                                    <option value="">default</option>
+                                                    {schemas.map(function(sc){ return <option key={sc.index} value={String(sc.index)}>{sc.index}: {sc.summary}</option>; })}
+                                                </select>
+                                            </label>;
+                                        })()}
                                         <label title="Prefix generated SQL with DROP TABLE IF EXISTS <solution_table>." style={{ display:'inline-flex', alignItems:'center', gap:4, cursor:'pointer', fontSize:11, color:'#636e72', whiteSpace:'nowrap' }}>
                                             <input type="checkbox" checked={mhAutoDrop} onChange={function(e){ setMhAutoDrop(e.target.checked); }}/> auto-drop
                                         </label>
@@ -3316,8 +3611,11 @@ function QueryPanel(props) {
                                                             var usingDefault = !!defaultTbl && !rowIsOverride && !inConstants;
                                                             var pickedTbl = chPickedTable(r.value);
                                                             var pickedCols = pickedTbl ? (tableColumnsCache[pickedTbl] || null) : null;
+                                                            // Use r.id (e.g. SAMPLE_WKTPOINT) for the hint so the type
+                                                            // context drives the example even when the displayed alias
+                                                            // strips the SAMPLE_ prefix.
                                                             var ph = inConstants
-                                                                ? ('e.g. ' + constantHintFor(aliasName))
+                                                                ? ('e.g. ' + constantHintFor(r.id))
                                                                 : (r.optional ? 'Optional' : (defaultTbl ? 'column' : 'schema.table.column'));
                                                             var ttl = inConstants
                                                                 ? ('Literal SQL expression for AS ' + aliasName + '. Rows sharing a configuration combo emit as one (SELECT a, b, c) n-tuple sub-select.')
@@ -3330,7 +3628,17 @@ function QueryPanel(props) {
                                                                         var pt = chPickedTable(v);
                                                                         if (pt && onFetchTableColumns && !Object.prototype.hasOwnProperty.call(tableColumnsCache, pt)) onFetchTableColumns(pt);
                                                                     }
-                                                                }} placeholder={ph} title={ttl} style={{ padding:'4px 8px', border: '1px solid ' + (r.optional ? '#f1f2f6' : (inConstants || usingDefault ? '#e17055' : '#dfe6e9')), borderRadius:5, fontSize:11, fontFamily: inConstants ? 'monospace' : 'inherit', outline:'none', background: r.optional ? '#fafbfc' : '#fff' }}/>
+                                                                }} onFocus={inConstants ? function(e){
+                                                                    // Focus an empty constants row → drop the alias-specific
+                                                                    // template (e.g. ST_GEOMFROMTEXT('POINT(-122 37)')) in and
+                                                                    // pre-select the coords so the user types over them.
+                                                                    if (r.value) return;
+                                                                    var hint = constantHintFor(r.id);
+                                                                    if (!hint || hint === 'literal value') return;
+                                                                    mhUpdateRow(compKey, idx, hint);
+                                                                    var el = e.target, rng = templateEditableRange(hint);
+                                                                    setTimeout(function(){ try { el.setSelectionRange(rng[0], rng[1]); } catch(err){} }, 0);
+                                                                } : null} placeholder={ph} title={ttl} style={{ padding:'4px 8px', border: '1px solid ' + (r.optional ? '#f1f2f6' : (inConstants || usingDefault ? '#e17055' : '#dfe6e9')), borderRadius:5, fontSize:11, fontFamily: inConstants ? 'monospace' : 'inherit', outline:'none', background: r.optional ? '#fafbfc' : '#fff' }}/>
                                                                 {!inConstants && <datalist id={'mh-tables-' + compKey + '-' + idx}>
                                                                     {usingDefault && defaultTblCols && defaultTblCols.length
                                                                         ? defaultTblCols.map(function(col){ return <option key={defaultTbl + '|' + col} value={col}/>; })
@@ -3357,9 +3665,17 @@ function QueryPanel(props) {
                                         {!(mhOptions && mhOptions.length) && <span style={{ fontSize:10, color:'#b2bec3' }}>OPTIONS =&gt; KV_PAIRS(key = 'value', …)</span>}
                                     </div>
                                     {(mhOptions || []).map(function(o, idx){
+                                        var grammarOpt = ((matchGr && matchGr.options) || []).find(function(g){ return g && g.name && String(g.name).toLowerCase() === String(o.key || '').toLowerCase(); });
+                                        var isBool = grammarOpt && String(grammarOpt.type).toLowerCase() === 'boolean';
                                         return <div key={idx} style={{ display:'grid', gridTemplateColumns:'1fr 1fr auto', gap:8, alignItems:'center', padding:'3px 0' }}>
                                             <input list="mh-option-keys" value={o.key || ''} onChange={function(e){ mhUpdateOption(idx, 'key', e.target.value); }} placeholder="option key" style={{ padding:'4px 8px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:11, fontFamily:'inherit', outline:'none' }}/>
-                                            <input value={o.value || ''} onChange={function(e){ mhUpdateOption(idx, 'value', e.target.value); }} placeholder="value" style={{ padding:'4px 8px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:11, fontFamily:'inherit', outline:'none' }}/>
+                                            {isBool
+                                                ? <select value={o.value || ''} onChange={function(e){ mhUpdateOption(idx, 'value', e.target.value); }} style={{ padding:'4px 8px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:11, fontFamily:'inherit', outline:'none', background:'#fff' }}>
+                                                    <option value="true">true</option>
+                                                    <option value="false">false</option>
+                                                </select>
+                                                : <input value={o.value || ''} onChange={function(e){ mhUpdateOption(idx, 'value', e.target.value); }} placeholder="value" style={{ padding:'4px 8px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:11, fontFamily:'inherit', outline:'none' }}/>
+                                            }
                                             <span onClick={function(){ mhRemoveOption(idx); }} title="Remove" style={{ cursor:'pointer', color:'#d63031', fontSize:14, padding:'0 4px', userSelect:'none' }}>{'🗑'}</span>
                                         </div>;
                                     })}
@@ -3372,9 +3688,9 @@ function QueryPanel(props) {
                                         })()}
                                     </datalist>
                                 </div>
-                                <div style={{ display:'flex', gap:6, paddingTop:4 }}>
+                                <div style={{ display:'flex', gap:6, alignItems:'center', position:'sticky', bottom:0, background:'#fff', padding:'6px 0', borderTop:'1px solid #f1f2f6', zIndex:2 }}>
                                     <button onClick={mhGenerate} style={{ padding:'6px 14px', border:'none', borderRadius:5, cursor:'pointer', fontWeight:700, color:'#fff', background:'#e17055', fontSize:12, fontFamily:'inherit' }}>Generate</button>
-                                    <span style={{ fontSize:10, color:'#b2bec3', alignSelf:'center' }}>edits the SQL below — refine manually before Run</span>
+                                    <span style={{ fontSize:10, color:'#b2bec3' }}>edits the SQL below — refine manually before Run</span>
                                 </div>
                             </div>;
                         })()}
@@ -3518,6 +3834,7 @@ function QueryPanel(props) {
                     {tableData.rows.length > 0 && tabBtn('results', 'View Results (' + tableData.rows.length + ')')}
                     {hasVizData && tabBtn('graph', 'Visualization (' + effectiveGraphData.nodes.length + ' nodes' + (hasSolvePath ? ', ' + tableData.rows.length + ' paths' : '') + ')')}
                     {hasSolveMap && tabBtn('map', 'Map (' + tableData.rows.length + (xyCols && !wktRouteCol ? ' points' : ' rows') + ')')}
+                    {info && info.svg && tabBtn('video', 'Video')}
                 </div>
             )}
 
@@ -3606,9 +3923,23 @@ function QueryPanel(props) {
                 </div>
             )}
 
-            {/* Resize handle */}
+            {/* Video tab — when the response's `info.svg` carries an inline
+                animated SVG string, render it directly with `dangerouslySetInnerHTML`.
+                Server emits this for solvers/matchers that produce an animation
+                (e.g., supply-demand routes, GPS map-matching trails). */}
+            {activeTab === 'video' && info && info.svg && (
+                <div style={{ flex:1, display:'flex', flexDirection:'column', minHeight:0, position:'relative', background:'#0a0a1a', overflow:'auto' }}>
+                    <div style={{ flex:1, minHeight:0, display:'flex', alignItems:'center', justifyContent:'center', padding:8 }}
+                         dangerouslySetInnerHTML={{ __html: info.svg }} />
+                </div>
+            )}
+
+            {/* Resize handle — zIndex above the deck.gl canvas (which lives at
+                zIndex 1 inside SolveMapView) so it's grabbable even when the
+                Map tab fills the panel. Without this it was hidden until a
+                row pick pushed the map canvas up. */}
             <div onMouseDown={handleResizeStart} style={{
-                position:'absolute', right:0, bottom:0, width:16, height:16,
+                position:'absolute', right:0, bottom:0, width:16, height:16, zIndex:10,
                 cursor:'nwse-resize', display:'flex', alignItems:'center', justifyContent:'center',
             }}>
                 <div style={{ width:8, height:8, borderRight:'2px solid ' + (activeTab === 'graph' ? 'rgba(255,255,255,0.3)' : '#bbb'), borderBottom:'2px solid ' + (activeTab === 'graph' ? 'rgba(255,255,255,0.3)' : '#bbb') }}/>
@@ -6720,13 +7051,21 @@ function App() {
         };
         var normalizeEndpoint = function(endpointJson, endpointPath) {
             // `outputs` is an array of column-schemas (multiple output shapes per
-            // solver category); each entry is a list of `{name, type, format, filtervalues}`.
-            // Empty `{"name":"", ...}` placeholder slots are dropped here so downstream
-            // code only sees real columns.
+            // solver category); each entry is a list of column objects. The
+            // server JSON uses `column` + `subtype` (e.g., `subtype: "wkt"`);
+            // we normalise to `name` + `format` so downstream code stays uniform.
+            // Empty placeholder slots ({"column":""...}) are dropped.
             var outputs = (endpointJson.outputs || []).map(function(schema){
-                return (schema || []).filter(function(c){ return c && c.name; }).map(function(c){
-                    return { name: c.name, type: c.type || '', format: c.format || '', filtervalues: c.filtervalues || [] };
-                });
+                return (schema || [])
+                    .filter(function(c){ return c && (c.name || c.column); })
+                    .map(function(c){
+                        return {
+                            name: c.name || c.column,
+                            type: c.type || '',
+                            format: c.format || c.subtype || '',
+                            filtervalues: c.filtervalues || [],
+                        };
+                    });
             });
             var out = { components: {}, filterparams: endpointJson.filterparams || [], options: endpointJson.options || [], outputs: outputs };
             var comps = endpointJson.components || [];
