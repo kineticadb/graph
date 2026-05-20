@@ -1114,7 +1114,8 @@ function DashboardHeader(props) {
 // color per path (PALETTE-cycled). Auto-fits viewport to the union bbox on mount.
 function SolveMapView(props) {
     var rows = props.rows || [];
-    var wktCol = props.wktCol;
+    var wktCol = props.wktCol;                       // primary geometry column (back-compat)
+    var wktCols = props.wktCols && props.wktCols.length ? props.wktCols : (wktCol ? [wktCol] : []);
     var xyCols = props.xyCols || null;   // { x: 'x', y: 'y' } when row carries plain coord pair
     var basemapStyle = props.basemapStyle || 'light';
     var containerRef = useRef(null);
@@ -1125,6 +1126,11 @@ function SolveMapView(props) {
     // client-side so no server roundtrip is needed — the picked row carries
     // the full solver-output record (NAME, COST, EDGE_PATH, …, wktroute, nameroute).
     const [pickedRow, setPickedRow] = useState(null);
+    // Which geometry column(s) to render. Defaults to the first detected;
+    // user can flip to any other or 'ALL' to overlay all of them. State key
+    // resets when the column list reference changes (e.g., new query result).
+    const [pickedCol, setPickedCol] = useState(wktCols[0] || null);
+    useEffect(function(){ if (wktCols.length && (!pickedCol || (pickedCol !== 'ALL' && wktCols.indexOf(pickedCol) === -1))) setPickedCol(wktCols[0]); }, [wktCols.join('|')]);
 
     var hexToRgb = function(hex) {
         var h = String(hex || '#888').replace('#', '');
@@ -1141,14 +1147,25 @@ function SolveMapView(props) {
     // Parse each row's geometry into either a PathLayer feature (LINESTRING) or
     // a PolygonLayer feature (POLYGON, with optional holes). Other shapes are
     // dropped. Both lists feed deck.gl on the same map.
+    // Resolve which WKT columns to parse. 'ALL' = every detected geometry
+    // column for superposition; otherwise just the single picked column.
+    var colsToUse = useMemo(function(){
+        if (!wktCols.length) return [];
+        if (pickedCol === 'ALL') return wktCols.slice();
+        if (pickedCol && wktCols.indexOf(pickedCol) !== -1) return [pickedCol];
+        return [wktCols[0]];
+    }, [wktCols.join('|'), pickedCol]);
     var geom = useMemo(function() {
         if (!rows.length) return { paths: [], polygons: [], points: [] };
         var paths = [], polygons = [], points = [];
         for (var i = 0; i < rows.length; i++) {
             var color = hexToRgb(PALETTE[i % PALETTE.length].solid);
-            // WKT branch (LINESTRING / POLYGON / POINT / MULTIPOINT).
-            if (wktCol) {
-                var wkt = rows[i] && rows[i][wktCol];
+            // WKT branch (LINESTRING / POLYGON / POINT / MULTIPOINT / MULTILINESTRING / MULTIPOLYGON)
+            // — iterate ALL selected geometry columns for this row so SOURCE +
+            // TARGET + PATH (each `geometry`) all render together when the user
+            // picks 'All' in the column dropdown.
+            for (var ci = 0; ci < colsToUse.length; ci++) {
+                var wkt = rows[i] && rows[i][colsToUse[ci]];
                 if (wkt) {
                     var s = String(wkt).trim();
                     var mLine = s.match(/^LINESTRING\s*\(\s*([^)]+)\s*\)/i);
@@ -1215,7 +1232,7 @@ function SolveMapView(props) {
             }
         }
         return { paths: paths, polygons: polygons, points: points };
-    }, [rows, wktCol, xyCols && xyCols.x, xyCols && xyCols.y]);
+    }, [rows, colsToUse.join('|'), xyCols && xyCols.x, xyCols && xyCols.y]);
     var pathsData = geom.paths;
     var polygonsData = geom.polygons;
     var pointsData = geom.points;
@@ -1355,6 +1372,20 @@ function SolveMapView(props) {
 
     return (
         <div style={{ width:'100%', height:'100%', display:'flex', flexDirection:'column', minHeight:0 }}>
+            {/* Multi-column picker — only renders when >1 geometry columns exist
+                in the result (e.g., SHORTEST_PATH's SOURCE/TARGET/PATH or
+                match_batch_solves' equivalent). Lets the user flip between
+                them or pick `All` for superposition on the same map. */}
+            {wktCols.length > 1 && (
+                <div style={{ flexShrink:0, display:'flex', alignItems:'center', gap:6, padding:'4px 8px', background:'#0a0a1a', color:'#dfe6e9', fontSize:11, borderBottom:'1px solid #1f2030' }}>
+                    <span style={{ fontWeight:600 }}>Geometry:</span>
+                    {wktCols.map(function(c){
+                        var active = pickedCol === c;
+                        return <span key={c} onClick={function(){ setPickedCol(c); }} style={{ padding:'2px 8px', borderRadius:4, cursor:'pointer', fontWeight: active ? 700 : 500, color: active ? '#0a0a1a' : '#dfe6e9', background: active ? '#fd79a8' : 'transparent', border:'1px solid ' + (active ? '#fd79a8' : '#3a3b4e'), userSelect:'none' }}>{c}</span>;
+                    })}
+                    <span onClick={function(){ setPickedCol('ALL'); }} style={{ padding:'2px 8px', borderRadius:4, cursor:'pointer', fontWeight: pickedCol === 'ALL' ? 700 : 500, color: pickedCol === 'ALL' ? '#0a0a1a' : '#dfe6e9', background: pickedCol === 'ALL' ? '#00b894' : 'transparent', border:'1px solid ' + (pickedCol === 'ALL' ? '#00b894' : '#3a3b4e'), userSelect:'none' }} title="Overlay all geometry columns on the same map">All</span>
+                </div>
+            )}
             <div ref={containerRef} style={{ flex:'1 1 auto', position:'relative', background:'#0a0a1a', minHeight:200 }}/>
             {pickedRow && pickedRow.row && (
                 <div style={{ flexShrink:0, maxHeight:140, overflowY:'auto', overflowX:'auto', borderTop:'2px solid #fd79a8', background:'#fff' }}>
@@ -2731,33 +2762,43 @@ function QueryPanel(props) {
     // WKT route column — geo path geometry. Detected the same way (named
     // `wktroute` by the solver; sniff first row as fallback so any column
     // whose value starts with LINESTRING/POINT/etc. is picked up).
-    var wktRouteCol = (function(){
+    // Detect ALL geometry columns in the result so the Map tab can offer a
+    // picker (with an `All` option for superposition) when there are multiple
+    // — e.g., SHORTEST_PATH output rows often expose SOURCE, TARGET, PATH all
+    // as `geometry`. Three-step priority: datatype, then header substring,
+    // then first-row value sniff. Returns an ordered list; index 0 is the
+    // default selection.
+    var wktRouteCols = (function(){
         var hdrs = tableData.headers || [];
         var dts = tableData.datatypes || [];
         var rows = tableData.rows || [];
-        // 1. Column DATATYPE check — most reliable. Kinetica reports geometry
-        //    columns with datatype strings containing `wkt` or `geometry`
-        //    (e.g., 'geometry', 'string,wkt'). This trumps the name and value
-        //    sniff because it's schema-authoritative regardless of column name.
+        var seen = {};
+        var found = [];
+        var add = function(h){ if (!seen[h]) { seen[h] = true; found.push(h); } };
+        // Run ALL three detectors and union the results (deduped). The previous
+        // short-circuit ("step 1 found something so skip 2 and 3") missed
+        // sibling geom columns when the server's datatype tag was inconsistent
+        // — e.g., SOURCE / TARGET / PATH all geometry but only PATH reported
+        // with the `geometry` datatype, the others coming through as `string`.
+        // Value sniff catches those cases reliably.
         var typeLike = /wkt|geometry|geom/i;
         for (var i = 0; i < hdrs.length; i++) {
-            if (typeLike.test(String(dts[i] || ''))) return hdrs[i];
+            if (typeLike.test(String(dts[i] || ''))) add(hdrs[i]);
         }
-        // 2. Header substring match (when datatype isn't reported, e.g., older
-        //    server responses).
         var nameLike = /wkt|geom|polygon|linestring|multilinestring/i;
         for (var k = 0; k < hdrs.length; k++) {
-            if (nameLike.test(hdrs[k])) return hdrs[k];
+            if (nameLike.test(hdrs[k])) add(hdrs[k]);
         }
-        // 3. Value sniff fallback — first column whose first row is a WKT string.
         if (rows.length > 0) {
+            var WKT_VAL = /^(LINESTRING|POINT|MULTILINESTRING|POLYGON|MULTIPOLYGON)\s*\(/i;
             for (var j = 0; j < hdrs.length; j++) {
                 var v = rows[0][hdrs[j]];
-                if (typeof v === 'string' && /^(LINESTRING|POINT|MULTILINESTRING|POLYGON|MULTIPOLYGON)\s*\(/i.test(v.trim())) return hdrs[j];
+                if (typeof v === 'string' && WKT_VAL.test(v.trim())) add(hdrs[j]);
             }
         }
-        return null;
+        return found;
     })();
+    var wktRouteCol = wktRouteCols[0] || null;  // primary (kept for legacy callsites / detection gating).
     // Both Solve and Match helpers feed a solution_table via /execute/sql →
     // SELECT * roundtrip, so the same viz logic applies (path / map).
     // Detect x,y column pair (case-insensitive; also longitude/latitude as
@@ -3329,16 +3370,18 @@ function QueryPanel(props) {
                                             <span style={{ fontSize:10, color:'#b2bec3', width:10, userSelect:'none' }}>{expanded ? '▼' : '▶'}</span>
                                             <span style={{ fontWeight:800, color: sectionColor, fontSize:12, letterSpacing:0.3 }}>{displayName}</span>
                                             {!expanded && rows.length > 0 && <span style={{ fontSize:10, color:'#b2bec3' }}>{rows.length + ' row' + (rows.length !== 1 ? 's' : '')}</span>}
-                                            {/* Table | Constants mode toggle (SOLVETARGETS sections only). */}
+                                            {/* Table | Constants mode toggle (SOLVETARGETS sections only).
+                                                `flexShrink: 0` so the chips aren't squeezed by the wider
+                                                config dropdown that comes after. */}
                                             {expanded && isSolveTarget && (
-                                                <div onClick={function(e){ e.stopPropagation(); }} style={{ display:'inline-flex', gap:0, marginLeft:'auto', border:'1px solid #dfe6e9', borderRadius:5, overflow:'hidden', fontSize:10 }}>
+                                                <div onClick={function(e){ e.stopPropagation(); }} style={{ display:'inline-flex', gap:0, flexShrink:0, border:'1px solid #dfe6e9', borderRadius:5, overflow:'hidden', fontSize:10 }}>
                                                     {['table','constants'].map(function(m){
                                                         var active = sectionMode === m;
                                                         return <span key={m} onClick={function(){ setShSectionMode(function(prev){ var n = Object.assign({}, prev); n[compKey] = m; return n; }); }} title={m === 'table' ? 'Rows are column references against a table' : "Rows are literal SQL expressions (e.g. 'Bill', ST_geomFromText('POINT(-122 37)'))"} style={{ padding:'2px 8px', cursor:'pointer', background: active ? '#fd79a8' : '#fff', color: active ? '#fff' : '#636e72', fontWeight: active ? 700 : 600, userSelect:'none' }}>{m}</span>;
                                                     })}
                                                 </div>
                                             )}
-                                            {expanded && configs.length > 0 && <select onClick={function(e){ e.stopPropagation(); }} onChange={function(e){ var i = parseInt(e.target.value); if (!isNaN(i) && configs[i]) { shAddConfig(compKey, configs[i].required, configs[i].label); } e.target.value = ''; }} defaultValue="" style={{ flex:1, padding:'3px 6px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:11, background:'#fff', fontFamily:'inherit' }}>
+                                            {expanded && configs.length > 0 && <select onClick={function(e){ e.stopPropagation(); }} onChange={function(e){ var i = parseInt(e.target.value); if (!isNaN(i) && configs[i]) { shAddConfig(compKey, configs[i].required, configs[i].label); } e.target.value = ''; }} defaultValue="" style={{ flex:1, minWidth:0, padding:'3px 6px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:11, background:'#fff', fontFamily:'inherit' }}>
                                                 <option value="">Select a configuration… (+ Add)</option>
                                                 {configs.map(function(c, i){ return <option key={i} value={i}>{c.label}</option>; })}
                                             </select>}
@@ -3555,14 +3598,14 @@ function QueryPanel(props) {
                                             <span style={{ fontWeight:800, color: sectionColor, fontSize:12, letterSpacing:0.3 }}>{displayName}</span>
                                             {!expanded && rows.length > 0 && <span style={{ fontSize:10, color:'#b2bec3' }}>{rows.length + ' row' + (rows.length !== 1 ? 's' : '')}</span>}
                                             {expanded && isSamples && (
-                                                <div onClick={function(e){ e.stopPropagation(); }} style={{ display:'inline-flex', gap:0, marginLeft:'auto', border:'1px solid #dfe6e9', borderRadius:5, overflow:'hidden', fontSize:10 }}>
+                                                <div onClick={function(e){ e.stopPropagation(); }} style={{ display:'inline-flex', gap:0, flexShrink:0, border:'1px solid #dfe6e9', borderRadius:5, overflow:'hidden', fontSize:10 }}>
                                                     {['table','constants'].map(function(m){
                                                         var active = sectionMode === m;
                                                         return <span key={m} onClick={function(){ setMhSectionMode(function(prev){ var n = Object.assign({}, prev); n[compKey] = m; return n; }); }} title={m === 'table' ? 'Rows are column references against a table' : "Rows are literal SQL expressions (e.g. ST_GEOMFROMTEXT('POINT(...)'))"} style={{ padding:'2px 8px', cursor:'pointer', background: active ? '#e17055' : '#fff', color: active ? '#fff' : '#636e72', fontWeight: active ? 700 : 600, userSelect:'none' }}>{m}</span>;
                                                     })}
                                                 </div>
                                             )}
-                                            {expanded && configs.length > 0 && <select onClick={function(e){ e.stopPropagation(); }} onChange={function(e){ var i = parseInt(e.target.value); if (!isNaN(i) && configs[i]) { mhAddConfig(compKey, configs[i].required, configs[i].label); } e.target.value = ''; }} defaultValue="" style={{ flex:1, padding:'3px 6px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:11, background:'#fff', fontFamily:'inherit' }}>
+                                            {expanded && configs.length > 0 && <select onClick={function(e){ e.stopPropagation(); }} onChange={function(e){ var i = parseInt(e.target.value); if (!isNaN(i) && configs[i]) { mhAddConfig(compKey, configs[i].required, configs[i].label); } e.target.value = ''; }} defaultValue="" style={{ flex:1, minWidth:0, padding:'3px 6px', border:'1px solid #dfe6e9', borderRadius:5, fontSize:11, background:'#fff', fontFamily:'inherit' }}>
                                                 <option value="">Select a configuration… (+ Add)</option>
                                                 {configs.map(function(c, i){ return <option key={i} value={i}>{c.label}</option>; })}
                                             </select>}
@@ -3919,7 +3962,7 @@ function QueryPanel(props) {
                 otherwise. SolveMapView handles its own MapLibre + Deck setup. */}
             {activeTab === 'map' && hasSolveMap && (
                 <div style={{ flex:1, display:'flex', flexDirection:'column', minHeight:0, position:'relative' }}>
-                    <SolveMapView rows={tableData.rows} wktCol={wktRouteCol} xyCols={xyCols} basemapStyle="light"/>
+                    <SolveMapView rows={tableData.rows} wktCol={wktRouteCol} wktCols={wktRouteCols} xyCols={xyCols} basemapStyle="light"/>
                 </div>
             )}
 
@@ -4385,17 +4428,34 @@ function DeckMapView(props) {
                 map.jumpTo({ center: [e.viewState.longitude, e.viewState.latitude], zoom: e.viewState.zoom, bearing: e.viewState.bearing, pitch: e.viewState.pitch });
             },
             onClick: function(info) {
-                // Show click coordinates
+                // Copy just `lon lat` (space-separated, WKT-coord-pair shape)
+                // to the clipboard on every map click. The Constants-mode
+                // focus-fill drops in the full `ST_GEOMFROMTEXT('POINT(x y)')`
+                // template with the `x y` part pre-selected — Ctrl+V then
+                // replaces just the coords, so a full-WKT clipboard would
+                // double-wrap. Bare coords are also paste-friendly elsewhere
+                // (e.g., direct SELECTs against WKT columns).
                 var overlay = coordOverlayRef.current;
                 if (info.coordinate && overlay) {
-                    overlay.textContent = info.coordinate[0].toFixed(6) + ', ' + info.coordinate[1].toFixed(6);
+                    var lon = info.coordinate[0].toFixed(6), lat = info.coordinate[1].toFixed(6);
+                    overlay.textContent = lon + ', ' + lat;
                     overlay.style.display = '';
+                    if (navigator.clipboard) {
+                        try {
+                            navigator.clipboard.writeText(lon + ' ' + lat);
+                            overlay.textContent = lon + ', ' + lat + '  ✓ copied';
+                            setTimeout(function(){ if (coordOverlayRef.current) coordOverlayRef.current.textContent = lon + ', ' + lat; }, 1500);
+                        } catch(_e) {}
+                    }
                 } else if (overlay) { overlay.style.display = 'none'; }
                 if (info.index >= 0 && deckDataRef.current) {
                     var dd = deckDataRef.current;
                     var eid = dd.pickEdgeIds[info.index];
                     var si = info.index * 2;
-                    if (navigator.clipboard) navigator.clipboard.writeText(String(eid || ''));
+                    // (Edge id no longer copied — the WKT POINT above is what
+                    //  the user wants on the clipboard for paste into Constants.)
+                    var srcLL = [dd.srcPos[si], dd.srcPos[si+1]];
+                    var tgtLL = [dd.tgtPos[si], dd.tgtPos[si+1]];
                     var srcLL = [dd.srcPos[si], dd.srcPos[si+1]];
                     var tgtLL = [dd.tgtPos[si], dd.tgtPos[si+1]];
                     setPickedDeckEdge({ src: srcLL, tgt: tgtLL });
