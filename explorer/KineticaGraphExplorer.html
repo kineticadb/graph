@@ -1417,6 +1417,11 @@ function SolveMapView(props) {
 function QueryPanel(props) {
     var onClose = props.onClose, onMinimize = props.onMinimize, credentials = props.credentials, labelData = props.labelData, panelIndex = props.panelIndex || 0;
     var initialSql = props.initialSql || '', initialTab = props.initialTab || null, stateRef = props.stateRef, autoRun = props.autoRun;
+    // Raw response from the last Run, preserved across minimize→restore cycles
+    // (kept in memory only — not session-saved; the full row payload is too
+    // big). Set by `onMinimize` snapshotting `stateRef.current.result` onto
+    // the panel entry; consumed here to seed `useState(result)`.
+    var initialResult = props.initialResult || null;
     var dotString = props.dotString, activeGraph = props.activeGraph, graphDirected = props.graphDirected, nodeSourceTable = props.nodeSourceTable, initialHelper = props.initialHelper;
     var hideQueryHelper = !!props.hideQueryHelper; // suppress Query Helper UI (used when panel is opened from a Table click/context-menu)
     var createHelper = !!props.createHelper; // show the Create Helper (NODES/EDGES pickers) for new-graph flow
@@ -1441,7 +1446,7 @@ function QueryPanel(props) {
         return null;
     }
     const [sql, setSql] = useState(initialSql);
-    const [result, setResult] = useState(null);
+    const [result, setResult] = useState(initialResult);
     const [error, setError] = useState(null);
     const [loading, setLoading] = useState(false);
     const [pos, setPos] = useState({ x: 120 + panelIndex * 30, y: 60 + panelIndex * 30 });
@@ -2496,6 +2501,9 @@ function QueryPanel(props) {
         if (stateRef) stateRef.current = {
             sql: sql,
             activeTab: activeTab,
+            // Stash the raw response so the App-level onMinimize handler can
+            // snapshot it onto the panel entry (kept in memory across restore).
+            result: result,
             helper: { srcLabels: srcLabels, srcEntity: srcEntity, tgtLabels: tgtLabels, tgtEntity: tgtEntity, waypoints: waypoints, showHelper: showHelper,
                 // Create Helper state stashed under `helper.create` so the create-graph
                 // panel can be restored mid-iteration. Note: we DON'T auto-run on
@@ -2505,7 +2513,7 @@ function QueryPanel(props) {
                 match: matchHelper ? { show: mhShow, solveMethod: mhSolveMethod, solutionTable: mhSolutionTable, rows: mhRows, sectionTable: mhSectionTable, sectionMode: mhSectionMode, options: mhOptions, expanded: mhExpanded, autoDrop: mhAutoDrop, resultTableIdx: mhResultTableIdx } : undefined
             }
         };
-    }, [sql, activeTab, stateRef, chShow, chGraphName, chDirected, chRows, chSectionTable, chOptions, chMode, chExpanded, shShow, shSolverType, shSolutionTable, shRows, shSectionTable, shSectionMode, shOptions, shExpanded, shAutoDrop, shResultTableIdx, mhShow, mhSolveMethod, mhSolutionTable, mhRows, mhSectionTable, mhSectionMode, mhOptions, mhExpanded, mhAutoDrop, mhResultTableIdx]);
+    }, [sql, activeTab, result, stateRef, chShow, chGraphName, chDirected, chRows, chSectionTable, chOptions, chMode, chExpanded, shShow, shSolverType, shSolutionTable, shRows, shSectionTable, shSectionMode, shOptions, shExpanded, shAutoDrop, shResultTableIdx, mhShow, mhSolveMethod, mhSolutionTable, mhRows, mhSectionTable, mhSectionMode, mhOptions, mhExpanded, mhAutoDrop, mhResultTableIdx]);
 
     // Execute query — supports multi-statement input (split on top-level ; after
     // stripping --line and /* block */ comments). Statements run sequentially;
@@ -8342,7 +8350,22 @@ function App() {
                          : panel.solveHelper ? 'solve'
                          : panel.matchHelper ? 'match'
                          : (panel.hideQueryHelper ? 'table' : 'query');
-                return { kind: kind, sql: s ? s.sql : panel.initialSql, activeTab: s ? s.activeTab : panel.initialTab, helper: h };
+                // Persist the raw Run response only when its stringified size
+                // is under the cap (default 2 MB). Over-cap panels are saved
+                // *without* a cachedResult — on session load they restore
+                // empty and the user re-runs manually (we explicitly DO NOT
+                // auto-rerun, matching the existing solve/match restore-from-pill
+                // behavior). The cap keeps JSON files small for big match
+                // outputs while still resurrecting typical Query/Solve panels.
+                var SESSION_RESULT_CAP = 2 * 1024 * 1024;  // 2 MB
+                var cached = null;
+                if (s && s.result) {
+                    try {
+                        var serialized = JSON.stringify(s.result);
+                        if (serialized.length <= SESSION_RESULT_CAP) cached = s.result;
+                    } catch(_e) {}
+                }
+                return { kind: kind, sql: s ? s.sql : panel.initialSql, activeTab: s ? s.activeTab : panel.initialTab, helper: h, cachedResult: cached };
             }).filter(function(q) {
                 // Persist only panels that actually have user content for their kind.
                 // Prevents an empty Query-Helper panel from being added during a session
@@ -8455,7 +8478,7 @@ function App() {
                                 var isSolve = q.kind === 'solve' || !!q.solveHelper;
                                 var isMatch = q.kind === 'match' || !!q.matchHelper;
                                 var isTable = q.kind === 'table';
-                                return { id: queryIdCounter.current, initialSql: q.sql || '', initialTab: null, stateRef: { current: null }, autoRun: false, initialHelper: q.helper || null, createHelper: isCreate, solveHelper: isSolve, matchHelper: isMatch, hideQueryHelper: isCreate || isSolve || isMatch || isTable };
+                                return { id: queryIdCounter.current, initialSql: q.sql || '', initialTab: null, stateRef: { current: null }, autoRun: false, initialHelper: q.helper || null, initialResult: q.cachedResult || null, createHelper: isCreate, solveHelper: isSolve, matchHelper: isMatch, hideQueryHelper: isCreate || isSolve || isMatch || isTable };
                             });
                             setQueryPanels(panels);
                         }
@@ -8484,7 +8507,12 @@ function App() {
                                 var isSolve = q.kind === 'solve' || !!q.solveHelper;
                                 var isMatch = q.kind === 'match' || !!q.matchHelper;
                                 var isTable = q.kind === 'table';
-                                return { id: queryIdCounter.current, initialSql: q.sql || '', initialTab: q.activeTab || null, stateRef: { current: null }, autoRun: (isCreate || isSolve || isMatch) ? false : autoRunQueries, initialHelper: q.helper || null, createHelper: isCreate, solveHelper: isSolve, matchHelper: isMatch, hideQueryHelper: isCreate || isSolve || isMatch || isTable };
+                                var hasCached = !!q.cachedResult;
+                                // If we persisted a result under the size cap, restore it directly
+                                // and skip auto-rerun. If not (over-cap), keep the existing rule:
+                                // Query/Table auto-rerun, Create/Solve/Match wait for user click.
+                                var autoRunOnRestore = hasCached ? false : ((isCreate || isSolve || isMatch) ? false : autoRunQueries);
+                                return { id: queryIdCounter.current, initialSql: q.sql || '', initialTab: q.activeTab || null, stateRef: { current: null }, autoRun: autoRunOnRestore, initialHelper: q.helper || null, initialResult: q.cachedResult || null, createHelper: isCreate, solveHelper: isSolve, matchHelper: isMatch, hideQueryHelper: isCreate || isSolve || isMatch || isTable };
                             });
                             setQueryPanels(panels);
                         }
@@ -8651,7 +8679,16 @@ function App() {
                                     return { id: p.id, label: labelById[p.id] };
                                 });
                             })()}
-                            onRestorePanel={function(id){ setQueryPanels(function(prev){ return prev.map(function(p){ if (p.id !== id) return p; return Object.assign({}, p, { minimized: false, autoRun: !p.createHelper && !p.solveHelper && !p.matchHelper }); }); }); }}
+                            onRestorePanel={function(id){ setQueryPanels(function(prev){ return prev.map(function(p){ if (p.id !== id) return p;
+                                // Auto-rerun on restore only when we DON'T have a
+                                // cached response — `initialResult` (captured at
+                                // minimize time) re-seeds the panel with the prior
+                                // Run output, so no need to re-fire the SQL. C*/S*/M*
+                                // panels never auto-rerun (the helper-driven SQL
+                                // is intentional to execute).
+                                var shouldAutoRun = !p.createHelper && !p.solveHelper && !p.matchHelper && !p.initialResult;
+                                return Object.assign({}, p, { minimized: false, autoRun: shouldAutoRun });
+                            }); }); }}
                         />
 
                         {toast && (
@@ -8767,7 +8804,7 @@ function App() {
                 )}
             </div>
             {queryPanels.filter(function(p){ return !p.minimized; }).map(function(panel, idx) {
-                return <QueryPanel key={panel.id} panelIndex={idx} credentials={credentials} labelData={labelData} dotString={dotString} activeGraph={activeGraph} graphDirected={graphDirected} nodeSourceTable={nodeSourceTable} initialSql={panel.initialSql} initialTab={panel.initialTab} initialHelper={panel.initialHelper} stateRef={panel.stateRef} autoRun={panel.autoRun} hideQueryHelper={panel.hideQueryHelper} createHelper={panel.createHelper} solveHelper={panel.solveHelper} matchHelper={panel.matchHelper} tables={tables} graphGrammar={graphGrammar} endpointGrammar={endpointGrammar} tableColumnsCache={tableColumnsCache} onFetchTableColumns={fetchTableColumns} onGraphCreated={refreshGraphsList} onOpenCreatedGraph={function(n){ if (n === activeGraph) { loadGraphDetails(n, { preservePanels: true }); } else { confirmSessionChange(function(){ loadGraphDetails(n, { preservePanels: true }); }); } }}
+                return <QueryPanel key={panel.id} panelIndex={idx} credentials={credentials} labelData={labelData} dotString={dotString} activeGraph={activeGraph} graphDirected={graphDirected} nodeSourceTable={nodeSourceTable} initialSql={panel.initialSql} initialTab={panel.initialTab} initialHelper={panel.initialHelper} initialResult={panel.initialResult} stateRef={panel.stateRef} autoRun={panel.autoRun} hideQueryHelper={panel.hideQueryHelper} createHelper={panel.createHelper} solveHelper={panel.solveHelper} matchHelper={panel.matchHelper} tables={tables} graphGrammar={graphGrammar} endpointGrammar={endpointGrammar} tableColumnsCache={tableColumnsCache} onFetchTableColumns={fetchTableColumns} onGraphCreated={refreshGraphsList} onOpenCreatedGraph={function(n){ if (n === activeGraph) { loadGraphDetails(n, { preservePanels: true }); } else { confirmSessionChange(function(){ loadGraphDetails(n, { preservePanels: true }); }); } }}
                     onMinimize={function(){
                         // Save current state before minimizing so it can be restored
                         var s = panel.stateRef && panel.stateRef.current;
@@ -8778,6 +8815,12 @@ function App() {
                                 updated.initialSql = s.sql || p.initialSql;
                                 updated.initialTab = s.activeTab != null ? s.activeTab : p.initialTab;
                                 updated.initialHelper = s.helper || p.initialHelper;
+                                // Preserve the raw Run response so restoring
+                                // from the C*/S*/M*/Q*/T* pill brings back
+                                // View Results / Visualization / Map / Video
+                                // without re-running the SQL. Lives in memory
+                                // only (not session-persisted).
+                                updated.initialResult = s.result || p.initialResult;
                             }
                             return updated;
                         }); });

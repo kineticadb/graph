@@ -1914,13 +1914,14 @@ Label-filter selections in the doughnut charts are pushed into all three paths �
 #### Session Save / Load
 - **Load Session** restores from a JSON file. Uses the active server connection (warns if the session was saved from a different server). Warns if the graph is not found. Re-fetches table data and visualization if they were active.
 - **Save Session** downloads current state as JSON with a timestamped filename. Includes connection, graph, labels, ontology, data/viz state, and queries with their Query Helper selections.
+- **Cached Run output** — each panel's last `/execute/sql` response is included in the session when its JSON is **≤ 2 MB**. On load, those panels reopen with View Results / Visualization / Map / Video tabs already populated and `autoRun` forced off (no re-execution). Over-cap panels save empty; on restore, **Query** and **Table** panels auto-rerun if the Auto-run-queries toggle is on, while **Create / Solve / Match** wait for an explicit Run click so big match outputs aren't silently re-fired.
 - **Session-loss protection** — switching graphs, changing profiles, connecting, or loading a session shows a confirmation banner with **Save & Continue** / **Continue** / **Cancel**.
 - **Auto-run Queries** toggle (on by default) — restored queries execute automatically on session load.
 
 #### Cross-View Picking and UI
 - **Pick** mode enables bidirectional highlighting: clicking ontology elements highlights the label chart; hovering chart rows highlights ontology nodes/edges.
 - **Auto-refresh** polling toggle (5 s – 5 min) for live label-count monitoring.
-- **Resizable split panes**, **floating helper panels** (minimize → kind-aware color-coded pill — `C*` create / green, `Q*` query / purple, `T*` table preview / purple, `S*` solve / pink, `M*` match / orange — maximize, restore, close), color-coded **progress bar** during data fetch, click-anywhere **node detail strip**, and tooltips on every control.
+- **Resizable split panes**, **floating helper panels** (minimize → kind-aware color-coded pill — `C*` create / green, `Q*` query / purple, `T*` table preview / purple, `S*` solve / pink, `M*` match / orange — maximize, restore, close). Minimize → restore brings the **raw Run output** (View Results / Visualization / Map / Video tabs) back verbatim without re-running the SQL. Color-coded **progress bar** during data fetch, click-anywhere **node detail strip**, and tooltips on every control.
 - **Per-kind sequential numbering** — `C1/C2…`, `Q1/Q2…`, etc., is stable across the full panel list (not just minimized ones), so a pill keeps the same label across minimize / restore cycles.
 - **Title-bar drag is viewport-clamped** — at least 32 px of the title bar stays visible vertically and 60 px horizontally, so a panel can never be dragged off-screen and lost. Restored positions are snapped back into reach on mount too.
 
