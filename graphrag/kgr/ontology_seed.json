@@ -1,0 +1,83 @@
+{
+  "_comment": "Hand-curated alias -> canonical mappings. Loaded by kgr init. Future LLM proposals matching an alias get folded to the canonical without an LLM call.",
+
+  "entity_aliases": {
+    "Company":         "Organization",
+    "Corp":            "Organization",
+    "Corporation":     "Organization",
+    "Government":      "Organization",
+    "GovernmentBody":  "Organization",
+    "GovernmentAgency":"Organization",
+    "Agency":          "Organization",
+    "Bank":            "Organization",
+    "CentralBank":     "Organization",
+    "Regulator":       "Organization",
+    "ResearchFirm":    "Organization",
+    "ResearchLab":     "Organization",
+    "University":      "Organization",
+    "Researcher":      "Person",
+    "Researchers":     "Person",
+    "Facility":        "Location",
+    "City":            "Location",
+    "Country":         "Location",
+    "Region":          "Location",
+
+    "AIWorm":          "Malware",
+    "PhishingKit":     "Malware",
+    "AttackTechnique": "Technique",
+    "ScamType":        "Technique",
+    "Operation":       "Campaign",
+    "AITool":          "Product",
+    "AIAssistant":     "Product",
+    "MessagingApp":    "Product",
+    "Application":     "Product",
+    "Plugin":          "Package",
+    "Setting":         "Feature",
+    "Benchmark":       "Metric",
+    "FraudStatistic":  "Metric",
+    "Report":          "Publication",
+    "FinancialReport": "Publication",
+    "Entity":          "Concept"
+  },
+
+  "relation_aliases": {
+    "RAISED_PRICE_TARGET": "UPGRADED",
+    "CUT_PRICE_TARGET":    "DOWNGRADED",
+    "BOOSTED_RATING":      "UPGRADED",
+    "LOWERED_RATING":      "DOWNGRADED",
+
+    "SOLD_IN":      "MARKETS_IN",
+    "OPERATES":     "MARKETS_IN",
+    "SELLS_IN":     "MARKETS_IN",
+
+    "PRODUCES":     "MAKES",
+    "MANUFACTURES": "MAKES",
+    "DELIVERED":    "MAKES",
+    "SELLS":        "MAKES",
+
+    "CHAIRS":       "WORKS_AT",
+    "LED_BY":       "WORKS_AT",
+    "HEADS":        "WORKS_AT",
+    "EMPLOYED_BY":  "WORKS_AT",
+
+    "SPOKE_IN":     "ANNOUNCED",
+    "REPORTED":     "ANNOUNCED",
+    "STATED":       "ANNOUNCED",
+    "DISCLOSED":    "ANNOUNCED",
+
+    "HOLDS_STEADY": "SETS",
+
+    "SEIZED":       "REGULATED",
+    "REGULATES":    "REGULATED",
+
+    "ABUSED_IN":    "EXPLOITS",
+    "TESTED_ON":    "TESTS",
+    "CONFIRMED_FIX":"PATCHED",
+    "PATCHES":      "PATCHED",
+    "RUNS_ON":      "HOSTED_ON",
+    "OPERATES_ON":  "HOSTED_ON",
+    "ROLLS_OUT_IN": "MARKETS_IN",
+    "PUBLISHED_IN": "PUBLISHED",
+    "DEMONSTRATED_AT": "DEMONSTRATED"
+  }
+}

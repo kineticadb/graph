@@ -1,0 +1,13 @@
+# Default threat / security-risk RSS+Atom feeds for `kgr watch-feeds`.
+# One feed URL per line. Blank lines and lines starting with '#' are ignored.
+# Override with `kgr watch-feeds --feeds path/to/your_feeds.txt`.
+
+# US government advisories (authoritative, structured)
+https://www.cisa.gov/cybersecurity-advisories/all.xml
+
+# Threat-intel / breach reporting
+https://feeds.feedburner.com/TheHackersNews
+https://www.bleepingcomputer.com/feed/
+https://krebsonsecurity.com/feed/
+https://www.darkreading.com/rss.xml
+https://feeds.feedburner.com/securityweek

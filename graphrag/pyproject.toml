@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kgr"
+version = "0.1.0"
+description = "A knowledge graph that learns its own ontology — LLM-induced, incremental extraction from documents into a Kinetica property graph"
+requires-python = ">=3.10"
+dependencies = [
+    "gpudb",
+    "sqlglot>=23",
+    "python-dotenv",
+    "anthropic",
+]
+
+[project.optional-dependencies]
+web = ["trafilatura>=1.12", "feedparser>=6.0", "requests>=2.31"]
+all = ["kgr[web]"]
+
+[project.scripts]
+kgr = "kgr.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["kgr*"]
+
+# Non-Python files read at runtime via Path(__file__). Editable installs find
+# them in the source tree regardless; this is what makes them travel inside a
+# built wheel/sdist too.
+[tool.setuptools.package-data]
+kgr = ["*.sql", "*.json", "sources/*.txt"]
