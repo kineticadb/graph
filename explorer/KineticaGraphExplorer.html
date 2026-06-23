@@ -7,9 +7,9 @@
     <link rel="icon" type="image/png" href="kinetica_graph_logo.png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1"></script>
     <script src="https://d3js.org/d3.v7.min.js"></script>
-    <script src="https://unpkg.com/force-graph"></script>
+    <script src="https://unpkg.com/force-graph@1.51.4"></script>
     <script src="https://cdn.jsdelivr.net/npm/@hpcc-js/wasm@2.13.0/dist/graphviz.umd.js"></script>
     <!-- deck.gl + MapLibre GL for geo graph visualization -->
     <script src="https://unpkg.com/deck.gl@9/dist.min.js"></script>
@@ -17,7 +17,10 @@
     <link href="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.css" rel="stylesheet"/>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Pinned to last Babel 7.x: Babel 8 (now "latest") defaults sourceType:"module" and
+         emits `import` in the transformed output, which a classic <script> can't run.
+         Do NOT change to an unpinned/8.x URL without re-testing the in-browser transform. -->
+    <script src="https://unpkg.com/@babel/standalone@7.29.7/babel.min.js"></script>
     <style>
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
         html, body, #root { height: 100%; overflow: hidden; }
@@ -43,7 +46,7 @@
 const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
 /* ═══════════════════════ CONSTANTS ════════════════════════ */
-const EXPLORER_VERSION = "7.2.3.14";  // Tied to Kinetica core-graph release tag (release/v7.2.3-ga-14). Run ./update-version.sh to auto-sync from latest git tag.
+const EXPLORER_VERSION = "7.2.3.18";  // Tied to Kinetica core-graph release tag (release/v7.2.3-ga-18). Run ./update-version.sh to auto-sync from latest git tag.
 const SAFETY_TIMEOUT_MS = 10 * 60 * 1000;
 const PALETTE = [
     { solid: '#0984e3', light: '#e1f0fb' }, { solid: '#00cec9', light: '#e0f9f8' },
@@ -109,11 +112,13 @@ function extractNodeSourceTable(originalRequest, graphName) {
     }
     if (!nodesMatch) return null;
     var inner = nodesMatch[1];
-    // Find all FROM <table> references — pick ones that look like real table names (word.word or word)
-    var fromRe = /FROM\s+([\w.]+)/gi;
+    // Find all FROM <table> references — pick ones that look like real table names (word.word or word).
+    // The char class includes `"` so quoted identifiers like FROM "kgr"."nodes" are captured;
+    // the quotes are stripped from the captured name below.
+    var fromRe = /FROM\s+([\w."]+)/gi;
     var m, tables = [];
     while ((m = fromRe.exec(inner)) !== null) {
-        var t = m[1].replace(/\).*$/, '');
+        var t = m[1].replace(/"/g, '').replace(/\).*$/, '');
         if (t && t.toLowerCase() !== 'dual') tables.push(t);
     }
     if (tables.length === 0) return null;
@@ -127,9 +132,11 @@ function extractNodeSourceTable(originalRequest, graphName) {
     // Find original column aliased as NODE or NODE_ID in the sub-select containing that table
     var idCol = null;
     // Look for the SELECT that contains this table's FROM
+    var lastTable = tables[tables.length - 1].replace(/[.]/g, '\\.');
     var subSelects = inner.split(/\(\s*select\b/i);
     for (var i = 0; i < subSelects.length; i++) {
-        if (subSelects[i].match(new RegExp('FROM\\s+' + tables[tables.length - 1].replace('.', '\\.'), 'i'))) {
+        // Strip quotes from the sub-select before matching so quoted FROM "kgr"."nodes" lines up with the quote-stripped table name.
+        if (subSelects[i].replace(/"/g, '').match(new RegExp('FROM\\s+' + lastTable, 'i'))) {
             var idMatch = subSelects[i].match(/(\w+)\s+as\s+NODE_ID\b/i) || subSelects[i].match(/(\w+)\s+as\s+NODE\b/i);
             if (idMatch) idCol = idMatch[1];
             break;
@@ -198,10 +205,11 @@ function extractEdgeSourceTable(originalRequest, graphName) {
     }
     if (!edgesMatch) return null;
     var inner = edgesMatch[1];
-    var fromRe = /FROM\s+([\w.]+)/gi;
+    // Char class includes `"` so quoted identifiers like FROM "kgr"."edges" are captured; quotes stripped below.
+    var fromRe = /FROM\s+([\w."]+)/gi;
     var m, tables = [];
     while ((m = fromRe.exec(inner)) !== null) {
-        var t = m[1].replace(/\).*$/, '');
+        var t = m[1].replace(/"/g, '').replace(/\).*$/, '');
         if (t && t.toLowerCase() !== 'dual') tables.push(t);
     }
     if (tables.length === 0) return null;
@@ -8758,8 +8766,7 @@ function App() {
                                                                 var bg = active ? (m === 'wms' ? '#e17055' : m === 'deckgl' || m === 'auto' ? '#00b894' : '#0984e3') : 'transparent';
                                                                 return <span key={m} onClick={function(){ handleChangeGeoRenderMode(m); }} style={{ fontSize:9, fontWeight:700, cursor:'pointer', padding:'1px 5px', borderRadius:3, color: active ? '#fff' : '#636e72', background: bg, userSelect:'none' }}>{label}</span>;
                                                             });
-                                                        })()
-                                                        })}
+                                                        })()}
                                                     </div>
                                                 )}
                                                 <span style={{ flex:1 }}/>
