@@ -33,13 +33,43 @@ cp .env.example .env && $EDITOR .env             # set KINETICA_DB_SKILL_PASS
 
 Every paragraph kgr reads is also appended to `corpus.txt` with a timestamp + source URI + sha8 header — an immutable replay log of the corpus.
 
+## Reproduce the demo graph from a clean checkout
+
+The repo ships a `corpus.txt` (the captured paragraph log) so anyone can rebuild the
+exact multi-label demo graph **deterministically, with no network / RSS re-sweep** —
+`kgr replay-corpus` re-runs every logged paragraph through the current extractor.
+
+**Prerequisites**
+- Python ≥ 3.10.
+- A reachable Kinetica instance + credentials (the `KINETICA_DB_SKILL_*` vars below).
+- An LLM backend for extraction + Q&A — **either** the `claude` CLI on `PATH`
+  (authenticated), **or** `ANTHROPIC_API_KEY` set. Both `replay-corpus` and `ask` need it.
+
+**Steps** (from the `graphrag/` directory):
+
+```bash
+python -m venv .venv
+.venv/bin/pip install -e '.[web]'                 # core + web extra (pulls typeguard for gpudb)
+cp .env.example .env && $EDITOR .env              # set KINETICA_DB_SKILL_URL / _USER / _PASS
+
+.venv/bin/kgr init                                # schema + property graph (idempotent)
+.venv/bin/kgr replay-corpus --refresh-every 5     # rebuild the multi-label graph from corpus.txt
+
+# round-trip NL query (LLM writes Cypher -> runs it -> answers); --show-cypher prints the query
+.venv/bin/kgr ask "Who works at organizations that make products affected by known vulnerabilities?" --show-cypher
+```
+
+`replay-corpus` makes one LLM call per paragraph (~130), so a full rebuild takes a few
+minutes; the graph re-applies every `--refresh-every` paragraphs so you can watch
+`num_nodes` climb. Re-running `init` or `replay-corpus` is idempotent.
+
 ## Running the CLI & getting help
 
-`kgr` is installed into the project virtualenv, so from the repo root (`~/kgr`)
+`kgr` is installed into the project virtualenv, so from the `graphrag/` directory
 invoke it via the venv:
 
 ```bash
-cd ~/kgr
+cd graphrag
 .venv/bin/kgr --help            # top-level help: full command list + a "common" quick-reference + env knobs
 .venv/bin/kgr <command> --help  # per-command options, e.g. .venv/bin/kgr watch-feeds --help
 ```
