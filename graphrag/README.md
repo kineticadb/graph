@@ -56,6 +56,24 @@ exact multi-label demo graph **deterministically, with no network / RSS re-sweep
 .venv/bin/kgr ask "Who works at organizations that make products affected by known vulnerabilities?" --show-cypher
 ```
 
+`--show-cypher` prints the LLM-generated query and the grounded answer. That question
+resolves to a real **3-hop** traversal — `(Person)-[WORKS_AT]->(Organization)-[MAKES]->(Product)<-[AFFECTS]-(Vulnerability)`.
+Example output (the Cypher and rows are LLM-generated, so they vary with the model and the current graph):
+
+```text
+cypher: GRAPH "kgr"."kg"
+        MATCH (p:Person)-[:WORKS_AT]->(o:Organization)-[:MAKES]->(prod:Product)<-[:AFFECTS]-(v:Vulnerability)
+        RETURN p."name_original" AS person, o."name_original" AS organization,
+               prod."name_original" AS product, v."name_original" AS vulnerability, v."cve_id" AS cve_id
+        LIMIT 100
+rows: 8
+
+Two people work at organizations whose products have known vulnerabilities:
+- Dan Lorenc — works at Google, which makes Chrome, affected by CVE-2026-11645.
+- Alexandru Dima — works at Microsoft, which makes Microsoft Defender (affected by
+  UnDefend, RoguePlanet, BlueHammer, RedSun) and VS Code (VS Code GitHub Token Theft).
+```
+
 `replay-corpus` makes one LLM call per paragraph (~130), so a full rebuild takes a few
 minutes; the graph re-applies every `--refresh-every` paragraphs so you can watch
 `num_nodes` climb. Re-running `init` or `replay-corpus` is idempotent.
