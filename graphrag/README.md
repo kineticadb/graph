@@ -14,9 +14,9 @@ What makes it distinctive:
 
 ```bash
 # one-time setup
-.venv/bin/pip install -e .                       # core
-.venv/bin/pip install -e ".[web]"                # add web driver (trafilatura, feedparser, requests)
-cp .env.example .env && $EDITOR .env             # set KINETICA_DB_SKILL_PASS
+python -m venv .venv                             # create the project virtualenv
+.venv/bin/pip install -e ".[web]"                # core + web driver (trafilatura, feedparser, requests)
+cp .env.example .env && $EDITOR .env             # set KINETICA_DB_SKILL_URL / _USER / _PASS
 
 # create the schema and the property graph (idempotent — safe to re-run)
 .venv/bin/kgr init
@@ -30,6 +30,8 @@ cp .env.example .env && $EDITOR .env             # set KINETICA_DB_SKILL_PASS
 .venv/bin/kgr ingest-url 'https://www.bbc.com/news/articles/c62xevydk05o'
 .venv/bin/kgr ingest-feed https://feeds.bbci.co.uk/news/business/rss.xml --limit 5
 ```
+
+Extraction (`ingest`) and Q&A (`ask`/`chat`) need an LLM backend — see **Prerequisites** under [Reproduce the demo graph](#reproduce-the-demo-graph-from-a-clean-checkout) below.
 
 Every paragraph kgr reads is also appended to `corpus.txt` with a timestamp + source URI + sha8 header — an immutable replay log of the corpus.
 
@@ -45,17 +47,12 @@ exact multi-label demo graph **deterministically, with no network / RSS re-sweep
 - An LLM backend for extraction + Q&A — **either** the `claude` CLI on `PATH`
   (authenticated), **or** `ANTHROPIC_API_KEY` set. Both `replay-corpus` and `ask` need it.
 
-**Steps** (from the `graphrag/` directory):
+**Steps** — do the one-time setup and `kgr init` from [Quick start](#quick-start) above, then from `graphrag/`:
 
 ```bash
-python -m venv .venv
-.venv/bin/pip install -e '.[web]'                 # core + web extra (pulls typeguard for gpudb)
-cp .env.example .env && $EDITOR .env              # set KINETICA_DB_SKILL_URL / _USER / _PASS
+.venv/bin/kgr replay-corpus --refresh-every 5     # rebuild the multi-label graph from corpus.txt (no RSS/network)
 
-.venv/bin/kgr init                                # schema + property graph (idempotent)
-.venv/bin/kgr replay-corpus --refresh-every 5     # rebuild the multi-label graph from corpus.txt
-
-# round-trip NL query (LLM writes Cypher -> runs it -> answers); --show-cypher prints the query
+# round-trip NL query: the LLM writes Cypher -> runs it -> answers; --show-cypher prints the query
 .venv/bin/kgr ask "Who works at organizations that make products affected by known vulnerabilities?" --show-cypher
 ```
 
