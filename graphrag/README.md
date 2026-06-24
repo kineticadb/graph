@@ -2,6 +2,10 @@
 
 **A knowledge graph that learns its own ontology.** Drop in text, news feeds, or SQL; kgr extracts entities and relations, evolves the schema to fit them, and lands everything in a live Kinetica property graph.
 
+![kgr growing the graph as documents stream in](docs/kgr_graph_growth.gif)
+
+> The graph growing in Kinetica as documents stream in — entities and relations land, and the ontology evolves to fit them.
+
 kgr turns a stream of documents into a continuously-growing knowledge graph in Kinetica. For each paragraph it asks an LLM not just *what* the entities and relations are, but *what types* they belong to — so the ontology is **induced, not pre-declared**. New entity types, relation types, and attributes are appended to a registry and materialized as `ALTER TABLE` columns on the fly; rows upsert by identity, so the same entity across many documents collapses into one node. It ingests free text (e.g. threat-intel news, via an RSS polling daemon), web articles, and SQL (parsed to an AST) — all landing in the same `kgr.nodes` / `kgr.edges` property graph.
 
 What makes it distinctive:
@@ -41,6 +45,12 @@ The repo ships a `corpus.txt` (the captured paragraph log) so anyone can rebuild
 exact multi-label demo graph **deterministically, with no network / RSS re-sweep** —
 `kgr replay-corpus` re-runs every logged paragraph through the current extractor.
 
+The rebuilt graph in Kinetica's GraphExplorer — the topology on the left, and on the
+right the **LLM-deduced ontology**: node labels (Product, Vulnerability, Organization,
+Person, …) and edge labels (`AFFECTS`, `MAKES`, `WORKS_AT`, …) with their distributions:
+
+![The corpus graph in GraphExplorer with its deduced ontology](docs/graph-explorer-corpus.png)
+
 **Prerequisites**
 - Python ≥ 3.10.
 - A reachable Kinetica instance + credentials (the `KINETICA_DB_SKILL_*` vars below).
@@ -73,6 +83,17 @@ Two people work at organizations whose products have known vulnerabilities:
 - Alexandru Dima — works at Microsoft, which makes Microsoft Defender (affected by
   UnDefend, RoguePlanet, BlueHammer, RedSun) and VS Code (VS Code GitHub Token Theft).
 ```
+
+The same round-trip in GraphExplorer — the generated 3-hop Cypher and the 8 result rows
+(`person`, `organization`, `product`, `vulnerability`, `cve_id`):
+
+![The "Who works at…" query: generated Cypher and result table](docs/ask-who-works-at-results.png)
+
+…and the **Visualization** tab for the same result — the 13 nodes the answer traverses,
+colored by label (Person, Organization, Product, Vulnerability) along the
+`WORKS_AT → MAKES → AFFECTS` path:
+
+![The "Who works at…" query result visualized as a subgraph](docs/ask-who-works-at-viz.png)
 
 `replay-corpus` makes one LLM call per paragraph (~130), so a full rebuild takes a few
 minutes; the graph re-applies every `--refresh-every` paragraphs so you can watch
