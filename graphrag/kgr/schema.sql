@@ -32,7 +32,36 @@ CREATE TABLE IF NOT EXISTS "kgr"."ontology" (
     -- canonical. canonical_name != type_name means this row is an alias.
     -- Added via ALTER TABLE in older installs; column lives at the end so the
     -- CREATE TABLE here matches that column ordering.
-    "canonical_name" VARCHAR(128)
+    "canonical_name" VARCHAR(128),
+    -- The label AXIS (a.k.a. LABEL_KEY) this entity type belongs to: the facet
+    -- dimension it classifies. Structural types (Person, Organization, …) sit on
+    -- the default 'EntityType' axis; facet types (AI, LLM, …) on others (Industry,
+    -- Technology, …). The normalized source of truth (one axis per label) that
+    -- kgr.label_keys is materialized from. Only meaningful for entity rows.
+    "axis" VARCHAR(64)
+);
+
+-- Label-key (axis) groupings, UNPIVOTED: one row per axis, holding the array of
+-- entity labels that belong to it. The materialized, transposed form of
+-- kgr.ontology.axis (one axis per label) for the graph engine — CREATE GRAPH
+-- feeds it into the NODES component as
+--   (SELECT label_key AS LABEL_KEY, label AS LABEL FROM kgr.label_keys)
+-- so Kinetica groups each node's multi-label vector by axis (LABEL_KEY) into a
+-- concise, compressible ontology. Rebuilt from kgr.ontology before each graph apply.
+CREATE TABLE IF NOT EXISTS "kgr"."label_keys" (
+    "label_key" VARCHAR(64, PRIMARY_KEY, SHARD_KEY) NOT NULL,
+    "label"     VARCHAR[] NOT NULL
+);
+
+-- Edge label-key (axis) groupings, same shape/role as kgr.label_keys but for the
+-- EDGES component: one row per edge label_key -> the array of edge (relation)
+-- labels under it. Fed into CREATE GRAPH as a separate grouping SELECT
+--   (SELECT label_key AS LABEL_KEY, label AS LABEL FROM kgr.edge_label_keys)
+-- so Kinetica's /show/graph schema DOT can group/disambiguate edges by label_key.
+-- The stored kgr.edges.LABEL stays bare (no compounding). Rebuilt before each apply.
+CREATE TABLE IF NOT EXISTS "kgr"."edge_label_keys" (
+    "label_key" VARCHAR(128, PRIMARY_KEY, SHARD_KEY) NOT NULL,
+    "label"     VARCHAR[] NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS "kgr"."nodes" (

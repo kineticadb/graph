@@ -40,6 +40,48 @@
     "Entity":          "Concept"
   },
 
+  "_axes_comment": "entity_axes maps a canonical entity label -> the axis (LABEL_KEY) it classifies. Labels NOT listed here default to the structural 'EntityType' axis (Person, Organization, Location, …). Facet labels named here are cross-cutting descriptors a node carries IN ADDITION to its structural type, e.g. Anthropic = [Organization (EntityType), AI (Industry), LLM (Technology)]. The LLM may propose new facet labels/axes; these are the curated starters.",
+
+  "entity_axes": {
+    "AI":             "Industry",
+    "Fintech":        "Industry",
+    "Cybersecurity":  "Industry",
+    "Biotech":        "Industry",
+    "Energy":         "Industry",
+    "Semiconductors": "Industry",
+    "SocialMedia":    "Industry",
+    "Ecommerce":      "Industry",
+    "Defense":        "Industry",
+
+    "LLM":            "Technology",
+    "Database":       "Technology",
+    "Cloud":          "Technology",
+    "Blockchain":     "Technology",
+    "Cryptography":   "Technology",
+    "Hardware":       "Technology",
+    "MachineLearning":"Technology",
+    "Networking":     "Technology",
+
+    "PubliclyTraded": "Status",
+    "StateOwned":     "Status",
+    "Startup":        "Status",
+    "Nonprofit":      "Status"
+  },
+
+  "entity_axis_aliases": {
+    "ArtificialIntelligence": "AI",
+    "GenAI":                  "AI",
+    "GenerativeAI":           "AI",
+    "LargeLanguageModel":     "LLM",
+    "LargeLanguageModels":    "LLM",
+    "FinancialTechnology":    "Fintech",
+    "InfoSec":                "Cybersecurity",
+    "Crypto":                 "Blockchain",
+    "Cryptocurrency":         "Blockchain",
+    "Semiconductor":          "Semiconductors",
+    "Chipmaker":              "Semiconductors"
+  },
+
   "relation_aliases": {
     "RAISED_PRICE_TARGET": "UPGRADED",
     "CUT_PRICE_TARGET":    "DOWNGRADED",
@@ -79,5 +121,50 @@
     "ROLLS_OUT_IN": "MARKETS_IN",
     "PUBLISHED_IN": "PUBLISHED",
     "DEMONSTRATED_AT": "DEMONSTRATED"
+  },
+
+  "_relation_axes_comment": "relation_axes maps a canonical VERB -> its semantic category (the edge LABEL_KEY / axis). The EDGES analog of entity_axes: a second-level grouping over canonical verbs. With schema_edge_labelkeys=true the /show/graph DOT collapses all verbs in a category into one abstract edge. Unlisted verbs default to 'Action'. Edit freely.",
+
+  "relation_axes": {
+    "EXPLOITS":       "Offensive",
+    "AFFECTS":        "Offensive",
+    "TARGETS":        "Offensive",
+    "DELIVERS":       "Offensive",
+    "COMPROMISED":    "Offensive",
+    "IMPERSONATES":   "Offensive",
+    "ABUSES":         "Offensive",
+    "USES_TECHNIQUE": "Offensive",
+    "USES":           "Offensive",
+
+    "PATCHED":        "Defensive",
+    "MITIGATES":      "Defensive",
+    "DISABLES":       "Defensive",
+    "DETECTS":        "Defensive",
+    "MAINTAINS":      "Defensive",
+    "ADDED_TO":       "Defensive",
+
+    "ANNOUNCED":      "Disclosure",
+    "PUBLISHED":      "Disclosure",
+    "REPORTED":       "Disclosure",
+    "DEMONSTRATED":   "Disclosure",
+
+    "WORKS_AT":       "Corporate",
+    "OWNS":           "Corporate",
+    "ACQUIRED":       "Corporate",
+    "MARKETS_IN":     "Corporate",
+    "MAKES":          "Corporate",
+    "INVESTED_IN":    "Corporate",
+
+    "UPGRADED":       "Assessment",
+    "DOWNGRADED":     "Assessment",
+    "TESTS":          "Assessment",
+    "SETS":           "Assessment",
+    "REGULATED":      "Assessment",
+
+    "HOSTED_ON":      "Structural",
+    "DEFINES":        "Structural",
+    "READS":          "Structural",
+    "WRITES":         "Structural",
+    "DERIVES_FROM":   "Structural"
   }
 }

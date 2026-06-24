@@ -40,11 +40,14 @@ cp .env.example .env && $EDITOR .env             # set KINETICA_DB_SKILL_PASS
 
 .venv/bin/kgr backfill-labels                    # fold existing nodes/edges LABELs to canonical form, re-apply graph
 .venv/bin/kgr recompose-edges                    # rewrite edges LABELs to compound form, re-apply graph
+
+.venv/bin/kgr ask "What threats involve Microsoft?"     # NL→Cypher→NL one-shot (--show-cypher, --json)
+.venv/bin/kgr chat                                      # interactive Q&A REPL over the graph (multi-turn)
 ```
 
 There is no test runner — `test/probe.txt` is a manual scratch input, not a suite. Only two ingest paths exist: `.txt`/`.md` (text path) and `.sql` (AST path), routed by `ingest_path`. There is no C++ extractor (a `[cpp]`/tree-sitter extra was removed as vestigial — re-add it only alongside an actual `extractors/cpp.py`).
 
-For ad-hoc queries against the live graph use the `kineticadb:kinetica-execute` skill — `graph show`, `query "..."` — not raw SDK calls.
+For ad-hoc queries against the live graph use the `kineticadb:kinetica-execute` skill — `graph show`, `query "..."` — not raw SDK calls. Conventions in `~/agent-skills/knowledge/graph-workflows.md`.
 
 ## LLM call (`kgr/extractors/text.py`)
 
@@ -56,6 +59,8 @@ Three paths, tried in order:
 The JSON schema enforced on the LLM is `_RESPONSE_SCHEMA` in `extractors/text.py`. Model defaults to whatever `claude` resolves; override with `KGR_LLM_MODEL`. Other env knobs (`KGR_LLM_TIMEOUT`, `KGR_CORPUS_PATH`, `KGR_WEB_TIMEOUT`, `KGR_USER_AGENT`, Kinetica connection vars) are tabulated in README.md → "Environment knobs".
 
 ## Architecture
+
+> **Edit `./kgr/`, not `build/lib/kgr/`.** The editable install (`pip install -e .`) runs from `./kgr/`. `build/` and `dist/` are stale build artifacts — `build/lib/kgr/` is an out-of-date copy (e.g. it predates `qa.py`). Edits there change nothing that runs.
 
 - `db.py` — `connect()` (singleton GPUdb), `execute(sql)`, `fetch(sql)`, `execute_script(sql)`. The script splitter handles `--` line comments — needed because apostrophes inside comments otherwise open phantom string literals.
 - `schema.{sql,py}` / `graph.sql` — `kgr init` applies them. `CREATE OR REPLACE DIRECTED GRAPH` uses `INPUT_TABLES(SELECT * FROM ...)` shape (not column-mapping); `add_table_monitor` + `save_persist` enabled.
@@ -86,6 +91,12 @@ The JSON schema enforced on the LLM is `_RESPONSE_SCHEMA` in `extractors/text.py
 - **Compound edge labels** (graph level, **opt-in — default off**): when `KGR_COMPOUND_EDGES=on` (see `config.py`), `kgr.edges.LABEL` is stored as `<srcNodeLabel>_<baseRelationLabel>_<dstNodeLabel>` (e.g. `Person_WORKS_AT_Organization`) — bitcoin_graph pattern. This makes the (node_label, edge_label, node_label) triple unique per edge LABEL, so Kinetica's graph-schema generator can derive the meta-graph in O(distinct labels) without traversal — worth the visual density only on very large graphs. **Default off** stores the bare base label (`WORKS_AT`) so the `/show/graph` schema DOT is readable. Either way `kgr.ontology` only ever tracks the *base* relation type and its attributes; compounding lives solely in `kgr.edges.LABEL`. `upsert_edges` branches on the flag at write time. `compound_edge_labels()` ⇄ `base_edge_labels()` convert existing rows (both idempotent, both recover the base via the canonical relation set so underscored bases like `LOCATED_IN` survive); `kgr init` runs whichever direction the flag selects; `kgr recompose-edges [--base]` does it on demand. Do **not** abbreviate node labels *inside* the stored compound — 1–2-char prefixes collide (Organization vs Order) and a collision-safe prefix isn't stable as the ontology grows, churning `edge_key`. Declutter at the viz layer instead.
 - `kgr.edges.edge_key = sha1(NODE1|NODE2|LABEL|source_uri)` — idempotent under PK upsert and across re-ingests of the same source.
 - Attribute columns added by the ontology evolver are nullable. Same attribute name (e.g. `period`) shared across types maps to one shared column.
+- **Multi-label nodes + axes (LABEL_KEY)**: `kgr.nodes.LABEL VARCHAR[]` is a *multi-label vector* — a structural type plus cross-cutting facets on other axes (e.g. Anthropic = `["Organization","AI","LLM"]`). Each label belongs to one **axis** (a.k.a. `LABEL_KEY`): the structural type sits on the default `EntityType` axis (`config.DEFAULT_AXIS`), facets on others (`Industry`, `Technology`, `Status`, …). The axis-per-label is recorded in `kgr.ontology.axis` (the normalized source of truth), seeded from `ontology_seed.json` → `entity_axes` / `entity_axis_aliases` and evolved by the LLM (the extractor emits `entities[i].facets = [{label, axis}]`; `fold_proposal` folds each facet to canonical, assigns its axis, builds `e["labels"]`, and registers new facet types). **`kgr.label_keys`** is the unpivoted materialization (one row per axis → array of its canonical labels), rebuilt from `kgr.ontology` by `apply_graph()` and fed into `CREATE GRAPH`'s NODES component as `(SELECT label_key AS LABEL_KEY, label AS LABEL FROM kgr.label_keys)` so Kinetica groups the meta-graph by axis (label-key compression; toggle with `schema_node_labelkeys`). Verified: the grouping rows have no `NODE` so `NUM_NODES` is *not* inflated.
+- **Order carries no meaning in `LABEL`** — the graph engine treats the array as an unordered multi-label. The *structural* label is resolved by **axis membership** (`ontology.pick_structural()` picks the `EntityType`-axis element via `ontology.axis_map()`), **never** by `arr[0]`. Consumers that need the one structural label (compound-edge composition in `upsert._lookup_node_labels`, `compound_edge_labels()`, the meta-graph triples in `qa.graph_schema`) all go through `pick_structural`. Cypher `(n:AI)` matches any element of the vector, so `graph_schema().node_types` exposes *all* labels as queryable while triples use only the structural one.
+- **Edge LABEL_KEY groupings (`kgr.edge_label_keys`) — an abstraction knob, the EDGES analog of node axes.** Same `(LABEL_KEY, LABEL)` grouping-SELECT form as nodes, fed into `CREATE GRAPH`'s EDGES component. Relations carry an `axis` in `kgr.ontology` = the verb's **semantic category** (`EXPLOITS/AFFECTS → Offensive`, `PATCHED → Defensive`, `WORKS_AT → Corporate`, …; seeded in `ontology_seed.json` → `relation_axes`, default `Action`). `rebuild_edge_label_keys()` groups canonical verbs by that axis → `label_key = category, label = [verbs]` (single-membership, a second-level grouping over canonical verbs — like canonicalization one level up). A per-*edge* `LABEL_KEY` column does **not** work — Kinetica rejects the `(NODE1,NODE2,LABEL,LABEL_KEY)` combo ("identifier combination is not valid for component 1"); it must be the separate grouping SELECT. What the `/show/graph` schema DOT shows is governed by query-time options (NOT the explorer — Kinetica's `/show/graph export_graph_schema=true` builds the DOT into `info.dot`):
+  - `schema_edge_labelkeys=true` (EKey ON, default): **collapse** all verbs sharing a `label_key` into one edge labeled by the category (`Offensive`, `Defensive`, …) → simplified/abstract ontology. `schema_node_labelkeys` does the same for nodes (collapses by axis).
+  - `schema_edge_labelkeys=false` (EKey OFF): edges shown by their raw verb (`AFFECTS`), which then legitimately spans every node-pair it connects.
+  - `schema_full_search=true`: exhaustive per-`(src,verb,dst)` combo counting for **accurate** percentages (vs. the default cached single-edge approximation) — this, not LABEL_KEY, is the fix for correct detailed-view DOT. Stored `kgr.edges.LABEL` stays bare regardless; `KGR_COMPOUND_EDGES` (default off) is the separate, storage-level way to bake the triple into the label.
 
 ## Cypher gotchas
 
@@ -93,4 +104,4 @@ The JSON schema enforced on the LLM is `_RESPONSE_SCHEMA` in `extractors/text.py
 - Quote `name_original` (and other quoted-identifier columns) in `RETURN`: `RETURN n."name_original" AS nm`.
 - Inline label/attribute filters: `(n:Person WHERE n.role = 'CEO')` — not in a trailing `WHERE`.
 - `GROUP BY` / `COUNT` needs `GRAPH_TABLE(...)` wrap. `COUNT(...)` returns a `json` type that can't be `ORDER BY`'d — cast to BIGINT in the outer SELECT.
-- See the Kinetica docs for full Cypher/graph grammar.
+- Full conventions live in `~/agent-skills/knowledge/graph-workflows.md`.

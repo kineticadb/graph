@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from .config import DEFAULT_AXIS, DEFAULT_RELATION_AXIS
 from .db import connect, execute, fetch
 
 _SEED_PATH = Path(__file__).resolve().parent / "ontology_seed.json"
@@ -41,6 +42,7 @@ class TypeSpec:
     kind: str  # 'entity' or 'relation'
     name: str
     attrs: dict[str, str] = field(default_factory=dict)  # attr_name -> SQL type
+    axis: str | None = None  # LABEL_KEY axis for entity types (null for relations)
 
 
 @dataclass
@@ -69,7 +71,7 @@ class Ontology:
 
 def load() -> Ontology:
     ont = Ontology()
-    rows = fetch('SELECT type_kind, type_name, attr_name, attr_sql_type FROM "kgr"."ontology"')
+    rows = fetch('SELECT type_kind, type_name, attr_name, attr_sql_type, axis FROM "kgr"."ontology"')
     for r in rows:
         kind = r["type_kind"]
         type_name = r["type_name"]
@@ -79,6 +81,9 @@ def load() -> Ontology:
         spec = bag.setdefault(type_name, TypeSpec(kind=kind, name=type_name))
         if attr_name:
             spec.attrs[attr_name] = attr_sql_type
+        else:
+            # The type-declaration row (attr_name='') carries the axis (both kinds).
+            spec.axis = r.get("axis") or (DEFAULT_AXIS if kind == "entity" else DEFAULT_RELATION_AXIS)
     return ont
 
 
@@ -108,7 +113,11 @@ def merge_proposal(
             if spec is None:
                 spec = TypeSpec(kind=kind, name=tname)
                 known[tname] = spec
-                new_rows.append(_row(kind, tname, "", "", source_uri, now))
+                # Both entity and relation types land on an axis (LABEL_KEY): the
+                # proposal may carry one, else the kind's default (EntityType /
+                # Action). Relation axes are the verb's semantic category.
+                axis = (t.get("axis") or DEFAULT_AXIS) if kind == "entity" else (t.get("axis") or DEFAULT_RELATION_AXIS)
+                new_rows.append(_row(kind, tname, "", "", source_uri, now, axis=axis))
                 new_types.append((kind, tname))
             for a in t.get("attributes", []) or []:
                 aname = (a.get("name") or "").strip()
@@ -171,7 +180,8 @@ def _insert_ontology_rows(rows: list[dict]) -> None:
         raise RuntimeError(f"kgr.ontology upsert failed: {resp.get('message')}")
 
 
-def _row(kind: str, type_name: str, attr_name: str, attr_sql_type: str, source_uri: str, now_ms: int) -> dict:
+def _row(kind: str, type_name: str, attr_name: str, attr_sql_type: str, source_uri: str, now_ms: int,
+         axis: str | None = None) -> dict:
     key = hashlib.sha1(f"{kind}|{type_name}|{attr_name}".encode()).hexdigest()
     return {
         "type_kind": kind,
@@ -183,6 +193,8 @@ def _row(kind: str, type_name: str, attr_name: str, attr_sql_type: str, source_u
         "first_seen_uri": source_uri,
         "first_seen_ts": now_ms,
         "ont_key": key,
+        # Axis (LABEL_KEY) for entity types; null for relations / attribute rows.
+        "axis": axis,
     }
 
 
@@ -333,16 +345,53 @@ def fold_proposal(proposal: dict[str, Any], source_uri: str) -> dict[str, str]:
     # declared-type rename map) — the LLM often tags an instance with a label it
     # never lists in *_types (e.g. an entity labeled "Company" with no "Company"
     # entry in entity_types), and those would otherwise escape folding entirely.
+    # Facet labels discovered on entities, with their axis, to register as types.
+    facet_types: dict[str, str] = {}
     for e in proposal.get("entities", []) or []:
         lbl = (e.get("label") or "").strip()
+        primary = ""
         if lbl:
             e["label_raw"] = lbl          # remember the original (pre-fold) label
-            e["label"] = _resolve_one("entity", lbl)
+            primary = _resolve_one("entity", lbl)
+            e["label"] = primary
+        # Build the multi-label vector: the structural primary plus any facets the
+        # LLM tagged on other axes (e.g. Anthropic -> [Organization, AI, LLM]).
+        # Order carries NO meaning to the graph — axis (LABEL_KEY) does — but we
+        # keep the primary first for readable rows.
+        labels_vec: list[str] = [primary] if primary else []
+        for f in e.get("facets") or []:
+            if isinstance(f, str):
+                f_lbl, f_axis = f.strip(), ""
+            else:
+                f_lbl = (f.get("label") or "").strip()
+                f_axis = (f.get("axis") or "").strip()
+            if not f_lbl:
+                continue
+            canon = _resolve_one("entity", f_lbl)
+            # Prefer an axis already recorded for this canonical; else trust the
+            # LLM's proposed axis; else default. Register so it joins a LABEL_KEY group.
+            axis = _label_axis(canon) or f_axis or DEFAULT_AXIS
+            facet_types[canon] = axis
+            if canon not in labels_vec:
+                labels_vec.append(canon)
+        if labels_vec:
+            e["labels"] = labels_vec
+
     for r in proposal.get("relations", []) or []:
         lbl = (r.get("label") or "").strip()
         if lbl:
             r["label_raw"] = lbl
             r["label"] = _resolve_one("relation", lbl)
+
+    # Register discovered facet types (with axis) so merge_proposal persists their
+    # ontology rows and rebuild_label_keys groups them under their LABEL_KEY.
+    if facet_types:
+        et = proposal.setdefault("entity_types", [])
+        existing = {(t.get("name") or "").strip() for t in et}
+        for name, axis in facet_types.items():
+            if name and name not in existing:
+                et.append({"name": name, "attributes": [], "axis": axis})
+                existing.add(name)
 
     return folded
 
@@ -361,6 +410,191 @@ def _persist_alias(kind: str, alias: str, canonical: str, source_uri: str) -> No
     row = _row(kind, alias, "", "", source_uri, now)
     row["canonical_name"] = canonical
     _insert_ontology_rows([row])
+
+
+# ---------------------------------------------------------------------------
+# Axes (LABEL_KEY) — facet dimensions for the multi-label vector
+# ---------------------------------------------------------------------------
+
+def axis_map() -> dict[str, str]:
+    """{entity label -> axis}. Includes canonical AND alias rows so any label
+    found on a node resolves. Null/blank axis falls back to the structural default.
+    """
+    out: dict[str, str] = {}
+    for r in fetch(
+        "SELECT type_name, axis FROM \"kgr\".\"ontology\" "
+        "WHERE type_kind = 'entity' AND attr_name = ''"
+    ):
+        out[r["type_name"]] = (r.get("axis") or DEFAULT_AXIS)
+    return out
+
+
+def _label_axis(name: str) -> str | None:
+    """The axis recorded for a single entity label, or None if unknown."""
+    q = (
+        "SELECT axis FROM \"kgr\".\"ontology\" "
+        f"WHERE type_kind = 'entity' AND attr_name = '' AND type_name = '{name.replace(chr(39), chr(39)*2)}' "
+        "LIMIT 1"
+    )
+    rows = fetch(q)
+    if rows:
+        return rows[0].get("axis") or DEFAULT_AXIS
+    return None
+
+
+def pick_structural(labels: list[str], amap: dict[str, str] | None = None) -> str | None:
+    """Return the label on the structural (EntityType) axis from a node's vector.
+
+    Order-independent: the graph engine treats the LABEL array as an unordered
+    multi-label, so we resolve the structural type by AXIS membership, never by
+    position. Falls back to the first label if none is classified as structural.
+    """
+    if not labels:
+        return None
+    amap = amap if amap is not None else axis_map()
+    for lbl in labels:
+        if amap.get(lbl, DEFAULT_AXIS) == DEFAULT_AXIS:
+            return lbl
+    return labels[0]
+
+
+def rebuild_label_keys() -> int:
+    """Materialize kgr.label_keys from kgr.ontology: one row per axis, holding the
+    sorted array of CANONICAL entity labels on it (aliases are excluded — nodes only
+    ever store canonicals). Upserts current axes and prunes axes that no longer exist.
+    Returns the number of axis rows written.
+    """
+    groups: dict[str, set[str]] = {}
+    for r in fetch(
+        "SELECT type_name, axis, canonical_name FROM \"kgr\".\"ontology\" "
+        "WHERE type_kind = 'entity' AND attr_name = ''"
+    ):
+        name = r["type_name"]
+        canon = r.get("canonical_name") or name
+        if name != canon:  # alias — not stored on nodes, so not a graph label
+            continue
+        axis = r.get("axis") or DEFAULT_AXIS
+        groups.setdefault(axis, set()).add(name)
+
+    rows = [{"label_key": ax, "label": sorted(lbls)} for ax, lbls in groups.items() if lbls]
+    if rows:
+        db = connect()
+        payload = json.dumps(rows)
+        resp_raw = db.insert_records_json(
+            payload, "kgr.label_keys", options={"update_on_existing_pk": "true"}
+        )
+        resp = json.loads(resp_raw) if isinstance(resp_raw, (str, bytes)) else resp_raw
+        if isinstance(resp, dict) and resp.get("status") == "ERROR":
+            raise RuntimeError(f"kgr.label_keys upsert failed: {resp.get('message')}")
+    # Prune axes that disappeared.
+    keep = {ax for ax in groups}
+    if keep:
+        in_list = ", ".join("'" + ax.replace("'", "''") + "'" for ax in keep)
+        execute(f'DELETE FROM "kgr"."label_keys" WHERE "label_key" NOT IN ({in_list})')
+    else:
+        execute('DELETE FROM "kgr"."label_keys" WHERE 1 = 1')
+    return len(rows)
+
+
+def categorize_relation_axes(seed_axes: list[str] | None = None) -> dict[str, str]:
+    """LLM-assign a semantic category (axis) to every currently-uncategorized verb.
+
+    One batched `claude -p` call maps each canonical relation verb still on the
+    default `Action` axis to its best category — reusing the existing relation axes
+    (plus any `seed_axes`), coining a new one only when none fits. Updates
+    kgr.ontology.axis for those verbs. Forward use (the extractor proposes axes on
+    new verbs) plus this back-pass over what's already there. Never raises; returns
+    {verb: axis} for what it changed. Re-apply the graph afterwards.
+    """
+    canon = [
+        r for r in fetch(
+            "SELECT type_name, axis, canonical_name FROM \"kgr\".\"ontology\" "
+            "WHERE type_kind = 'relation' AND attr_name = ''"
+        )
+        if (r.get("canonical_name") or r["type_name"]) == r["type_name"]
+    ]
+    known = sorted({(r.get("axis") or DEFAULT_RELATION_AXIS) for r in canon} | set(seed_axes or []))
+    uncategorized = sorted(r["type_name"] for r in canon
+                           if (r.get("axis") or DEFAULT_RELATION_AXIS) == DEFAULT_RELATION_AXIS)
+    if not uncategorized or not shutil.which("claude"):
+        return {}
+
+    schema = {
+        "type": "object", "additionalProperties": False, "required": ["assignments"],
+        "properties": {"assignments": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False, "required": ["verb", "axis"],
+            "properties": {"verb": {"type": "string"}, "axis": {"type": "string"}}}}},
+    }
+    prompt = (
+        "Classify each knowledge-graph relation verb into a semantic CATEGORY (axis).\n"
+        f"Existing categories (reuse when one fits; coin a new TitleCase one only if none does): {', '.join(known)}\n\n"
+        f"Verbs to classify: {', '.join(uncategorized)}\n\n"
+        "Return JSON {\"assignments\": [{\"verb\": \"<verb>\", \"axis\": \"<Category>\"}, ...]} covering every verb."
+    )
+    try:
+        proc = subprocess.run(
+            ["claude", "-p", "--output-format", "json", "--json-schema", json.dumps(schema), prompt],
+            capture_output=True, text=True, timeout=int(os.environ.get("KGR_LLM_TIMEOUT", "180")),
+        )
+        if proc.returncode != 0:
+            return {}
+        structured = (json.loads(proc.stdout) or {}).get("structured_output") or {}
+    except Exception:
+        return {}
+
+    valid = set(uncategorized)
+    mapping = {a["verb"]: a["axis"].strip() for a in structured.get("assignments", [])
+               if a.get("verb") in valid and (a.get("axis") or "").strip()}
+    if not mapping:
+        return {}
+    now = _now_ms()
+    rows = []
+    for verb, axis in mapping.items():
+        row = _row("relation", verb, "", "", "llm://categorize_relation_axes", now, axis=axis)
+        row["canonical_name"] = verb
+        rows.append(row)
+    _insert_ontology_rows(rows)
+    return mapping
+
+
+def rebuild_edge_label_keys() -> int:
+    """Materialize kgr.edge_label_keys: one row per relation axis -> the array of
+    canonical verbs in it (e.g. Offensive -> [AFFECTS, EXPLOITS, TARGETS]). The
+    relation axis is the verb's semantic CATEGORY — the EDGES analog of node axes,
+    a second-level grouping over the canonical verbs (akin to canonicalization but
+    one level up). Fed into CREATE GRAPH's EDGES component as the same valid
+    (LABEL_KEY, LABEL) grouping SELECT used for nodes, so /show/graph with
+    schema_edge_labelkeys=true collapses all verbs in a category into one abstract
+    edge. Single-membership (each verb -> one category). Stored LABEL stays bare.
+    Upserts current axes and prunes ones that no longer exist.
+    """
+    groups: dict[str, set[str]] = {}
+    for r in fetch(
+        "SELECT type_name, axis, canonical_name FROM \"kgr\".\"ontology\" "
+        "WHERE type_kind = 'relation' AND attr_name = ''"
+    ):
+        name = r["type_name"]
+        canon = r.get("canonical_name") or name
+        if name != canon:  # alias — not stored on edges
+            continue
+        axis = r.get("axis") or DEFAULT_RELATION_AXIS
+        groups.setdefault(axis, set()).add(name)
+
+    rows = [{"label_key": k, "label": sorted(v)} for k, v in groups.items() if v]
+    if rows:
+        db = connect()
+        payload = json.dumps(rows)
+        resp_raw = db.insert_records_json(payload, "kgr.edge_label_keys", options={"update_on_existing_pk": "true"})
+        resp = json.loads(resp_raw) if isinstance(resp_raw, (str, bytes)) else resp_raw
+        if isinstance(resp, dict) and resp.get("status") == "ERROR":
+            raise RuntimeError(f"kgr.edge_label_keys upsert failed: {resp.get('message')}")
+    keep = set(groups)
+    if keep:
+        in_list = ", ".join("'" + k.replace("'", "''") + "'" for k in keep)
+        execute(f'DELETE FROM "kgr"."edge_label_keys" WHERE "label_key" NOT IN ({in_list})')
+    else:
+        execute('DELETE FROM "kgr"."edge_label_keys" WHERE 1 = 1')
+    return len(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -388,30 +622,75 @@ def apply_seed(path: Path | None = None) -> dict:
 
     existing_canonical_for = _existing_canonical_map()  # (kind, type_name) -> canonical_name
 
-    def _process(kind: str, mapping: dict):
-        for alias, canonical in (mapping or {}).items():
-            alias = alias.strip()
-            canonical = canonical.strip()
-            if not alias or not canonical:
-                continue
-            # canonical row (idempotent — UPSERT will be a no-op if unchanged)
-            if (kind, canonical) not in existing_canonical_for:
-                row = _row(kind, canonical, "", "", str(src), now)
-                row["canonical_name"] = canonical
-                rows.append(row)
-                canonicals_added.append((kind, canonical))
-                existing_canonical_for[(kind, canonical)] = canonical
-            # alias row
-            current = existing_canonical_for.get((kind, alias))
-            if current != canonical:
-                row = _row(kind, alias, "", "", str(src), now)
-                row["canonical_name"] = canonical
-                rows.append(row)
-                applied.append((kind, alias, canonical))
-                existing_canonical_for[(kind, alias)] = canonical
+    # Axis per facet entity canonical; structural labels default to EntityType.
+    entity_axis_for: dict[str, str] = {}
+    for label, axis in (blob.get("entity_axes") or {}).items():
+        label, axis = label.strip(), (axis or "").strip()
+        if label and axis:
+            entity_axis_for[label] = axis
 
-    _process("entity", blob.get("entity_aliases", {}))
-    _process("relation", blob.get("relation_aliases", {}))
+    def _entity_axis(name: str) -> str:
+        return entity_axis_for.get(name, DEFAULT_AXIS)
+
+    # Axis (semantic category) per relation verb; unseeded verbs default to Action.
+    relation_axis_for: dict[str, str] = {}
+    for verb, axis in (blob.get("relation_axes") or {}).items():
+        verb, axis = verb.strip(), (axis or "").strip()
+        if verb and axis:
+            relation_axis_for[verb] = axis
+
+    def _relation_axis(name: str) -> str:
+        return relation_axis_for.get(name, DEFAULT_RELATION_AXIS)
+
+    def _process_alias(kind: str, alias: str, canonical: str, axis: str | None):
+        alias, canonical = alias.strip(), canonical.strip()
+        if not alias or not canonical:
+            return
+        # canonical row (idempotent — UPSERT will be a no-op if unchanged)
+        if (kind, canonical) not in existing_canonical_for:
+            row = _row(kind, canonical, "", "", str(src), now, axis=axis)
+            row["canonical_name"] = canonical
+            rows.append(row)
+            canonicals_added.append((kind, canonical))
+            existing_canonical_for[(kind, canonical)] = canonical
+        # alias row (shares the canonical's axis)
+        current = existing_canonical_for.get((kind, alias))
+        if current != canonical:
+            row = _row(kind, alias, "", "", str(src), now, axis=axis)
+            row["canonical_name"] = canonical
+            rows.append(row)
+            applied.append((kind, alias, canonical))
+            existing_canonical_for[(kind, alias)] = canonical
+
+    # Structural entity aliases (axis defaults to EntityType).
+    for alias, canonical in (blob.get("entity_aliases") or {}).items():
+        _process_alias("entity", alias, canonical, _entity_axis(canonical.strip()))
+
+    # Facet canonicals — force-write so an existing structural classification is
+    # corrected to its facet axis (upsert by ont_key overwrites the axis value).
+    for label, axis in entity_axis_for.items():
+        row = _row("entity", label, "", "", str(src), now, axis=axis)
+        rows.append(row)
+        if ("entity", label) not in existing_canonical_for:
+            canonicals_added.append(("entity", label))
+        existing_canonical_for[("entity", label)] = label
+
+    # Facet aliases -> facet canonical (share the canonical's facet axis).
+    for alias, canonical in (blob.get("entity_axis_aliases") or {}).items():
+        _process_alias("entity", alias, canonical, _entity_axis(canonical.strip()))
+
+    # Relation aliases (share the canonical verb's semantic category axis).
+    for alias, canonical in (blob.get("relation_aliases") or {}).items():
+        _process_alias("relation", alias, canonical, _relation_axis(canonical.strip()))
+
+    # Relation axis canonicals — force-write so a verb's category is corrected
+    # (upsert by ont_key overwrites the axis), mirroring entity facet canonicals.
+    for verb, axis in relation_axis_for.items():
+        row = _row("relation", verb, "", "", str(src), now, axis=axis)
+        rows.append(row)
+        if ("relation", verb) not in existing_canonical_for:
+            canonicals_added.append(("relation", verb))
+        existing_canonical_for[("relation", verb)] = verb
 
     if rows:
         _insert_ontology_rows(rows)
@@ -426,7 +705,10 @@ def compound_edge_labels() -> int:
     given the current endpoint labels. Re-applying the graph after this call is
     the caller's responsibility (apply_all does it automatically).
     """
-    # Build {NODE: primary LABEL element} map from kgr.nodes once.
+    # Build {NODE: structural LABEL} map from kgr.nodes once. The structural label
+    # is resolved by AXIS membership (the EntityType-axis element of the vector),
+    # not by array position — the graph treats LABEL as an unordered multi-label.
+    amap = axis_map()
     node_label: dict[str, str] = {}
     for r in fetch('SELECT NODE, LABEL FROM "kgr"."nodes"'):
         raw = r.get("LABEL")
@@ -436,8 +718,9 @@ def compound_edge_labels() -> int:
             arr = json.loads(raw) if isinstance(raw, str) else list(raw)
         except json.JSONDecodeError:
             continue
-        if arr:
-            node_label[r["NODE"]] = arr[0]
+        structural = pick_structural(arr, amap)
+        if structural:
+            node_label[r["NODE"]] = structural
 
     # Pull canonical relation type names so we can recover the BASE part from
     # an existing LABEL — whether stored as bare base ("WORKS_AT"), as an

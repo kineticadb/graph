@@ -27,6 +27,7 @@ import subprocess
 from typing import Any
 
 from ..canonical import concept_id
+from ..config import DEFAULT_AXIS, DEFAULT_RELATION_AXIS
 from ..ontology import Ontology
 
 
@@ -37,16 +38,32 @@ Return a single JSON object with keys: entity_types, relation_types, entities, r
 Conventions:
 - entity_types[i] = {{"name": "<TitleCase singular type, e.g. Person, Company, Event, Location, FinancialInstrument, Government>",
                      "attributes": [{{"name": "<lower_snake_case attr>", "type": "VARCHAR(<n>)"|"DATE"|"DOUBLE"|"BIGINT"|"BOOLEAN"}}]}}
-- relation_types[i] = same shape, with UPPER_SNAKE_CASE names (e.g. ACQUIRED, WORKS_AT, REPORTED_IN, REGULATES).
+- relation_types[i] = same shape, with UPPER_SNAKE_CASE names (e.g. ACQUIRED, WORKS_AT, REPORTED_IN, REGULATES),
+  plus an "axis" = the verb's semantic CATEGORY (e.g. Offensive, Defensive, Disclosure, Corporate, Assessment,
+  Structural). Reuse an EXISTING relation axis from the list below when one fits; coin a new one only when none does.
 - Attribute names are GLOBAL across types on the same table (entity attrs share kgr.nodes, relation attrs share kgr.edges).
   Reuse an existing attribute name when the meaning matches. Pick distinct names when it doesn't.
 - entities[i].id is a stable canonical id DERIVED FROM THE ENTITY'S NAME, not prefixed with its type.
   The LABEL already records the type — the id is the entity's identity. Use lowercase + underscores only.
   Examples: name "Jerome Powell" -> id "jerome_powell"; "Apple Inc." -> "apple_inc"; "Washington" -> "washington".
   Reuse the SAME id when the same real-world entity appears across paragraphs.
+- entities[i].label is the SINGLE best STRUCTURAL type (what KIND of thing it is): Person, Organization,
+  Location, Product, Event, …. Pick exactly one.
+- entities[i].facets (optional) are ADDITIONAL cross-cutting descriptors on OTHER dimensions ("axes"),
+  each {{"label": "<TitleCase>", "axis": "<AxisName>"}}. Use facets to capture what the structural type
+  can't — industry, technology, status, etc. Example: Anthropic -> label "Organization",
+  facets [{{"label":"AI","axis":"Industry"}}, {{"label":"LLM","axis":"Technology"}}].
+  Reuse an EXISTING axis + facet label from the list below when it fits; only coin a new axis when none does.
+  Add a facet ONLY when the passage factually supports it. Omit facets entirely if none apply.
 - relations[i].src and .dst MUST refer to entities you list under "entities".
 - Use the existing ontology (below) when types or attributes already cover the concept — only add NEW types when truly needed.
 - Be conservative: skip generic concepts (e.g. "company" as a category, "money" as a noun). Extract NAMED entities.
+
+Existing entity label axes (axis -> known facet labels) — prefer these:
+{axes_summary}
+
+Existing relation axes (axis -> known verbs) — prefer these for relation_types[i].axis:
+{relation_axes_summary}
 
 Existing ontology (entity_type -> attrs, relation_type -> attrs):
 {ontology_summary}
@@ -110,6 +127,8 @@ _RESPONSE_SCHEMA = {
                 "required": ["name", "attributes"],
                 "properties": {
                     "name": {"type": "string"},
+                    # Semantic category of the verb (Offensive, Defensive, …). Optional.
+                    "axis": {"type": "string"},
                     "attributes": {
                         "type": "array",
                         "items": {
@@ -137,6 +156,20 @@ _RESPONSE_SCHEMA = {
                     "name": {"type": "string"},
                     "qualified_name": {"type": "string"},
                     "attrs": {"type": "object"},
+                    # Cross-cutting facet labels on OTHER axes than the structural
+                    # `label` (e.g. {"label":"AI","axis":"Industry"}). Optional.
+                    "facets": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["label", "axis"],
+                            "properties": {
+                                "label": {"type": "string"},
+                                "axis": {"type": "string"},
+                            },
+                        },
+                    },
                 },
             },
         },
@@ -166,6 +199,8 @@ def _extract_via_claude_cli(passage: str, ontology: Ontology) -> dict[str, Any]:
     --json-schema  forces the model's output to conform to our entity/relation JSON shape.
     """
     prompt = PROMPT_TEMPLATE.format(
+        axes_summary=_summarize_axes(ontology),
+        relation_axes_summary=_summarize_relation_axes(ontology),
         ontology_summary=_summarize_ontology(ontology),
         passage=passage,
     )
@@ -203,6 +238,8 @@ def _extract_via_claude_sdk(passage: str, ontology: Ontology) -> dict[str, Any]:
     client = anthropic.Anthropic()
     model = os.environ.get("KGR_LLM_MODEL", "claude-opus-4-7")
     prompt = PROMPT_TEMPLATE.format(
+        axes_summary=_summarize_axes(ontology),
+        relation_axes_summary=_summarize_relation_axes(ontology),
         ontology_summary=_summarize_ontology(ontology),
         passage=passage,
     )
@@ -229,6 +266,41 @@ def _parse_json_blob(text: str) -> dict[str, Any]:
     except json.JSONDecodeError as e:
         raise RuntimeError(f"LLM returned non-JSON response: {e}\n{text[:400]}")
     return _normalize(data)
+
+
+def _summarize_axes(ont: Ontology) -> str:
+    """List the known axes (LABEL_KEYs) and their facet labels, so the LLM reuses
+    existing dimensions instead of coining variants. Structural (EntityType) labels
+    are omitted here — they're the `label` field, summarized below as entity types.
+    """
+    by_axis: dict[str, set[str]] = {}
+    for t in ont.entities.values():
+        axis = t.axis or DEFAULT_AXIS
+        if axis == DEFAULT_AXIS:
+            continue
+        by_axis.setdefault(axis, set()).add(t.name)
+    if not by_axis:
+        return "  (no facet axes yet — propose axis names like Industry, Technology, Status as needed)"
+    lines = []
+    for axis in sorted(by_axis):
+        labels = ", ".join(sorted(by_axis[axis])[:15])
+        lines.append(f"  {axis}: {labels}")
+    return "\n" + "\n".join(lines)
+
+
+def _summarize_relation_axes(ont: Ontology) -> str:
+    """List known relation axes (verb categories) and their verbs, so the LLM reuses
+    existing categories instead of coining variants."""
+    by_axis: dict[str, set[str]] = {}
+    for t in ont.relations.values():
+        by_axis.setdefault(t.axis or DEFAULT_RELATION_AXIS, set()).add(t.name)
+    if not by_axis:
+        return "  (none yet — propose categories like Offensive, Defensive, Disclosure, Corporate)"
+    lines = []
+    for axis in sorted(by_axis):
+        verbs = ", ".join(sorted(by_axis[axis])[:15])
+        lines.append(f"  {axis}: {verbs}")
+    return "\n" + "\n".join(lines)
 
 
 def _summarize_ontology(ont: Ontology) -> str:

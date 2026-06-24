@@ -32,7 +32,12 @@ def edge_key(src: str, dst: str, label: str, source_uri: str) -> str:
 
 
 def upsert_nodes(entities: Iterable[dict[str, Any]], source_uri: str) -> int:
-    """`entities` items: {id, label (str), label_raw (pre-fold label), name, qualified_name, attrs: dict}."""
+    """`entities` items: {id, label (structural str), labels (multi-label vector),
+    label_raw (pre-fold label), name, qualified_name, attrs: dict}.
+
+    LABEL is the full multi-label vector `e['labels']` (structural type + facets on
+    other axes), falling back to `[label]` for sources that don't emit facets (SQL path).
+    """
     now = now_ms()
     cols = _table_columns("kgr.nodes")
     entities = [e for e in entities if e.get("id")]
@@ -49,9 +54,12 @@ def upsert_nodes(entities: Iterable[dict[str, Any]], source_uri: str) -> int:
             continue
         seen.add(nid)
         attrs = e.get("attrs") or {}
+        labels = [str(l) for l in (e.get("labels") or []) if str(l).strip()]
+        if not labels:
+            labels = [e.get("label") or "Entity"]
         base = {
             "NODE": nid,
-            "LABEL": [e.get("label") or "Entity"],
+            "LABEL": labels,
             "name_original": (e.get("name") or "")[:256],
             "qualified_name": (e.get("qualified_name") or e.get("name") or "")[:512],
             "source_uri": source_uri,
@@ -150,10 +158,14 @@ def _compose_edge_label(src_label: str, base_label: str, dst_label: str) -> str:
 
 
 def _lookup_node_labels(node_ids: set[str | None], already_known: dict[str, str]) -> dict[str, str]:
-    """Fetch primary LABEL element for any node_id not already in `already_known`."""
+    """Fetch the STRUCTURAL LABEL (EntityType-axis element) for any node_id not
+    already in `already_known`. Resolved by axis membership, not array position."""
+    from .ontology import axis_map, pick_structural
+
     missing = [nid for nid in node_ids if nid and nid not in already_known]
     if not missing:
         return {}
+    amap = axis_map()
     in_list = ", ".join("'" + nid.replace("'", "''") + "'" for nid in missing)
     out: dict[str, str] = {}
     for r in fetch(f'SELECT NODE, LABEL FROM "kgr"."nodes" WHERE NODE IN ({in_list})'):
@@ -164,8 +176,9 @@ def _lookup_node_labels(node_ids: set[str | None], already_known: dict[str, str]
             arr = json.loads(raw) if isinstance(raw, str) else list(raw)
         except json.JSONDecodeError:
             continue
-        if arr:
-            out[r["NODE"]] = arr[0]
+        structural = pick_structural(arr, amap)
+        if structural:
+            out[r["NODE"]] = structural
     return out
 
 

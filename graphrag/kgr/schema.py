@@ -22,7 +22,7 @@ from .db import connect, execute, execute_script
 
 _HERE = Path(__file__).resolve().parent
 
-_KNOWN_TABLES = ["documents", "ontology", "nodes", "edges"]
+_KNOWN_TABLES = ["documents", "ontology", "label_keys", "edge_label_keys", "nodes", "edges"]
 
 
 def apply_schema() -> None:
@@ -34,10 +34,18 @@ def apply_schema() -> None:
             continue
         execute(stmt)
     _migrate_ontology_canonical_name()
+    _migrate_ontology_axis()
     _migrate_nodes_label_raw()
 
 
 def apply_graph() -> None:
+    # Refresh the LABEL_KEY (axis) groupings the graph reads, then (re)create it.
+    # rebuild is cheap (ontology is small) and keeps the materialized groupings in
+    # sync with any new axes/labels the latest ingest introduced.
+    from .ontology import rebuild_edge_label_keys, rebuild_label_keys
+
+    rebuild_label_keys()
+    rebuild_edge_label_keys()
     execute(_HERE.joinpath("graph.sql").read_text())
 
 
@@ -90,6 +98,8 @@ _DROP_ORDER = [
     'DROP TABLE IF EXISTS "kgr"."edges"',
     'DROP TABLE IF EXISTS "kgr"."nodes"',
     'DROP TABLE IF EXISTS "kgr"."documents"',
+    'DROP TABLE IF EXISTS "kgr"."label_keys"',
+    'DROP TABLE IF EXISTS "kgr"."edge_label_keys"',
     'DROP TABLE IF EXISTS "kgr"."ontology"',
 ]
 
@@ -140,6 +150,28 @@ def _migrate_ontology_canonical_name() -> None:
         return
     execute('ALTER TABLE "kgr"."ontology" ADD COLUMN "canonical_name" VARCHAR(128)')
     execute('UPDATE "kgr"."ontology" SET "canonical_name" = "type_name" WHERE "canonical_name" IS NULL')
+
+
+def _migrate_ontology_axis() -> None:
+    """Add kgr.ontology.axis and default every existing entity row to EntityType.
+
+    Forward-only: rows written before this column existed get the structural
+    default; the seed (entity_axes) and future proposals reclassify facet types.
+    """
+    from .config import DEFAULT_AXIS
+
+    db = connect()
+    schemas = db.show_table("kgr.ontology", options={"get_column_info": "true"}).get("type_schemas", [])
+    if not schemas:
+        return
+    cols = {f["name"] for f in json.loads(schemas[0]).get("fields", [])}
+    if "axis" in cols:
+        return
+    execute('ALTER TABLE "kgr"."ontology" ADD COLUMN "axis" VARCHAR(64)')
+    execute(
+        f'UPDATE "kgr"."ontology" SET "axis" = \'{DEFAULT_AXIS}\' '
+        f"WHERE \"type_kind\" = 'entity' AND \"axis\" IS NULL"
+    )
 
 
 def _migrate_nodes_label_raw() -> None:

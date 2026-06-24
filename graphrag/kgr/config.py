@@ -5,6 +5,17 @@ import os
 
 _TRUTHY = {"1", "on", "true", "yes"}
 
+# The default label axis (LABEL_KEY). A node's *primary* structural type
+# (Person, Organization, Location, …) lives on this axis and is always element 0
+# of kgr.nodes.LABEL. Facet labels (e.g. AI, LLM) live on other axes (Industry,
+# Technology, …) and are appended after the primary. See ontology.axis_map().
+DEFAULT_AXIS = "EntityType"
+
+# The default axis (LABEL_KEY) for relation types — the semantic category an
+# action/verb falls under (e.g. EXPLOITS/AFFECTS -> Offensive). Mirrors node axes
+# for the EDGES component; unseeded verbs fall here. See ontology.rebuild_edge_label_keys().
+DEFAULT_RELATION_AXIS = "Action"
+
 
 def compound_edges_enabled() -> bool:
     """Whether kgr.edges.LABEL is stored in compound `<srcLabel>_<baseLabel>_<dstLabel>` form.

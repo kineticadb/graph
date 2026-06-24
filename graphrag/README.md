@@ -114,7 +114,7 @@ Two Cypher gotchas worth knowing:
 - Always quote each schema part: `GRAPH "kgr"."kg"`, never `"kgr.kg"`.
 - Quote `name_original` in RETURN: `n."name_original"` (Kinetica's Cypher parser treats some bare identifiers oddly).
 
-For ad-hoc inspection from a shell, the `kineticadb:kinetica-execute` skill is the recommended entry point.
+For ad-hoc inspection from a shell, the `kineticadb:kinetica-execute` skill is the recommended entry point — see `~/agent-skills/knowledge/graph-workflows.md`.
 
 ## Keeping the vocabulary tight (label folding)
 
@@ -360,3 +360,5 @@ artifacts to PyPI or a private index (`twine upload dist/*`); bump
 ## Further reading
 
 - `CLAUDE.md` — internals, conventions, and known gotchas (`name` column trap, `claude -p` invocation pattern, Cypher quirks).
+- `~/agent-skills/knowledge/graph-workflows.md` — Kinetica graph DDL + Cypher reference.
+- `/home/kkaramete/.claude/plans/snazzy-plotting-squirrel.md` — the original design plan.

@@ -9,6 +9,7 @@ description = "A knowledge graph that learns its own ontology — LLM-induced, i
 requires-python = ">=3.10"
 dependencies = [
     "gpudb",
+    "typeguard",   # gpudb >=7.2.3.9 imports it but doesn't declare it as a dependency
     "sqlglot>=23",
     "python-dotenv",
     "anthropic",

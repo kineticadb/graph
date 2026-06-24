@@ -50,27 +50,48 @@ _CYPHER_SCHEMA = {
 
 # --- schema (the grounding) -------------------------------------------------
 
-def _label0(raw: Any) -> Optional[str]:
+def _decode(raw: Any) -> list[str]:
     try:
         arr = json.loads(raw) if isinstance(raw, str) else list(raw or [])
     except json.JSONDecodeError:
-        return None
+        return []
+    return [str(x) for x in arr] if arr else []
+
+
+def _label0(raw: Any) -> Optional[str]:
+    arr = _decode(raw)
     return arr[0] if arr else None
 
 
 def graph_schema() -> dict:
-    """Derive the live meta-graph used to ground generation + validation."""
-    node_label: dict[str, str] = {}
+    """Derive the live meta-graph used to ground generation + validation.
+
+    Nodes are multi-label: a node carries its structural type (EntityType axis)
+    plus facet labels on other axes. The meta-graph TRIPLES use the structural
+    label (resolved by axis, not array position) so the (src)-[rel]->(dst) map
+    stays readable; ALL labels — structural and facet — are exposed as queryable
+    node types, since Cypher `(n:AI)` matches any element of the LABEL vector.
+    """
+    from .config import DEFAULT_AXIS
+    from .ontology import axis_map, pick_structural
+
+    amap = axis_map()
+    node_structural: dict[str, str] = {}
+    all_labels: set[str] = set()
     for r in fetch('SELECT NODE, LABEL FROM "kgr"."nodes"'):
-        lbl = _label0(r.get("LABEL"))
-        if lbl:
-            node_label[r["NODE"]] = lbl
+        arr = _decode(r.get("LABEL"))
+        if not arr:
+            continue
+        all_labels.update(arr)
+        s = pick_structural(arr, amap)
+        if s:
+            node_structural[r["NODE"]] = s
 
     triples: Counter = Counter()
     for r in fetch('SELECT NODE1, NODE2, LABEL FROM "kgr"."edges"'):
         rel = _label0(r.get("LABEL")) or "RELATED_TO"
-        s = node_label.get(r.get("NODE1"), "Unknown")
-        d = node_label.get(r.get("NODE2"), "Unknown")
+        s = node_structural.get(r.get("NODE1"), "Unknown")
+        d = node_structural.get(r.get("NODE2"), "Unknown")
         triples[(s, rel, d)] += 1
 
     attrs: dict[str, list[str]] = {}
@@ -78,11 +99,16 @@ def graph_schema() -> dict:
                    "WHERE type_kind = 'entity' AND attr_name <> ''"):
         attrs.setdefault(r["type_name"], []).append(r["attr_name"])
 
+    axes: dict[str, list[str]] = {}
+    for lbl in all_labels:
+        axes.setdefault(amap.get(lbl, DEFAULT_AXIS), []).append(lbl)
+
     return {
-        "node_types": sorted(set(node_label.values())),
+        "node_types": sorted(all_labels),
         "relation_types": sorted({t[1] for t in triples}),
         "triples": triples,
         "attrs": attrs,
+        "axes": {k: sorted(v) for k, v in axes.items()},
     }
 
 
@@ -92,8 +118,18 @@ def schema_text(schema: dict, *, max_triples: int = 250) -> str:
     if len(schema["triples"]) > max_triples:
         lines.append(f"  … ({len(schema['triples']) - max_triples} more triples omitted)")
     attr_lines = [f"  {t}: {', '.join(a)}" for t, a in sorted(schema["attrs"].items()) if a]
+    axes = schema.get("axes") or {}
+    if axes:
+        axis_lines = [f"  {axis} (LABEL_KEY): {', '.join(labels)}" for axis, labels in sorted(axes.items())]
+        node_section = (
+            "NODE TYPES (multi-label — a node may carry several; match any with (n:Label)).\n"
+            "Grouped by axis (LABEL_KEY); the EntityType axis is the structural type used in the edge map below:\n"
+            + "\n".join(axis_lines)
+        )
+    else:
+        node_section = "NODE TYPES:\n  " + ", ".join(schema["node_types"])
     return (
-        "NODE TYPES:\n  " + ", ".join(schema["node_types"]) + "\n\n"
+        node_section + "\n\n"
         "RELATION TYPES:\n  " + ", ".join(schema["relation_types"]) + "\n\n"
         "EDGES THAT ACTUALLY EXIST (srcLabel)-[:REL]->(dstLabel):\n" + "\n".join(lines) + "\n\n"
         "ENTITY ATTRIBUTES (column names you may filter/return):\n" + "\n".join(attr_lines)

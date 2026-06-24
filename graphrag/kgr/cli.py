@@ -84,6 +84,11 @@ def main(argv: list[str] | None = None) -> int:
     p_watch.add_argument("--once", action="store_true", help="Run a single poll cycle and exit (for cron/testing)")
     p_watch.set_defaults(func=_cmd_watch)
 
+    p_replay = sub.add_parser("replay-corpus", help="Re-run every paragraph logged in corpus.txt through the current extractor (rebuild w/ multi-labels, no re-fetch)")
+    p_replay.add_argument("path", nargs="?", default=None, help="Path to corpus.txt (default: KGR_CORPUS_PATH or the bundled corpus)")
+    p_replay.add_argument("--refresh-every", type=int, default=5, help="Re-apply the graph every N paragraphs so it tracks the tables live (0 = only at the end). Default 5")
+    p_replay.set_defaults(func=_cmd_replay)
+
     p_intr = sub.add_parser("interrupt", help="Stop a running watch-feeds daemon/sweep (SIGTERM, then SIGKILL)")
     p_intr.set_defaults(func=_cmd_interrupt)
 
@@ -161,6 +166,17 @@ def _cmd_watch(args: argparse.Namespace) -> None:
         print(json.dumps({"event": "stopped"}))
     finally:
         clear_pidfile()
+
+
+def _cmd_replay(args: argparse.Namespace) -> None:
+    from .replay import replay_corpus
+
+    def _progress(i: int, total: int, para_uri: str, counts: dict) -> None:
+        print(json.dumps({"event": "replay", "i": i, "total": total,
+                          "uri": para_uri, **counts}), flush=True)
+
+    summary = replay_corpus(args.path, refresh_every=args.refresh_every, progress=_progress)
+    print(json.dumps(summary))
 
 
 def _cmd_interrupt(_args: argparse.Namespace) -> None:
