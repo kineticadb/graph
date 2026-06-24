@@ -104,25 +104,27 @@ Notes:
 
 ## What lands in Kinetica
 
-`kgr init` creates the schema `kgr` with four tables and one graph:
+`kgr init` creates the schema `kgr` with six tables and one graph:
 
 | object | role |
 |---|---|
 | `kgr.documents` | one row per file ingested; sha256 lets re-ingest of an unchanged file be a no-op |
-| `kgr.ontology` | the evolving type/attribute registry — knows that `Company` is an alias of `Organization`, that `Person` has a `role`, etc. |
-| `kgr.nodes` | one row per entity. Identifier columns (`NODE`, `LABEL`) plus `label_raw` (the original pre-fold label(s) the LLM proposed — e.g. `["Company"]` on a node whose canonical `LABEL` is `["Organization"]`) and a growing set of typed attribute columns added by the ontology evolver |
+| `kgr.ontology` | the evolving type/attribute registry — knows that `Company` is an alias of `Organization`, that `Person` has a `role`, and which **axis** (LABEL_KEY) each type sits on (`AI`→`Industry`, `EXPLOITS`→`Offensive`, …) |
+| `kgr.nodes` | one row per entity. Identifier columns (`NODE`, `LABEL`) — where `LABEL` is a **multi-label vector** (structural type + facets, e.g. `["Organization","AI"]`) — plus `label_raw` (the original pre-fold label(s) the LLM proposed) and a growing set of typed attribute columns added by the ontology evolver |
 | `kgr.edges` | one row per relation. `NODE1`, `NODE2`, `LABEL`, plus its own growing typed attribute columns |
-| `kgr.kg` | the directed property graph over `kgr.nodes` + `kgr.edges`; `add_table_monitor='true'` keeps it in sync with inserts |
+| `kgr.label_keys` | node axis groupings, unpivoted: one row per axis → the array of node labels on it. Materialized from `kgr.ontology.axis` and fed into `CREATE GRAPH` so Kinetica can collapse the meta-graph by axis |
+| `kgr.edge_label_keys` | the same for edges: one row per verb **category** (`Offensive`, `Defensive`, …) → the verbs in it |
+| `kgr.kg` | the directed property graph over `kgr.nodes` + `kgr.edges` (+ the two label-key groupings); `add_table_monitor='true'` keeps it in sync with inserts |
 
 ## The pipeline (per paragraph)
 
 1. **Hash & dedup** against `kgr.documents` — same file as last time? Skip.
 2. **Append** the paragraph to `corpus.txt`.
-3. **Extract** via `claude -p --output-format json --json-schema <schema>` — Claude returns a JSON blob of `entity_types`, `relation_types`, `entities`, `relations`. The current ontology is fed into the prompt so the LLM reuses existing types where possible.
-4. **Fold labels** to canonical form (`fold_proposal`). The seed file (`kgr/ontology_seed.json`) handles common synonyms instantly; anything not in the seed and not yet seen triggers a single cheap `claude -p` synonym check against the existing canonicals.
+3. **Extract** via `claude -p --output-format json --json-schema <schema>` — Claude returns a JSON blob of `entity_types`, `relation_types`, `entities`, `relations`. Entities also carry cross-cutting `facets` (`[{label, axis}]`) and each relation type an `axis` (its verb category). The current ontology + known axes are fed into the prompt so the LLM reuses existing types/axes where possible.
+4. **Fold labels** to canonical form (`fold_proposal`) and build each node's multi-label vector. The seed file (`kgr/ontology_seed.json`) handles common synonyms instantly; anything not in the seed and not yet seen triggers a single cheap `claude -p` synonym check against the existing canonicals.
 5. **Evolve the ontology** (`merge_proposal`). Genuinely new types and attributes get appended to `kgr.ontology` and the appropriate `ALTER TABLE ADD COLUMN` runs on `kgr.nodes` / `kgr.edges`.
 6. **Upsert** the entities/relations via `insert_records_json` with `update_on_existing_pk='true'`. Same canonical ID across paragraphs → row update, not a new row.
-7. **Re-apply the graph** (`CREATE OR REPLACE`) so it picks up any new rows and any new columns.
+7. **Re-apply the graph** (`CREATE OR REPLACE`) — rebuilding the `kgr.label_keys` / `kgr.edge_label_keys` axis groupings — so it picks up any new rows, columns, and axes.
 
 ## Querying what you've ingested
 
@@ -130,29 +132,30 @@ Once you have data, you can hit the graph two ways.
 
 **SQL on the underlying tables:**
 ```sql
+-- LABEL is a multi-label array, so test membership (not equality):
 SELECT NODE, LABEL, name_original
 FROM "kgr"."nodes"
-WHERE LABEL = ARRAY['Organization']
+WHERE ARRAY_CONTAINS(LABEL, 'Organization')
 LIMIT 20;
 ```
 
 **Cypher over `kgr.kg`:**
 ```sql
 GRAPH "kgr"."kg"
-MATCH (a:Person)-[e:Person_WORKS_AT_Organization]->(b:Organization)
+MATCH (a:Person)-[e:WORKS_AT]->(b:Organization)
 RETURN a."name_original" AS person, b."name_original" AS org;
 ```
 
-Edge LABELs are stored in **compound form** `<srcNodeLabel>_<baseEdgeLabel>_<dstNodeLabel>` (e.g. `Organization_ACQUIRED_Organization`, `Person_UPGRADED_Organization`) so the graph schema (the meta-graph showing which node types connect via which edge types) can be derived from the LABEL vocabulary alone — no traversal needed. The base relation type lives in `kgr.ontology` and is what the LLM is given to reuse.
+By default `kgr.edges.LABEL` is the **bare** relation type (`WORKS_AT`), and node `LABEL` is a multi-label vector — Cypher `(n:Organization)` matches any element of it. The meta-graph (which node types connect via which edge types) is derived from the **LABEL_KEY axis groupings** (`kgr.label_keys` / `kgr.edge_label_keys`), so Kinetica can collapse it without traversal. Set `KGR_COMPOUND_EDGES=on` to instead bake the triple into the label — `<srcLabel>_<baseLabel>_<dstLabel>` (e.g. `Person_WORKS_AT_Organization`), which you'd then match in Cypher. Either way the base relation type lives in `kgr.ontology` and is what the LLM reuses.
 
-**Grab the meta-graph as a DOT file** (what Kinetica Explorer renders as "ontology view"):
+**Grab the meta-graph as a DOT file** (built by Kinetica's `/show/graph`; the Kinetica Explorer "ontology view" just renders it):
 ```python
 from kgr.db import connect
 dot = connect().show_graph(
     graph_name="kgr.kg",
-    options={"export_graph_schema": "true"},
-)["info"]["dot"]
-print(dot)   # `digraph G { ... }` — pipe through `dot -Tpng` for a PNG
+    options={"export_graph_schema": "true"},   # + schema_node_labelkeys / schema_edge_labelkeys
+)["info"]["dot"]                                #   (collapse by axis, default on) and
+print(dot)   # `digraph G { ... }`              #   schema_full_search (accurate per-combo %)
 ```
 
 Two Cypher gotchas worth knowing:
@@ -165,14 +168,17 @@ For ad-hoc inspection from a shell, the `kineticadb:kinetica-execute` skill is t
 
 The LLM is creative — left alone it'll coin `UPGRADED`, `RAISED_TO_BUY`, `BOOSTED_RATING`, `RAISED_PRICE_TARGET` as four distinct relation types for what is one concept. `kgr` folds these to a single canonical via two mechanisms.
 
-**Hand-curated seed** — `kgr/ontology_seed.json` ships with sensible defaults:
+**Hand-curated seed** — `kgr/ontology_seed.json` ships with sensible defaults — alias maps
+(synonym → canonical) plus axis maps (label → its LABEL_KEY axis/category):
 ```json
 {
   "entity_aliases":   { "Company": "Organization", "Facility": "Location", ... },
-  "relation_aliases": { "RAISED_PRICE_TARGET": "UPGRADED", "PRODUCES": "MAKES", ... }
+  "relation_aliases": { "RAISED_PRICE_TARGET": "UPGRADED", "PRODUCES": "MAKES", ... },
+  "entity_axes":      { "AI": "Industry", "LLM": "Technology", ... },
+  "relation_axes":    { "EXPLOITS": "Offensive", "PATCHED": "Defensive", ... }
 }
 ```
-Loaded into `kgr.ontology` on every `kgr init`. Future LLM proposals matching any alias are folded instantly, zero LLM cost.
+Loaded into `kgr.ontology` on every `kgr init`. Future LLM proposals matching any alias are folded instantly (zero LLM cost), and matching axes reuse the same categories.
 
 **Runtime fold-check** — anything *not* in the seed and not yet seen triggers a single small `claude -p` call: "is `<proposed>` a synonym of any of `[<existing canonicals>]`?" Decision is persisted so it never costs again.
 
@@ -189,12 +195,13 @@ Or run the backfill on its own:
 
 | command | what it does |
 |---|---|
-| `kgr init` | create schema + graph, load seed, self-heal labels, recompose edge labels to compound form |
+| `kgr init` | create schema + graph, load seed (aliases + node/edge axes), self-heal labels, rebuild the LABEL_KEY groupings, apply the configured edge-label form (bare by default; compound if `KGR_COMPOUND_EDGES=on`) |
 | `kgr ask "<question>" [--show-cypher] [--json]` | natural-language Q&A: generate schema-grounded Cypher, run it, answer in prose |
 | `kgr chat [--show-cypher]` | interactive Q&A REPL over the graph (reuses the `ask` pipeline, keeps context) |
 | `kgr ingest <path>` | ingest a file or a directory tree |
 | `kgr ingest-url <url>` | fetch a web article (trafilatura extraction) and ingest its body |
 | `kgr ingest-feed <rss-url> [--limit N]` | iterate an RSS/Atom feed and ingest each entry |
+| `kgr replay-corpus [path] [--refresh-every N]` | re-run every paragraph logged in `corpus.txt` through the current extractor — rebuild the graph (with multi-labels) without re-fetching; resilient per-paragraph; re-applies the graph every N paragraphs (default 5) |
 | `kgr backfill-labels` | rewrite existing rows to canonical labels (auto-runs from `kgr init`) |
 | `kgr recompose-edges [--base]` | rewrite kgr.edges LABELs to compound `<src>_<base>_<dst>` form; `--base` does the inverse (back to the bare relation, declutters the schema graph). `kgr init` runs whichever direction `KGR_COMPOUND_EDGES` selects |
 | `kgr watch-feeds [--feeds PATH] [--interval SECS] [--limit N] [--once]` | polling daemon: re-walk feeds every `--interval` (default 900s) and ingest new entries; `--feeds` defaults to bundled threat/security feeds; `--once` = single cycle (cron). Re-seen articles are skipped via the `kgr.documents` sha256 ledger |
@@ -239,21 +246,19 @@ cypher: GRAPH "kgr"."kg"
                         p."name_original" AS product,
                         v."name_original" AS vulnerability
         LIMIT 100
-rows: 6
+rows: 17
 
-Only Cisco appears in the corpus as an organization with products affected by
-known vulnerabilities:
-  • Cisco Unified CM / Unified Communications Manager / Session Management Edition
-    — affected by CVE-2026-20230
-  • Unified Communications Manager — also affected by CVE-2025-20309
-  • Catalyst SD-WAN Manager / Cisco Catalyst SD-WAN Manager — affected by CVE-2026-20245
+Several organizations have products affected by known vulnerabilities, e.g.:
+  • Microsoft — Microsoft Defender (BlueHammer, UnDefend, RoguePlanet, RedSun); VS Code
+  • Cisco — Catalyst SD-WAN Manager (CVE-2026-20127/20245/20182); Unified Comms Manager
+  • SolarWinds — Serv-U (CVE-2026-28318); Veeam — Backup & Replication (CVE-2026-44963)
+  • Google — Chrome (CVE-2026-11645); Arista — EOS; Ivanti — Sentry
 ```
 
 Note the two-hop traversal with a **flipped arrow** — `(o)-[:MAKES]->(p)<-[:AFFECTS]-(v)`
 walks org→product then product←vulnerability — generated straight from the question, and
-constrained to labels/relations that actually exist in the graph. (The near-duplicate
-product names hint at a future *entity*-resolution pass — distinct from the type-label
-folding kgr already does.)
+constrained to labels/relations that actually exist in the graph. (Output is LLM-generated
+and reflects the current graph, so exact rows vary.)
 
 ## Continuous feed watching
 
@@ -313,19 +318,13 @@ This is local-only: the second terminal must be the same OS user on the same hos
 ## Starting over
 
 ```bash
-.venv/bin/python -c "
-from kgr.db import connect
-db = connect()
-for s in ['DROP GRAPH \"kgr\".\"kg\"',
-          'DROP TABLE IF EXISTS \"kgr\".\"nodes\"',
-          'DROP TABLE IF EXISTS \"kgr\".\"edges\"',
-          'DROP TABLE IF EXISTS \"kgr\".\"documents\"',
-          'DROP TABLE IF EXISTS \"kgr\".\"ontology\"']:
-    db.execute_sql(s)
-"
-rm -f corpus.txt
-.venv/bin/kgr init
+.venv/bin/kgr clear --yes                 # interrupt any job, drop graph + all kgr tables, remove corpus.txt, re-init
+.venv/bin/kgr clear --yes --keep-corpus   # ...but keep corpus.txt, so you can rebuild with `kgr replay-corpus`
 ```
+
+Without `--yes`, `clear` prints a dry-run plan. It drops the graph and all six tables
+(`documents`, `ontology`, `label_keys`, `edge_label_keys`, `nodes`, `edges`) and re-inits;
+`--no-reinit` leaves the schema dropped.
 
 ## Examples included
 
@@ -352,12 +351,13 @@ Claude returns something like:
     {"name": "FinancialInstrument", "attributes": [{"name": "rate_percent", "type": "DOUBLE"}]}
   ],
   "relation_types": [
-    {"name": "WORKS_AT", "attributes": [{"name": "role", "type": "VARCHAR(128)"}]},
-    {"name": "SETS", "attributes": [{"name": "rate_percent", "type": "DOUBLE"}]}
+    {"name": "WORKS_AT", "axis": "Corporate", "attributes": [{"name": "role", "type": "VARCHAR(128)"}]},
+    {"name": "SETS", "axis": "Assessment", "attributes": [{"name": "rate_percent", "type": "DOUBLE"}]}
   ],
   "entities": [
     {"id": "jerome_powell", "label": "Person", "name": "Jerome Powell", "attrs": {"role": "Chair"}},
-    {"id": "federal_reserve", "label": "Organization", "name": "Federal Reserve"},
+    {"id": "federal_reserve", "label": "Organization", "name": "Federal Reserve",
+     "facets": [{"label": "StateOwned", "axis": "Status"}]},
     {"id": "fed_benchmark_interest_rate", "label": "FinancialInstrument", "name": "Federal Reserve benchmark interest rate", "attrs": {"rate_percent": 5.25}}
   ],
   "relations": [
@@ -367,10 +367,15 @@ Claude returns something like:
 }
 ```
 
+`label` is the single **structural** type; `facets` are optional cross-cutting labels on other
+**axes** (here Federal Reserve also gets `StateOwned` on the `Status` axis). Each `relation_types[i].axis`
+is the verb's semantic **category**. These axes are the LABEL_KEY groupings (`kgr.label_keys` / `kgr.edge_label_keys` — see [What lands in Kinetica](#what-lands-in-kinetica) above, and `CLAUDE.md`).
+
 After ingest:
-- `kgr.ontology` gains `Person`, `Organization`, `FinancialInstrument`, `WORKS_AT`, `SETS` + their attribute declarations.
-- `kgr.nodes` gains the three entity rows; `kgr.edges` gains the two relations. The `role` and `rate_percent` columns are added to the tables if not already present.
-- The next paragraph that mentions Jerome Powell reuses `jerome_powell` (PK upsert just updates `last_seen_ts`).
+- `kgr.ontology` gains `Person`, `Organization`, `FinancialInstrument`, `StateOwned`, `WORKS_AT`, `SETS` + their attribute declarations, each tagged with its **axis** (`StateOwned`→`Status`; `WORKS_AT`→`Corporate`; `SETS`→`Assessment`; the structural types default to `EntityType`).
+- `kgr.nodes` gains the three entity rows; `kgr.nodes.LABEL` is a **multi-label vector**, so Federal Reserve lands as `["Organization","StateOwned"]`. `kgr.edges` gains the two relations (bare `LABEL`). The `role` and `rate_percent` columns are added to the tables if not already present.
+- `kgr.label_keys` / `kgr.edge_label_keys` are rebuilt (unpivoted axis→labels) and fed into `CREATE GRAPH`, so `/show/graph` can collapse the ontology by axis.
+- The next paragraph that mentions Jerome Powell reuses `jerome_powell` (PK upsert just updates `last_seen_ts`); a later, more specific mention adds facets without dropping existing ones.
 
 ## Packaging & distribution
 
@@ -404,6 +409,5 @@ artifacts to PyPI or a private index (`twine upload dist/*`); bump
 
 ## Further reading
 
-- `CLAUDE.md` — internals, conventions, and known gotchas (`name` column trap, `claude -p` invocation pattern, Cypher quirks).
-- `~/agent-skills/knowledge/graph-workflows.md` — Kinetica graph DDL + Cypher reference.
-- `/home/kkaramete/.claude/plans/snazzy-plotting-squirrel.md` — the original design plan.
+- `CLAUDE.md` — internals, conventions, and known gotchas (multi-label & axes, `name` column trap, `claude -p` invocation pattern, Cypher quirks).
+- `TO_DO.md` — current session handoff (project home, run command, next steps).
