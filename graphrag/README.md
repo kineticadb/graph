@@ -206,7 +206,7 @@ Or run the backfill on its own:
 | `kgr recompose-edges [--base]` | rewrite kgr.edges LABELs to compound `<src>_<base>_<dst>` form; `--base` does the inverse (back to the bare relation, declutters the schema graph). `kgr init` runs whichever direction `KGR_COMPOUND_EDGES` selects |
 | `kgr watch-feeds [--feeds PATH] [--interval SECS] [--limit N] [--once]` | polling daemon: re-walk feeds every `--interval` (default 900s) and ingest new entries; `--feeds` defaults to bundled threat/security feeds; `--once` = single cycle (cron). Re-seen articles are skipped via the `kgr.documents` sha256 ledger |
 | `kgr interrupt` | stop a running `watch-feeds` job (SIGTERM, then SIGKILL after 10s) |
-| `kgr clear [--yes] [--no-reinit] [--keep-corpus]` | interrupt any running job, then drop the graph + `nodes`/`edges`/`documents`/`ontology` and remove `corpus.txt`, then re-init. **Requires `--yes`** — without it, prints a dry-run plan. `--no-reinit` leaves the schema dropped; `--keep-corpus` preserves the log |
+| `kgr clear [--yes] [--no-reinit] [--keep-corpus]` | interrupt any running job, then drop the graph + all six kgr tables (`documents`/`ontology`/`label_keys`/`edge_label_keys`/`nodes`/`edges`) and remove `corpus.txt`, then re-init. **Requires `--yes`** — without it, prints a dry-run plan. `--no-reinit` leaves the schema dropped; `--keep-corpus` preserves the log |
 
 ## Asking questions (graph-RAG)
 
