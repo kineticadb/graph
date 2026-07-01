@@ -1726,6 +1726,37 @@ function QueryPanel(props) {
         if (!matchHelper) return;
         setMhOptions(function(prev){ return mergeGrammarOptions(prev, applicableGrammarOptions(matchGr, mhSolveMethod)); });
     }, [matchHelper, mhSolveMethod, matchGr]);
+    // The SVG animation params (svg_speed, svg_basemap) only matter when
+    // `output_tracks` is on. `output_tracks` itself carries grammar
+    // `filtervalues` (match_supply_demand / match_batch_solves), so the UI only
+    // ever exposes it for those methods — gating purely on its value keeps this
+    // generic (no hardcoded method list). svg_speed/svg_basemap are internal
+    // grammar options so applicableGrammarOptions skips them — inject them
+    // whenever output_tracks='true', and drop the ones we auto-injected when
+    // it's turned off. We seed our own preferred defaults (svg_basemap='true'
+    // so the animation renders on a basemap; svg_speed='100' for a brisk
+    // playback) rather than the grammar defaults (false / 20). User-added rows
+    // for the same keys are left untouched (only rows tagged from:'grammar-svg'
+    // are managed here — editing one re-tags it from:'user', which survives).
+    useEffect(function() {
+        if (!matchHelper) return;
+        var SVG_DEFAULTS = { svg_speed: '100', svg_basemap: 'true' };
+        var SVG_KEYS = Object.keys(SVG_DEFAULTS);
+        setMhOptions(function(prev){
+            var arr = prev || [];
+            var ot = arr.find(function(o){ return o && String(o.key).toLowerCase() === 'output_tracks'; });
+            var wantSvg = !!(ot && String(ot.value).trim().toLowerCase() === 'true');
+            var present = {};
+            arr.forEach(function(o){ if (o && o.key) present[String(o.key).toLowerCase()] = true; });
+            if (wantSvg) {
+                var toAdd = SVG_KEYS.filter(function(k){ return !present[k]; });
+                if (!toAdd.length) return prev;
+                return arr.concat(toAdd.map(function(k){ return { key: k, value: SVG_DEFAULTS[k], from: 'grammar-svg' }; }));
+            }
+            var filtered = arr.filter(function(o){ return !(o && o.from === 'grammar-svg'); });
+            return filtered.length === arr.length ? prev : filtered;
+        });
+    }, [matchHelper, mhOptions, matchGr]);
 
     // Default solution-table name = `<schema>.solution_<graph_name>_<solver>`
     // (or `solution_<graph_name>_<solver>` when the graph is unqualified). Pre-
