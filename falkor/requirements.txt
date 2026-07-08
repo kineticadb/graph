@@ -1,4 +1,5 @@
 gpudb
+typeguard          # runtime dependency of gpudb; not always auto-installed
 falkordb
 pyyaml
 python-dotenv
