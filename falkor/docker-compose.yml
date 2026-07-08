@@ -1,0 +1,23 @@
+services:
+  falkordb:
+    image: falkordb/falkordb:latest
+    container_name: falkordb
+    restart: unless-stopped
+    ports:
+      - "6379:6379"          # data port (Redis protocol)
+      - "3000:3000"          # FalkorDB Browser web UI
+    volumes:
+      - falkordb-data:/data  # persists RDB + AOF across restarts
+    environment:
+      # Password comes from .env (FALKORDB_PASSWORD). Fails to start if unset.
+      FALKORDB_PASSWORD: ${FALKORDB_PASSWORD:?set FALKORDB_PASSWORD in .env}
+      # Enable AOF persistence (fsync every second) + default RDB snapshots, and require auth
+      REDIS_ARGS: "--appendonly yes --appendfsync everysec --requirepass ${FALKORDB_PASSWORD}"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$FALKORDB_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  falkordb-data:

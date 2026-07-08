@@ -1,0 +1,5 @@
+gpudb
+falkordb
+pyyaml
+python-dotenv
+pytest

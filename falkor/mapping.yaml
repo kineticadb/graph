@@ -1,0 +1,41 @@
+graph: banking_graph
+
+nodes:
+  - sql: |
+      SELECT
+        id    AS node_id,
+        label AS label,
+        "banking_transaction:amount" AS banking_transaction_amount,
+        "wire_message:risk_score"    AS wire_message_risk_score,
+        "party:risk_score"           AS party_risk_score,
+        "party:party_name"           AS party_name,
+        "bank:bank_name"             AS bank_name,
+        "bank:risk_score"            AS bank_risk_score
+      FROM expero.vertexes
+    id: node_id
+    id_property: NODE
+    label_column: label
+    label_property: LABEL
+    properties:
+      - banking_transaction_amount
+      - wire_message_risk_score
+      - party_risk_score
+      - party_name
+      - bank_name
+      - bank_risk_score
+
+edges:
+  - sql: |
+      SELECT
+        id          AS edge_id,
+        source_name AS node1,
+        target_name AS node2,
+        label       AS label
+      FROM expero.edges
+    id: edge_id
+    id_property: ID
+    type_column: label
+    type_property: LABEL
+    source_key: node1
+    target_key: node2
+    properties: []
