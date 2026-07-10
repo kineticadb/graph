@@ -59,6 +59,17 @@ def test_hydrate_empty_input_short_circuits():
     assert hydrate([], "does-not-matter.parquet") == []
 
 
+def test_hydrate_discards_rows_with_null_or_missing_key(tmp_path):
+    src = _wide(tmp_path)
+    results = [
+        {"NODE": "b1", "path_len": 3},
+        {"NODE": None, "path_len": 9},   # null id -> dropped
+        {"path_len": 7},                 # missing id -> dropped
+    ]
+    out = hydrate(results, src, key="NODE")
+    assert [r["NODE"] for r in out] == ["b1"]
+
+
 def test_hydrate_rejects_unsafe_key():
     with pytest.raises(MappingError):
         hydrate([{"x": 1}], "f.parquet", key="NODE; DROP")
@@ -141,6 +152,28 @@ def test_run_hydrated_joins_cypher_output_to_wide_file(tmp_path):
         {"NODE": "b2", "risk": 40, "party_name": "Beta Bank",
          "full_address": "9 King St, London"},
     ]
+
+
+def test_run_hydrated_discards_cypher_rows_with_null_key(tmp_path):
+    p = tmp_path / "vertexes.parquet"
+    con = duckdb.connect()
+    con.execute("""CREATE TABLE t AS SELECT * FROM (VALUES
+        ('b1', 'Acme Bank'), ('b2', 'Beta Bank')
+    ) AS v(NODE, party_name)""")
+    con.execute(f"COPY t TO '{p}' (FORMAT parquet)")
+    con.close()
+
+    # A null NODE in the Cypher result would also mistype the temp table; it
+    # must be dropped before the join.
+    graph = _FakeGraph(_FakeQR(
+        header=[[1, "NODE"], [1, "risk"]],
+        result_set=[[None, 90], ["b2", 40]],
+    ))
+    out = run_hydrated(
+        "MATCH (n) RETURN n.NODE AS NODE, n.r AS risk",
+        "SELECT c.NODE, w.party_name FROM cypher c JOIN wide w USING (NODE)",
+        falkordb=graph, source=str(p))
+    assert out == [{"NODE": "b2", "party_name": "Beta Bank"}]
 
 
 def test_run_hydrated_empty_cypher_result_returns_empty():

@@ -45,6 +45,10 @@ def _group_by(rows: List[dict], column: str) -> Dict[str, List[dict]]:
 def node_batches(spec: NodeSpec, rows: List[dict], batch_size: int = 5000) -> List[CypherBatch]:
     idp = safe_ident(spec.id_property)
     lp = safe_ident(spec.label_property)
+    # Drop rows with no identity: a null/missing id would create a `NODE: null`
+    # node that nothing can match later. Discard up front rather than be
+    # surprised by orphan/null-keyed nodes after the load.
+    rows = [r for r in rows if r.get(spec.id) is not None]
     batches: List[CypherBatch] = []
     for label, lrows in _group_by(rows, spec.label_column).items():
         query = (
@@ -73,6 +77,13 @@ def edge_batches(spec: EdgeSpec, rows: List[dict], node_key_property: str,
     keyprop = safe_ident(node_key_property)
     idp = safe_ident(spec.id_property)
     tp = safe_ident(spec.type_property)
+    # Drop edges with no identity or a null/missing endpoint id: the endpoint
+    # MATCH could never resolve, so they create nothing anyway -- discard them
+    # explicitly instead of silently emitting no-op MERGEs.
+    rows = [r for r in rows
+            if r.get(spec.id) is not None
+            and r.get(spec.source_key) is not None
+            and r.get(spec.target_key) is not None]
     batches: List[CypherBatch] = []
     for etype, erows in _group_by(rows, spec.type_column).items():
         query = (

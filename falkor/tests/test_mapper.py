@@ -40,6 +40,37 @@ def test_node_batches_group_by_label_and_skip_nulls():
     assert wire.params["rows"] == [{"id": "w1", "props": {}}]  # nulls dropped
 
 
+def test_node_batches_discards_rows_with_null_or_missing_id():
+    rows = [
+        {"node_id": "b1", "label": "bank", "bank_name": "Acme", "bank_risk_score": 0.3},
+        {"node_id": None, "label": "bank", "bank_name": "NoId", "bank_risk_score": 0.9},
+        {"label": "bank", "bank_name": "Missing", "bank_risk_score": 0.1},  # no node_id key
+    ]
+    batches = mapper.node_batches(_node_spec(), rows)
+    ids = [r["id"] for b in batches for r in b.params["rows"]]
+    assert ids == ["b1"]  # null and missing ids dropped
+
+
+def _edge_spec():
+    return EdgeSpec(
+        sql="", id="edge_id", id_property="ID",
+        type_column="label", type_property="LABEL",
+        source_key="node1", target_key="node2", properties=[],
+    )
+
+
+def test_edge_batches_discards_rows_with_null_id_or_endpoint():
+    rows = [
+        {"edge_id": "e1", "node1": "b1", "node2": "w1", "label": "performed"},
+        {"edge_id": None, "node1": "b1", "node2": "w1", "label": "performed"},  # null id
+        {"edge_id": "e3", "node1": None, "node2": "w1", "label": "performed"},  # null source
+        {"edge_id": "e4", "node1": "b1", "label": "performed"},                 # missing target
+    ]
+    batches = mapper.edge_batches(_edge_spec(), rows, node_key_property="NODE")
+    ids = [r["id"] for b in batches for r in b.params["rows"]]
+    assert ids == ["e1"]  # only the fully-identified edge survives
+
+
 def test_node_batches_reject_unsafe_label():
     rows = [{"node_id": "x", "label": "bad-label", "bank_name": None, "bank_risk_score": None}]
     with pytest.raises(mapper.MappingError):

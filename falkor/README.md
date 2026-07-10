@@ -42,7 +42,7 @@ python3 -m venv .venv
 # 5. Build the graph from Kinetica (full wipe + rebuild)
 .venv/bin/python build-graph.py   # prints per-label node counts and per-type edge counts
 
-# 6. Verify (42 tests; benchmarks assert Kinetica ground truth)
+# 6. Verify (46 tests; benchmarks assert Kinetica ground truth)
 .venv/bin/pytest -v
 ```
 

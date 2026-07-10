@@ -38,6 +38,10 @@ def hydrate(result_rows: List[dict], source: str, key: str = "NODE",
     if not result_rows:
         return []
     key = safe_ident(key)
+    # Discard rows with no identity -- a null/missing key cannot be joined.
+    result_rows = [r for r in result_rows if r.get(key) is not None]
+    if not result_rows:
+        return []
     ids = [r[key] for r in result_rows]
 
     own = con is None
@@ -94,7 +98,7 @@ def _register_rows(con, rel: str, rows: List[dict]) -> None:
 
 def run_hydrated(cypher: str, join_sql: str, *, falkordb, source: str,
                  con=None, cypher_relation: str = "cypher",
-                 wide_relation: str = "wide") -> List[dict]:
+                 wide_relation: str = "wide", key: str = "NODE") -> List[dict]:
     """Run a Cypher query in FalkorDB, then a post-join SQL in DuckDB.
 
     The two user inputs:
@@ -104,6 +108,11 @@ def run_hydrated(cypher: str, join_sql: str, *, falkordb, source: str,
       - `join_sql` : arbitrary DuckDB SQL that may reference that relation and
                      the wide attribute file, exposed as the view
                      `wide_relation` (default ``wide``) over `source`.
+
+    `key` names the identity column of the Cypher result (default ``NODE``);
+    rows whose `key` is null are discarded before the join so they neither
+    corrupt the join nor mistype the temp table. If the result has no such
+    column, no rows are dropped.
 
     No Kinetica is involved. Numeric outputs are coerced (Decimal -> float).
     Returns the post-join rows as a list of dicts; returns ``[]`` if the Cypher
@@ -127,6 +136,10 @@ def run_hydrated(cypher: str, join_sql: str, *, falkordb, source: str,
         raise ValueError(f"unsafe source path: {source!r}")
 
     rows = _cypher_rows(falkordb.query(cypher))
+    # Discard rows with no identity (only when the key column is present, so an
+    # aggregate/other-aliased result isn't wiped out).
+    if rows and key in rows[0]:
+        rows = [r for r in rows if r.get(key) is not None]
     if not rows:
         return []
 

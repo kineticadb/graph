@@ -131,7 +131,10 @@ password. FalkorDB runs with `requirepass` (auth required; user is the default R
   values are parameters.
 - **Load counts** reflect graph elements actually created (query-result stats), not source-row
   counts — an edge whose endpoint node is missing creates nothing, so the counts surface
-  dangling edges in the source data.
+  dangling edges in the source data. `mapper` also **discards** rows with no identity before
+  loading: node rows with a null/missing id, and edge rows with a null/missing id or endpoint.
+  Hydration does the same (`hydrate`/`run_hydrated` drop rows with a null `NODE` key), so a
+  null-keyed record never mistypes the DuckDB temp table or produces an unjoinable row.
 - **Testing:** unit tests (config, mapper, kinetica_source, duckdb_source, hydrate) need no
   services — the DuckDB tests read Parquet files they write to `tmp_path` in-process. `test_falkordb_sink.py`,
   `test_end_to_end.py`, and `test_benchmark_banking.py` hit the live FalkorDB and SKIP (not fail)
