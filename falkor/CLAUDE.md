@@ -126,6 +126,13 @@ password. FalkorDB runs with `requirepass` (auth required; user is the default R
   column-major decode is not per-row. Page via `offset` while the response key
   `has_more_records` is true: `limit=-9999` does NOT mean "all rows" (it caps at the server's
   `max_get_records_size`, ~20k) and would silently truncate large tables.
+- **Never put `ORDER BY` in paged Kinetica SQL (`kinetica_source.py`).** `offset`/`limit` paging
+  over an `ORDER BY` result is not stable across pages — windows misalign, so rows are both
+  **duplicated and dropped** while the total count can still look right (verified: `expero.edges`
+  `ORDER BY id` yielded 842,457 of 845,752; `expero.vertexes ORDER BY id` returned 622,015 rows
+  but only 615,037 distinct ids). Read unsorted, then sort downstream if needed (e.g. in DuckDB:
+  `COPY (SELECT * FROM 'vertexes.parquet' ORDER BY NODE) TO ...`). Sortedness only helps remote
+  row-group pruning anyway (see the DuckDB route), so it is rarely worth the risk.
 - **Cypher safety (`mapper.py`):** labels/types can't be Cypher parameters, so any identifier
   interpolated into a query MUST pass `safe_ident()` (`^[A-Za-z0-9_]+$`, `fullmatch`). All data
   values are parameters.
