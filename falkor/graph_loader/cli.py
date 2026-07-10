@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 
 from . import mapper
 from .config import load_mapping
+from .duckdb_source import DuckDBSource
 from .falkordb_sink import FalkorDBSink
 from .kinetica_source import KineticaSource
 
@@ -42,14 +43,22 @@ def run_build(mapping, source, sink) -> dict:
     return counts
 
 
-def build(mapping_path: str) -> dict:
+def build(mapping_path: str, source_kind: str = "kinetica") -> dict:
     load_dotenv()
     mapping = load_mapping(mapping_path)
-    source = KineticaSource.connect(
-        os.environ["KINETICA_URL"],
-        os.environ["KINETICA_USER"],
-        os.environ["KINETICA_PASS"],
-    )
+    if source_kind == "duckdb":
+        # Kinetica-free route: read node/edge rows from Parquet/CSV files.
+        if mapping.duckdb is None:
+            raise SystemExit(
+                "mapping has no 'duckdb:' section; add a table -> file map "
+                "to build with --source duckdb")
+        source = DuckDBSource.connect(mapping.duckdb.tables)
+    else:
+        source = KineticaSource.connect(
+            os.environ["KINETICA_URL"],
+            os.environ["KINETICA_USER"],
+            os.environ["KINETICA_PASS"],
+        )
     sink = FalkorDBSink.connect(
         mapping.graph,
         host=os.environ.get("FALKORDB_HOST", "localhost"),
@@ -64,8 +73,12 @@ def main(argv=None):
         description="Build a FalkorDB graph from Kinetica tables")
     parser.add_argument("--config", default="mapping.yaml",
                         help="Path to the YAML mapping (default: mapping.yaml)")
+    parser.add_argument("--source", choices=("kinetica", "duckdb"),
+                        default="kinetica",
+                        help="Row source: 'kinetica' (default) or 'duckdb' "
+                             "(reads Parquet/CSV files; no Kinetica)")
     args = parser.parse_args(argv)
-    counts = build(args.config)
+    counts = build(args.config, source_kind=args.source)
     print("Loaded nodes:", counts["nodes"])
     print("Loaded edges:", counts["edges"])
 

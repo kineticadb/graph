@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
+from typing import Dict, List, Optional
 
 import yaml
 
@@ -33,11 +33,28 @@ class EdgeSpec:
 
 
 @dataclass
+class DuckDBSpec:
+    # Maps a table name used in the mapping SQL (e.g. "expero.vertexes") to a
+    # Parquet/CSV path, glob, or object-store URL. Enables the Kinetica-free
+    # build route: `build-graph.py --source duckdb`.
+    tables: Dict[str, str]
+
+
+@dataclass
+class HydrateSpec:
+    # Wide-attribute source for post-traversal hydration (see graph_loader.hydrate).
+    source: str
+    key: str
+
+
+@dataclass
 class Mapping:
     graph: str
     nodes: List[NodeSpec]
     edges: List[EdgeSpec]
     node_key_property: str
+    duckdb: Optional[DuckDBSpec] = None
+    hydrate: Optional[HydrateSpec] = None
 
 
 def _require(d: dict, key: str, ctx: str):
@@ -93,5 +110,23 @@ def load_mapping(path: str) -> Mapping:
             properties=list(e.get("properties", [])),
         ))
 
+    dd = raw.get("duckdb")
+    duckdb_spec = None
+    if dd is not None:
+        tables = _require(dd, "tables", "duckdb")
+        if not isinstance(tables, dict) or not tables:
+            raise ConfigError(
+                "duckdb.tables must be a non-empty mapping of table name -> file path")
+        duckdb_spec = DuckDBSpec(tables=dict(tables))
+
+    h = raw.get("hydrate")
+    hydrate_spec = None
+    if h is not None:
+        hydrate_spec = HydrateSpec(
+            source=_require(h, "source", "hydrate"),
+            key=h.get("key", node_key_property),
+        )
+
     return Mapping(graph=graph, nodes=nodes, edges=edges,
-                   node_key_property=node_key_property)
+                   node_key_property=node_key_property,
+                   duckdb=duckdb_spec, hydrate=hydrate_spec)

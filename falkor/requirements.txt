@@ -1,6 +1,7 @@
 gpudb
 typeguard          # runtime dependency of gpudb; not always auto-installed
 falkordb
+duckdb             # Kinetica-free build route + post-traversal hydration
 pyyaml
 python-dotenv
 pytest

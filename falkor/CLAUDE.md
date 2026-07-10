@@ -19,6 +19,7 @@ newgrp docker                # apply docker-group membership without re-login
 
 # Loader (needs .env — see Credentials)
 .venv/bin/python build-graph.py --config mapping.yaml   # full wipe + rebuild of banking_graph
+.venv/bin/python build-graph.py --config mapping.yaml --source duckdb  # same, from Parquet/CSV (no Kinetica)
 .venv/bin/python count-nodes.py [LABEL]                 # node counts by label (or all labels)
 .venv/bin/python query-paths.py <bank_node_id> --min-risk 20
 
@@ -35,18 +36,50 @@ after `newgrp docker` / re-login. The FalkorDB *client* (port 6379) needs no doc
 ## Architecture
 
 Full-rebuild-on-demand pipeline. FalkorDB never contacts Kinetica — the loader process
-bridges two connections (Kinetica SQL in, FalkorDB Cypher out). Modules in `graph_loader/`:
+bridges a row **source** to a FalkorDB **sink** (source rows in, FalkorDB Cypher out). The
+source is pluggable: Kinetica SQL (default) or Parquet/CSV files via DuckDB (no Kinetica at
+all). Modules in `graph_loader/`:
 
-- `config.py` — loads/validates the YAML mapping into `NodeSpec`/`EdgeSpec`/`Mapping` dataclasses.
+- `config.py` — loads/validates the YAML mapping into `NodeSpec`/`EdgeSpec`/`Mapping` dataclasses
+  (plus optional `DuckDBSpec`/`HydrateSpec` — see the DuckDB route below).
 - `mapper.py` — **pure** (rows + spec → Cypher + params); no I/O, fully unit-testable.
 - `kinetica_source.py` — runs SQL against Kinetica, yields row dicts.
+- `duckdb_source.py` — drop-in for `kinetica_source` (same `.rows(sql)`); registers each mapped
+  table as a DuckDB view over a Parquet/CSV file, so the **same mapping SQL runs unchanged** with
+  no Kinetica. `httpfs` auto-loads for `s3://`/`http(s)://` paths.
 - `falkordb_sink.py` — connects, wipes, runs parameterized Cypher.
+- `hydrate.py` — post-traversal enrichment (no Kinetica). `hydrate(rows, source, key)` joins wide
+  columns from a Parquet/CSV file onto Cypher results by `NODE`, reading only the returned ids.
+  `run_hydrated(cypher, join_sql, falkordb=, source=)` is the one-call form: runs the Cypher, exposes
+  its result to DuckDB as relation `cypher` and the wide file as view `wide`, then runs the user's
+  `join_sql` over both — the two runtime inputs are just the Cypher and the post-join SQL.
 - `cli.py` — `run_build(mapping, source, sink)` orchestration (source/sink injected for tests);
-  `build(path)` wires the real connectors from `.env`; `main()` is the CLI.
+  `build(path, source_kind)` wires the real connectors from `.env`; `main()` is the CLI
+  (`--source {kinetica,duckdb}`, default `kinetica`).
 
 Data flow per run: wipe graph → create `:Entity(NODE)` index → load nodes (grouped by label)
 → create per-label `:(NODE)` indexes → load edges. Nodes before edges so edge `MATCH`es hit
 the index.
+
+### DuckDB route: skinny graph + post-join hydration
+
+Motivation: a wide node table (many attribute columns) bloats FalkorDB memory if every column
+becomes a node property (property *keys* are interned globally, so the per-node cost is the
+*values*). Keep the graph **skinny** — only identity + the columns a query filters/sorts/aggregates
+on go in `properties:` — and leave the attribute-rich columns in a Parquet/CSV file. After a
+traversal returns a (small) set of `NODE` ids, `hydrate()` fetches just those rows' wide columns
+and merges them onto the results.
+
+- The two routes plug into the same `run_build`; only the injected source differs. Configure the
+  DuckDB route with a `duckdb:` block (table name → file path/glob/URL) in the mapping; the node/edge
+  SQL is reused verbatim because each table is registered as a view.
+- Hydration happens **after** Cypher, never during it — so any column used in a `MATCH`/`WHERE`
+  filter MUST be a graph property; only pure attributes belong in the hydrate file.
+- DuckDB gives projection pushdown + out-of-core reads (the wide table never fully lands in RAM).
+  Row-group *pruning* helps little here since traversal ids are scattered, not a contiguous range;
+  that mainly costs round trips on remote storage, not on a local file.
+- DuckDB returns numeric columns as `Decimal`; coerce to `float` in `duckdb_source.rows` if a live
+  build hits a FalkorDB client type error (unit tests use a fake sink and don't exercise this).
 
 ### Graph model conventions (these drive query shape)
 
@@ -99,7 +132,8 @@ password. FalkorDB runs with `requirepass` (auth required; user is the default R
 - **Load counts** reflect graph elements actually created (query-result stats), not source-row
   counts — an edge whose endpoint node is missing creates nothing, so the counts surface
   dangling edges in the source data.
-- **Testing:** unit tests (config, mapper, kinetica_source) need no services. `test_falkordb_sink.py`,
+- **Testing:** unit tests (config, mapper, kinetica_source, duckdb_source, hydrate) need no
+  services — the DuckDB tests read Parquet files they write to `tmp_path` in-process. `test_falkordb_sink.py`,
   `test_end_to_end.py`, and `test_benchmark_banking.py` hit the live FalkorDB and SKIP (not fail)
   if it's unreachable or `banking_graph` isn't loaded. Benchmarks require a prior `build-graph.py` run.
 

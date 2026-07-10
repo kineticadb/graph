@@ -39,3 +39,19 @@ edges:
     source_key: node1
     target_key: node2
     properties: []
+
+# --- Optional: Kinetica-free build route (build-graph.py --source duckdb) ---
+# Register each table used in the node/edge SQL above as a Parquet/CSV file, so
+# the SAME SQL runs with no Kinetica connection. Paths may be local, a glob, or
+# an s3:// URL (httpfs is auto-loaded for remote paths).
+# duckdb:
+#   tables:
+#     expero.vertexes: data/vertexes.parquet
+#     expero.edges: data/edges.parquet
+#
+# --- Optional: post-traversal hydration (graph_loader.hydrate.hydrate) ---
+# Keep the graph skinny (only filter/sort columns in `properties:` above) and
+# pull the attribute-rich columns from this wide file, by NODE, after Cypher.
+# hydrate:
+#   source: data/vertexes.parquet
+#   key: NODE
