@@ -20,7 +20,7 @@
   
 ## Core Technical Advantages
 
-* **Predictable Memory Management:** Unlike databases that struggle with unstructured vertex valences, Kinetica uses fixed, calculable storage. The memory footprint is roughly twice the size of a bare-minimum CSR format, following the formula: 4*num_edges + 2*num_nodes.
+* **Predictable Memory Management:** Unlike databases that struggle with unstructured vertex valences, Kinetica uses fixed, calculable storage. The memory footprint is roughly twice the size of a bare-minimum CSR format, following the formula: 4 x num_edges + 2 x num_nodes.
 * **True Dynamic Topology:** Utilizing an **inplace double links** data structure, Kinetica supports constant-time insertions and deletions. This eliminates the need to recreate the entire graph structure during modifications—a major limitation of CSR-based competitors like Neo4j and TigerGraph.
 * **Unified SQL & OLAP Integration:** Every endpoint supports OLAP expressions, allowing graph outputs to function as table functions. This enables complex analytics, including joins and "group by" operations, to be executed within a single, concise SQL statement.
 * **Efficient Sharding & Distribution:** The graph topology is distributed across multiple servers and nodes. To maximize efficiency, only nodes at inter-graph boundaries are duplicated; partitioned graphs remain independent while graph solvers iterate seamlessly across the cluster.
