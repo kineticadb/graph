@@ -91,7 +91,7 @@ def run(session_path: Path, out_dir: Path) -> None:
         # Babel-standalone compiles the JSX at runtime; give React a moment to mount.
         page.wait_for_selector("text=Connect & List Graphs", timeout=90_000)
 
-        # Default profile = Localhost / admin / ***REMOVED*** — just click Connect.
+        # Default profile = Localhost / admin / password — just click Connect.
         page.get_by_role("button", name="Connect & List Graphs").click()
 
         # Wait for the "Connected." status to appear — that's our signal that the

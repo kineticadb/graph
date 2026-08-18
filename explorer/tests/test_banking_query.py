@@ -17,7 +17,7 @@ import unittest
 
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 SERVER_URL = "http://127.0.0.1:9191"
-CREDENTIALS = {"user": "admin", "pass": "***REMOVED***"}
+CREDENTIALS = {"user": "", "pass": ""}
 GRAPH_NAME = "expero.banking_graph"
 
 GQL_QUERY = (
